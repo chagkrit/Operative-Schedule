@@ -35,6 +35,22 @@ export async function getSchedule(request: Request, from: string, to: string) {
       cancerCount: 0,
     });
   }
+  const legacyExtraCounts = new Map<string, number>();
+  for (const booking of bookings) {
+    if (booking.queueType === "EXTRA" && !summaries.has(`${booking.scheduleDate}:EXTRA`)) {
+      legacyExtraCounts.set(booking.scheduleDate, (legacyExtraCounts.get(booking.scheduleDate) || 0) + 1);
+    }
+  }
+  for (const [date, count] of legacyExtraCounts) {
+    summaries.set(`${date}:EXTRA`, {
+      date,
+      queueType: "EXTRA",
+      capacity: Math.max(4, count),
+      note: "นำเข้าจาก Google Calendar",
+      count: 0,
+      cancerCount: 0,
+    });
+  }
   for (const booking of bookings) {
     const summary = summaries.get(`${booking.scheduleDate}:${booking.queueType}`);
     if (summary) {

@@ -1,6 +1,7 @@
 import { getToken } from "next-auth/jwt";
 import { AUTHORIZED_EMAIL } from "../../auth";
 import { addDays } from "./schedule";
+import { calendarEventDate, parseLegacyCalendarEvent, type LegacyCalendarEvent } from "./legacy-calendar";
 
 export type QueueType = "OR17" | "EXTRA";
 
@@ -22,6 +23,7 @@ export type CalendarBooking = {
   lastMoveTo: string;
   lastMoveAt: string;
   moveCount: number;
+  importedFromCalendar?: boolean;
 };
 
 export type CalendarExtraDay = {
@@ -31,15 +33,13 @@ export type CalendarExtraDay = {
   note: string;
 };
 
-type GoogleEvent = {
+type GoogleEvent = LegacyCalendarEvent & {
   id?: string;
   summary?: string;
   description?: string;
   location?: string;
   colorId?: string;
   updated?: string;
-  start?: { date?: string };
-  end?: { date?: string };
   extendedProperties?: { private?: Record<string, string> };
 };
 
@@ -122,9 +122,29 @@ async function listTaggedEvents(request: Request, tag: "booking" | "extra_day", 
   return events;
 }
 
+async function listAllEvents(request: Request, from: string, to: string, query = "") {
+  const events: GoogleEvent[] = [];
+  let pageToken = "";
+  do {
+    const params = new URLSearchParams({
+      timeMin: `${from}T00:00:00+07:00`,
+      timeMax: `${addDays(to, 1)}T00:00:00+07:00`,
+      singleEvents: "true",
+      maxResults: "2500",
+    });
+    if (query) params.set("q", query);
+    if (pageToken) params.set("pageToken", pageToken);
+    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params.toString()}`);
+    const payload = (await response.json()) as { items?: GoogleEvent[]; nextPageToken?: string };
+    events.push(...(payload.items || []));
+    pageToken = payload.nextPageToken || "";
+  } while (pageToken);
+  return events;
+}
+
 function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
   const data = event.extendedProperties?.private;
-  const date = event.start?.date;
+  const date = calendarEventDate(event);
   if (!event.id || !data || !date || !["OR17", "EXTRA"].includes(data.queue_type)) return null;
   return {
     id: event.id,
@@ -144,18 +164,38 @@ function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
     lastMoveTo: data.last_move_to || "",
     lastMoveAt: data.last_move_at || "",
     moveCount: Number(data.move_count || 0),
+    importedFromCalendar: data.imported_from_calendar === "true",
   };
 }
 
 export async function listCalendarData(request: Request, from: string, to: string) {
-  const [bookingEvents, extraEvents] = await Promise.all([
-    listTaggedEvents(request, "booking", from, to),
-    listTaggedEvents(request, "extra_day", from, to),
-  ]);
-  const bookings = bookingEvents.flatMap((event): CalendarBooking[] => {
+  const allEvents = await listAllEvents(request, from, to);
+  const bookingEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "booking");
+  const extraEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "extra_day");
+  const taggedBookings = bookingEvents.flatMap((event): CalendarBooking[] => {
     const booking = bookingFromEvent(event);
     return booking ? [booking] : [];
   });
+  const usedSlots = new Map<string, Set<number>>();
+  for (const booking of taggedBookings) {
+    const key = `${booking.scheduleDate}:${booking.queueType}`;
+    if (!usedSlots.has(key)) usedSlots.set(key, new Set());
+    usedSlots.get(key)!.add(booking.slotNo);
+  }
+  const legacyBookings = allEvents
+    .sort((a, b) => `${a.start?.dateTime || a.start?.date || ""}`.localeCompare(`${b.start?.dateTime || b.start?.date || ""}`))
+    .flatMap((event): CalendarBooking[] => {
+      const parsed = parseLegacyCalendarEvent(event);
+      if (!parsed) return [];
+      const key = `${parsed.scheduleDate}:${parsed.queueType}`;
+      if (!usedSlots.has(key)) usedSlots.set(key, new Set());
+      const used = usedSlots.get(key)!;
+      let slotNo = 1;
+      while (used.has(slotNo)) slotNo += 1;
+      used.add(slotNo);
+      return [{ ...parsed, slotNo }];
+    });
+  const bookings = [...taggedBookings, ...legacyBookings];
   const extras = extraEvents.flatMap((event): CalendarExtraDay[] => {
     const data = event.extendedProperties?.private;
     const date = event.start?.date;
@@ -240,23 +280,11 @@ export async function searchCalendarBookings(
   from: string,
   to: string,
 ) {
-  const params = new URLSearchParams({
-    timeMin: `${from}T00:00:00+07:00`,
-    timeMax: `${addDays(to, 1)}T00:00:00+07:00`,
-    singleEvents: "true",
-    maxResults: "100",
-    q: query,
-    privateExtendedProperty: "or_queue=booking",
-  });
-  const response = await googleFetch(
-    request,
-    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params.toString()}`,
-  );
-  const payload = (await response.json()) as { items?: GoogleEvent[] };
+  const events = await listAllEvents(request, from, to, query);
   const needle = normalizedSearch(query);
-  return (payload.items || [])
+  return events
     .flatMap((event): CalendarBooking[] => {
-      const booking = bookingFromEvent(event);
+      const booking = bookingFromEvent(event) || parseLegacyCalendarEvent(event);
       return booking ? [booking] : [];
     })
     .filter((booking) => normalizedSearch(`${booking.hn} ${booking.firstName} ${booking.lastName}`).includes(needle))
@@ -281,8 +309,8 @@ export async function getCalendarBooking(request: Request, id: string) {
     `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`,
   );
   const event = (await response.json()) as GoogleEvent;
-  const booking = bookingFromEvent(event);
-  if (!booking || event.extendedProperties?.private?.or_queue !== "booking") {
+  const booking = bookingFromEvent(event) || parseLegacyCalendarEvent(event);
+  if (!booking) {
     const error = new Error("ไม่พบเคสผ่าตัดในระบบ");
     Object.assign(error, { status: 404 });
     throw error;
@@ -302,6 +330,21 @@ function eventDescription(booking: CalendarBooking) {
     `ประเภทคิว: ${room}`,
     `ลงคิวโดย: ${booking.bookedByEmail}`,
   ].join("\n");
+}
+
+function shiftedEventTiming(event: GoogleEvent, targetDate: string) {
+  if (event.start?.dateTime && event.end?.dateTime) {
+    const originalStartDate = event.start.dateTime.slice(0, 10);
+    const originalEndDate = event.end.dateTime.slice(0, 10);
+    const daySpan = Math.max(0, Math.round(
+      (new Date(`${originalEndDate}T00:00:00Z`).getTime() - new Date(`${originalStartDate}T00:00:00Z`).getTime()) / 86_400_000,
+    ));
+    return {
+      start: { dateTime: `${targetDate}${event.start.dateTime.slice(10)}`, ...(event.start.timeZone ? { timeZone: event.start.timeZone } : {}) },
+      end: { dateTime: `${addDays(targetDate, daySpan)}${event.end.dateTime.slice(10)}`, ...(event.end.timeZone ? { timeZone: event.end.timeZone } : {}) },
+    };
+  }
+  return { start: { date: targetDate }, end: { date: addDays(targetDate, 1) } };
 }
 
 export async function moveCalendarBooking(
@@ -324,13 +367,25 @@ export async function moveCalendarBooking(
   const room = moved.queueType === "OR17" ? "OR 17" : "OR Extra";
   const privateData = {
     ...(event.extendedProperties?.private || {}),
+    or_queue: "booking",
     queue_type: moved.queueType,
     slot_no: String(moved.slotNo),
+    diagnosis: moved.diagnosis,
+    is_cancer: String(moved.isCancer),
+    hn: moved.hn,
+    first_name: moved.firstName,
+    last_name: moved.lastName,
+    phone: moved.phone,
+    operation: moved.operation,
+    staff: moved.staff,
+    booked_by: moved.bookedByEmail,
+    imported_from_calendar: String(Boolean(moved.importedFromCalendar)),
     last_move_from: booking.scheduleDate,
     last_move_to: moved.scheduleDate,
     last_move_at: movedAt,
     move_count: String(moved.moveCount),
   };
+  const timing = shiftedEventTiming(event, moved.scheduleDate);
   await googleFetch(
     request,
     `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
@@ -340,8 +395,7 @@ export async function moveCalendarBooking(
         summary: `${room} #${moved.slotNo} • ${moved.operation} • HN ${maskedHn(moved.hn)}`,
         description: eventDescription(moved),
         location: room,
-        start: { date: moved.scheduleDate },
-        end: { date: addDays(moved.scheduleDate, 1) },
+        ...timing,
         extendedProperties: { private: privateData },
       }),
     },
@@ -356,6 +410,7 @@ export async function restoreCalendarBooking(
 ) {
   const { event } = await getCalendarBooking(request, id);
   const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
+  const timing = shiftedEventTiming(event, booking.scheduleDate);
   await googleFetch(
     request,
     `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
@@ -365,8 +420,7 @@ export async function restoreCalendarBooking(
         summary: `${room} #${booking.slotNo} • ${booking.operation} • HN ${maskedHn(booking.hn)}`,
         description: eventDescription(booking),
         location: room,
-        start: { date: booking.scheduleDate },
-        end: { date: addDays(booking.scheduleDate, 1) },
+        ...timing,
         extendedProperties: { private: {
           ...(event.extendedProperties?.private || {}),
           queue_type: booking.queueType,

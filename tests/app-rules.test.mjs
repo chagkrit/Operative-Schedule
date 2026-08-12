@@ -21,6 +21,7 @@ test("keeps the clinical queue safeguards in the server API", async () => {
   assert.match(route, /cancerSchedulingMode === "specific"/);
   assert.match(route, /cancerSchedulingMode === "earliest"/);
   assert.match(schedule, /ca\\s\+\(breast\|thyroid\)/i);
+  assert.match(schedule, /dcis/i);
 });
 
 test("supports direct Google Calendar sync and secure production cookies", async () => {
@@ -32,11 +33,22 @@ test("supports direct Google Calendar sync and secure production cookies", async
   assert.match(app, /cancerSchedulingMode === "specific"/);
 });
 
+test("imports legacy Calendar cases without duplicating tagged events", async () => {
+  const legacy = await read("app/lib/legacy-calendar.ts");
+  const calendar = await read("app/lib/calendar.ts");
+  const route = await read("app/api/schedule/route.ts");
+  assert.match(legacy, /\\d\{6,8\}/);
+  assert.match(legacy, /importedFromCalendar: true/);
+  assert.match(legacy, /or_queue/);
+  assert.match(calendar, /bookingFromEvent\(event\) \|\| parseLegacyCalendarEvent\(event\)/);
+  assert.match(route, /importedCount/);
+});
+
 test("searches cases and records verified calendar moves", async () => {
   const calendar = await read("app/lib/calendar.ts");
   const moveRoute = await read("app/api/cases/[id]/move/route.ts");
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(calendar, /privateExtendedProperty: "or_queue=booking"/);
+  assert.match(calendar, /privateExtendedProperty: `or_queue=\$\{tag\}`/);
   assert.match(calendar, /last_move_from/);
   assert.match(calendar, /last_move_to/);
   assert.match(app, /HN ชื่อ หรือสกุล/);

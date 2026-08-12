@@ -44,6 +44,7 @@ export async function GET(request: Request) {
         movedAt: booking.lastMoveAt,
         moveCount: booking.moveCount,
       })),
+      importedCount: bookings.filter((booking) => booking.importedFromCalendar).length,
       calendarConnected: true,
       calendarName: AUTHORIZED_EMAIL,
     });
