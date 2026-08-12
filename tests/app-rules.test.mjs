@@ -60,6 +60,18 @@ test("creates timed Calendar slots and assigns colors by Staff", async () => {
   assert.match(app, /displaySlotTime\(row\.slotNo\)/);
 });
 
+test("disables Google Calendar reminders for booking writes", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  assert.ok(
+    (calendar.match(/reminders: \{ useDefault: false, overrides: \[\] \}/g) || []).length >= 3,
+    "create, move, and restore must all disable event reminders",
+  );
+  assert.ok(
+    (calendar.match(/\?sendUpdates=none/g) || []).length >= 3,
+    "booking writes must not email attendees",
+  );
+});
+
 test("searches cases and records verified calendar moves", async () => {
   const calendar = await read("app/lib/calendar.ts");
   const moveRoute = await read("app/api/cases/[id]/move/route.ts");

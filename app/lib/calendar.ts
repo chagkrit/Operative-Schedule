@@ -263,6 +263,7 @@ export async function createBookingEvent(
         location: room,
         ...timing,
         colorId: staffEventColor(booking.staff),
+        reminders: { useDefault: false, overrides: [] },
         extendedProperties: { private: {
           or_queue: "booking",
           queue_type: booking.queueType,
@@ -404,6 +405,7 @@ export async function moveCalendarBooking(
         location: room,
         ...timing,
         colorId: staffEventColor(moved.staff),
+        reminders: { useDefault: false, overrides: [] },
         extendedProperties: { private: privateData },
       }),
     },
@@ -430,6 +432,7 @@ export async function restoreCalendarBooking(
         location: room,
         ...timing,
         colorId: staffEventColor(booking.staff),
+        reminders: { useDefault: false, overrides: [] },
         extendedProperties: { private: {
           ...(event.extendedProperties?.private || {}),
           queue_type: booking.queueType,
