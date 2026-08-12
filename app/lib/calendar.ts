@@ -45,6 +45,28 @@ type GoogleEvent = LegacyCalendarEvent & {
 
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || AUTHORIZED_EMAIL;
 
+export const STAFF_EVENT_COLORS: Record<string, string> = {
+  "อ อารีวรรณ": "5", // yellow
+  "อ กีรติ": "10", // green
+  "อ ปัญจพร": "4", // pink/coral
+  "อ จักรกริช": "9", // blue
+  "อ จุฬารัตน์": "3", // purple
+  "อ ณิชกานต์": "6", // orange
+};
+
+export function bookingEventTiming(date: string, slotNo: number) {
+  const startHour = 7 + Math.max(1, slotNo);
+  const hour = (value: number) => String(value).padStart(2, "0");
+  return {
+    start: { dateTime: `${date}T${hour(startHour)}:00:00+07:00`, timeZone: "Asia/Bangkok" },
+    end: { dateTime: `${date}T${hour(startHour + 1)}:00:00+07:00`, timeZone: "Asia/Bangkok" },
+  };
+}
+
+function staffEventColor(staff: string) {
+  return STAFF_EVENT_COLORS[staff] || "8";
+}
+
 async function authorizedAccessToken(request: Request) {
   const token = await getToken({
     req: request,
@@ -221,6 +243,7 @@ export async function createBookingEvent(
 ) {
   const id = `oq${crypto.randomUUID().replaceAll("-", "")}`;
   const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
+  const timing = bookingEventTiming(booking.scheduleDate, booking.slotNo);
   try {
     await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?sendUpdates=none`, {
       method: "POST",
@@ -238,9 +261,8 @@ export async function createBookingEvent(
           `ลงคิวโดย: ${booking.bookedByEmail}`,
         ].join("\n"),
         location: room,
-        start: { date: booking.scheduleDate },
-        end: { date: addDays(booking.scheduleDate, 1) },
-        colorId: booking.isCancer ? "11" : "5",
+        ...timing,
+        colorId: staffEventColor(booking.staff),
         extendedProperties: { private: {
           or_queue: "booking",
           queue_type: booking.queueType,
@@ -332,21 +354,6 @@ function eventDescription(booking: CalendarBooking) {
   ].join("\n");
 }
 
-function shiftedEventTiming(event: GoogleEvent, targetDate: string) {
-  if (event.start?.dateTime && event.end?.dateTime) {
-    const originalStartDate = event.start.dateTime.slice(0, 10);
-    const originalEndDate = event.end.dateTime.slice(0, 10);
-    const daySpan = Math.max(0, Math.round(
-      (new Date(`${originalEndDate}T00:00:00Z`).getTime() - new Date(`${originalStartDate}T00:00:00Z`).getTime()) / 86_400_000,
-    ));
-    return {
-      start: { dateTime: `${targetDate}${event.start.dateTime.slice(10)}`, ...(event.start.timeZone ? { timeZone: event.start.timeZone } : {}) },
-      end: { dateTime: `${addDays(targetDate, daySpan)}${event.end.dateTime.slice(10)}`, ...(event.end.timeZone ? { timeZone: event.end.timeZone } : {}) },
-    };
-  }
-  return { start: { date: targetDate }, end: { date: addDays(targetDate, 1) } };
-}
-
 export async function moveCalendarBooking(
   request: Request,
   id: string,
@@ -385,7 +392,7 @@ export async function moveCalendarBooking(
     last_move_at: movedAt,
     move_count: String(moved.moveCount),
   };
-  const timing = shiftedEventTiming(event, moved.scheduleDate);
+  const timing = bookingEventTiming(moved.scheduleDate, moved.slotNo);
   await googleFetch(
     request,
     `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
@@ -396,6 +403,7 @@ export async function moveCalendarBooking(
         description: eventDescription(moved),
         location: room,
         ...timing,
+        colorId: staffEventColor(moved.staff),
         extendedProperties: { private: privateData },
       }),
     },
@@ -410,7 +418,7 @@ export async function restoreCalendarBooking(
 ) {
   const { event } = await getCalendarBooking(request, id);
   const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
-  const timing = shiftedEventTiming(event, booking.scheduleDate);
+  const timing = bookingEventTiming(booking.scheduleDate, booking.slotNo);
   await googleFetch(
     request,
     `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
@@ -421,6 +429,7 @@ export async function restoreCalendarBooking(
         description: eventDescription(booking),
         location: room,
         ...timing,
+        colorId: staffEventColor(booking.staff),
         extendedProperties: { private: {
           ...(event.extendedProperties?.private || {}),
           queue_type: booking.queueType,

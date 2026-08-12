@@ -93,6 +93,12 @@ function displayDate(value: string, short = false) {
   }).format(new Date(`${value}T12:00:00+07:00`));
 }
 
+function displaySlotTime(slotNo: number) {
+  const startHour = 7 + slotNo;
+  const hour = (value: number) => String(value).padStart(2, "0");
+  return `${hour(startHour)}:00–${hour(startHour + 1)}:00`;
+}
+
 function StatusDot({ synced }: { synced: boolean }) {
   return <span className={`status-dot ${synced ? "synced" : "pending"}`} aria-hidden="true" />;
 }
@@ -411,7 +417,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   <div className="capacity-bar"><i style={{ width: `${Math.min(100, (day.count / day.capacity) * 100)}%` }} /></div>
                   {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                   {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer</p>}
-                  {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>HN ••••{row.hn.slice(-4)} · {row.staff}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
+                  {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {row.staff}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
                   {remaining === 0 && <span className="full-label">คิวเต็ม</span>}
                 </div>
               </article>;

@@ -44,6 +44,22 @@ test("imports legacy Calendar cases without duplicating tagged events", async ()
   assert.match(route, /importedCount/);
 });
 
+test("creates timed Calendar slots and assigns colors by Staff", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  assert.match(calendar, /startHour = 7 \+ Math\.max\(1, slotNo\)/);
+  assert.match(calendar, /timeZone: "Asia\/Bangkok"/);
+  assert.match(calendar, /"อ อารีวรรณ": "5"/);
+  assert.match(calendar, /"อ กีรติ": "10"/);
+  assert.match(calendar, /"อ ปัญจพร": "4"/);
+  assert.match(calendar, /"อ จักรกริช": "9"/);
+  assert.match(calendar, /"อ จุฬารัตน์": "3"/);
+  assert.match(calendar, /"อ ณิชกานต์": "6"/);
+  assert.match(calendar, /colorId: staffEventColor\(booking\.staff\)/);
+  assert.match(calendar, /colorId: staffEventColor\(moved\.staff\)/);
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /displaySlotTime\(row\.slotNo\)/);
+});
+
 test("searches cases and records verified calendar moves", async () => {
   const calendar = await read("app/lib/calendar.ts");
   const moveRoute = await read("app/api/cases/[id]/move/route.ts");
