@@ -44,6 +44,19 @@ test("imports legacy Calendar cases without duplicating tagged events", async ()
   assert.match(route, /importedCount/);
 });
 
+test("maps legacy English Staff initials exactly as the OR team defines", async () => {
+  const legacy = await read("app/lib/legacy-calendar.ts");
+  assert.match(legacy, /A: "อ อารีวรรณ"/);
+  assert.match(legacy, /K: "อ กีรติ"/);
+  assert.match(legacy, /P: "อ ปัญจพร"/);
+  assert.match(legacy, /C: "อ จักรกริช"/);
+  assert.match(legacy, /J: "อ จุฬารัตน์"/);
+  assert.match(legacy, /N: "อ ณิชกานต์"/);
+  assert.doesNotMatch(legacy, /G: "อ กีรติ"/);
+  assert.match(legacy, /(?:อ\\\.\?\\s\+)?\(\[AKPCJN\]\)/);
+  assert.match(legacy, /legacyStaffFromPrefix\(beforeHn\)/);
+});
+
 test("creates timed Calendar slots and assigns colors by Staff", async () => {
   const calendar = await read("app/lib/calendar.ts");
   assert.match(calendar, /startHour = 7 \+ Math\.max\(1, slotNo\)/);

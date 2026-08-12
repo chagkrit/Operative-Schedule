@@ -9,15 +9,23 @@ export type LegacyCalendarEvent = {
   extendedProperties?: { private?: Record<string, string> };
 };
 
-const STAFF_BY_INITIAL: Record<string, string> = {
+export const LEGACY_STAFF_BY_INITIAL: Record<string, string> = {
   A: "อ อารีวรรณ",
   K: "อ กีรติ",
-  G: "อ กีรติ",
   P: "อ ปัญจพร",
-  J: "อ จักรกริช",
-  C: "อ จุฬารัตน์",
+  C: "อ จักรกริช",
+  J: "อ จุฬารัตน์",
   N: "อ ณิชกานต์",
 };
+
+export function legacyStaffFromPrefix(value: string) {
+  const match = /^\s*(?:อ\.?\s+)?([AKPCJN])(?:[.:-])?(?=\s|[ก-๙(])/i.exec(value);
+  if (!match) return { staff: "ไม่ระบุ", prefixLength: 0 };
+  return {
+    staff: LEGACY_STAFF_BY_INITIAL[match[1].toUpperCase()],
+    prefixLength: match[0].length,
+  };
+}
 
 export function calendarEventDate(event: LegacyCalendarEvent) {
   return event.start?.date || event.start?.dateTime?.slice(0, 10) || "";
@@ -37,10 +45,9 @@ export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0)
   const hn = hnMatch[2];
   const hnEnd = hnStart + hn.length;
   const beforeHn = summary.slice(0, hnStart).trim();
-  const staffMatch = /^([AKGPCJN])(?=\s|[ก-๙(])/i.exec(beforeHn);
-  const staff = staffMatch ? STAFF_BY_INITIAL[staffMatch[1].toUpperCase()] : "ไม่ระบุ";
+  const { staff, prefixLength } = legacyStaffFromPrefix(beforeHn);
   const patientName = beforeHn
-    .slice(staffMatch?.[0].length || 0)
+    .slice(prefixLength)
     .replace(/^\s*\(\s*C\s*\)\s*/i, "")
     .trim() || "ไม่ระบุชื่อ";
   const operation = summary.slice(hnEnd).replace(/^\s*[-–—:|•]+\s*/, "").trim() || "ไม่ระบุ Operation";
