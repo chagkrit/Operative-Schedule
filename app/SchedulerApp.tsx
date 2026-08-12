@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { signOutAction } from "./actions";
+import { diagnosisIsCancer } from "./lib/schedule";
 
 type Day = {
   date: string;
@@ -82,10 +83,6 @@ const EMPTY_FORM = {
   requestedQueueType: "",
 };
 
-function isCancer(value: string) {
-  return /(^|[^a-z])cancer([^a-z]|$)/i.test(value.trim());
-}
-
 function displayDate(value: string, short = false) {
   return new Intl.DateTimeFormat("th-TH", {
     weekday: short ? "short" : "long",
@@ -103,6 +100,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [data, setData] = useState<ScheduleResponse | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showExtra, setShowExtra] = useState(false);
@@ -115,14 +115,23 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [moveTarget, setMoveTarget] = useState("");
   const [moving, setMoving] = useState(false);
 
-  const loadSchedule = useCallback(async () => {
+  const loadSchedule = useCallback(async (showSuccess = false) => {
     try {
       const response = await fetch("/api/schedule", { cache: "no-store" });
       const payload = (await response.json()) as ScheduleResponse;
       if (!response.ok) throw new Error(payload.error || "โหลดตารางคิวไม่สำเร็จ");
       setData(payload);
+      setCalendarError(null);
+      setLastSyncedAt(new Date());
+      if (showSuccess) {
+        setNotice({ type: "success", text: "Sync ข้อมูลกับ Google Calendar ล่าสุดแล้ว" });
+      }
+      return true;
     } catch (error) {
-      setNotice({ type: "error", text: error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ" });
+      const message = error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ";
+      setCalendarError(message);
+      setNotice({ type: "error", text: message });
+      return false;
     } finally {
       setLoading(false);
     }
@@ -133,7 +142,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     return () => window.clearTimeout(timer);
   }, [loadSchedule]);
 
-  const cancer = isCancer(form.diagnosis);
+  const cancer = diagnosisIsCancer(form.diagnosis);
   const normalDates = useMemo(
     () => data?.days.filter((day) => day.queueType === "OR17" && day.count < day.capacity) || [],
     [data],
@@ -175,6 +184,16 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     const [requestedDate = "", requestedQueueType = ""] = value.split("|");
     setForm((current) => ({ ...current, requestedDate, requestedQueueType }));
     setNotice(null);
+  }
+
+  async function syncCalendar() {
+    setSyncing(true);
+    setNotice(null);
+    try {
+      await loadSchedule(true);
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function submitBooking(event: FormEvent) {
@@ -314,10 +333,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           </div>
         </div>
         <div className="topbar-actions">
-          <div className={`calendar-pill ${data?.calendarConnected ? "connected" : "disconnected"}`}>
+          <div className={`calendar-pill ${data?.calendarConnected ? "connected" : "disconnected"}`} title={calendarError || undefined}>
             <StatusDot synced={Boolean(data?.calendarConnected)} />
-            <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : "กำลังเชื่อม Google Calendar"}</span>
+            <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
           </div>
+          <button className="sync-button" type="button" onClick={syncCalendar} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
         </div>
       </header>
@@ -337,12 +357,15 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       </section>
 
-      {!loading && data && !data.calendarConnected && (
+      {!loading && (!data?.calendarConnected || calendarError) && (
         <div className="setup-banner" role="status">
           <span className="banner-icon">!</span>
-          <div><strong>เว็บไซต์พร้อมแล้ว แต่ยังไม่เปิดรับข้อมูลผู้ป่วย</strong><p>เชื่อมบัญชี {data.calendarName} ก่อน ระบบจึงจะอนุญาตให้กดบันทึก เพื่อป้องกันคิวตกหล่นจากปฏิทิน</p></div>
+          <div><strong>ยังอ่านข้อมูลจาก Google Calendar ไม่สำเร็จ</strong><p>{calendarError || `กรุณาเชื่อมบัญชี ${data?.calendarName || authorizedEmail}`} แล้วกด “Sync ทันที” อีกครั้ง</p></div>
+          <button type="button" onClick={syncCalendar} disabled={syncing}>{syncing ? "กำลัง Sync…" : "Sync ทันที"}</button>
         </div>
       )}
+
+      {lastSyncedAt && data?.calendarConnected && <p className="last-sync" role="status">อัปเดตจาก Google Calendar ล่าสุด {new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Bangkok" }).format(lastSyncedAt)} น.</p>}
 
       {notice && <div className={`notice ${notice.type}`} role="alert">{notice.text}</div>}
 
@@ -354,7 +377,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           </div>
 
           <form onSubmit={submitBooking} noValidate>
-            <label className="field full"><span>Diagnosis <b>*</b></span><input value={form.diagnosis} onChange={(e) => updateField("diagnosis", e.target.value)} placeholder="เช่น Breast Cancer" autoComplete="off" /></label>
+            <label className="field full"><span>Diagnosis <b>*</b></span><input value={form.diagnosis} onChange={(e) => updateField("diagnosis", e.target.value)} placeholder="เช่น Breast Cancer, CA breast, CA thyroid" autoComplete="off" /><small className="field-help">คำที่ระบบจัดเป็น Cancer: Cancer, CA breast, CA thyroid และ Thyroid cancer</small></label>
             {cancer && <fieldset className="cancer-mode"><legend>การเลือกคิวสำหรับ Cancer</legend><div className="mode-options"><label aria-label="คิวเร็วที่สุด" htmlFor="cancer-mode-earliest" className={form.cancerSchedulingMode === "earliest" ? "selected" : ""}><input id="cancer-mode-earliest" type="radio" name="cancerSchedulingMode" value="earliest" checked={form.cancerSchedulingMode === "earliest"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "earliest", requestedDate: "", requestedQueueType: "" }))} /><span><strong>คิวเร็วที่สุด</strong><small>ให้ระบบเลือกคิวว่างแรกอัตโนมัติ</small></span></label><label aria-label="ระบุวันเอง" htmlFor="cancer-mode-specific" className={form.cancerSchedulingMode === "specific" ? "selected" : ""}><input id="cancer-mode-specific" type="radio" name="cancerSchedulingMode" value="specific" checked={form.cancerSchedulingMode === "specific"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "specific", requestedDate: "", requestedQueueType: "" }))} /><span><strong>ระบุวันเอง</strong><small>เลือก OR 17 หรือ OR Extra ที่ยังว่าง</small></span></label></div></fieldset>}
             {cancer && form.cancerSchedulingMode === "earliest" && nextCancerDay && <div className="cancer-suggestion"><span>คิวว่างเร็วที่สุด</span><strong>{displayDate(nextCancerDay.date)} · {nextCancerDay.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><small>ระบบจะตรวจคิวล่าสุดอีกครั้งเมื่อกดบันทึก</small></div>}
             <div className="form-grid">

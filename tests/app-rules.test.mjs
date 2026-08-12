@@ -14,11 +14,22 @@ test("protects the app with the exact authorized Google account", async () => {
 test("keeps the clinical queue safeguards in the server API", async () => {
   const route = await read("app/api/schedule/route.ts");
   const queue = await read("app/lib/queue.ts");
+  const schedule = await read("app/lib/schedule.ts");
   assert.match(queue, /day\.count === 3 && day\.cancerCount === 0/);
   assert.match(queue, /ช่องสุดท้ายของวันนี้รับ Cancer เท่านั้น/);
   assert.match(queue, /OR Extra รับเฉพาะเคส Cancer/);
   assert.match(route, /cancerSchedulingMode === "specific"/);
   assert.match(route, /cancerSchedulingMode === "earliest"/);
+  assert.match(schedule, /ca\\s\+\(breast\|thyroid\)/i);
+});
+
+test("supports direct Google Calendar sync and secure production cookies", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(calendar, /secureCookie: new URL\(request\.url\)\.protocol === "https:"/);
+  assert.match(app, /Sync ทันที/);
+  assert.match(app, /CA breast, CA thyroid/);
+  assert.match(app, /cancerSchedulingMode === "specific"/);
 });
 
 test("searches cases and records verified calendar moves", async () => {

@@ -46,7 +46,11 @@ type GoogleEvent = {
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || AUTHORIZED_EMAIL;
 
 async function authorizedAccessToken(request: Request) {
-  const token = await getToken({ req: request, secret: process.env.AUTH_SECRET });
+  const token = await getToken({
+    req: request,
+    secret: process.env.AUTH_SECRET,
+    secureCookie: new URL(request.url).protocol === "https:",
+  });
   if (token?.email?.toLowerCase() !== AUTHORIZED_EMAIL) {
     throw new Error("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail.com");
   }

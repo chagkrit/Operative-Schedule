@@ -33,5 +33,7 @@ export function isExtraEligibleDay(date: string) {
 }
 
 export function diagnosisIsCancer(diagnosis: string) {
-  return /(^|[^a-z])cancer([^a-z]|$)/i.test(diagnosis.trim());
+  const value = diagnosis.trim();
+  return /(^|[^a-z])cancer([^a-z]|$)/i.test(value)
+    || /(^|[^a-z])ca\s+(breast|thyroid)([^a-z]|$)/i.test(value);
 }
