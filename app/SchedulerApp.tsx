@@ -45,6 +45,7 @@ const STAFF = [
 
 const EMPTY_FORM = {
   diagnosis: "",
+  cancerSchedulingMode: "earliest" as "earliest" | "specific",
   hn: "",
   firstName: "",
   lastName: "",
@@ -52,6 +53,7 @@ const EMPTY_FORM = {
   operation: "",
   staff: "",
   requestedDate: "",
+  requestedQueueType: "",
 };
 
 function isCancer(value: string) {
@@ -103,6 +105,10 @@ export default function SchedulerApp() {
     () => data?.days.filter((day) => day.queueType === "OR17" && day.count < day.capacity) || [],
     [data],
   );
+  const cancerDates = useMemo(
+    () => data?.days.filter((day) => day.count < day.capacity) || [],
+    [data],
+  );
   const upcomingDays = data?.days.slice(0, 8) || [];
   const nextCancerDay = useMemo(
     () => data?.days.find((day) => day.count < day.capacity),
@@ -118,7 +124,13 @@ export default function SchedulerApp() {
   }, [data]);
 
   function updateField(name: keyof typeof EMPTY_FORM, value: string) {
-    setForm((current) => ({ ...current, [name]: value }));
+    setForm((current) => ({ ...current, [name]: value } as typeof EMPTY_FORM));
+    setNotice(null);
+  }
+
+  function chooseCancerDate(value: string) {
+    const [requestedDate = "", requestedQueueType = ""] = value.split("|");
+    setForm((current) => ({ ...current, requestedDate, requestedQueueType }));
     setNotice(null);
   }
 
@@ -136,7 +148,9 @@ export default function SchedulerApp() {
     const missing = Object.entries(labels)
       .filter(([key]) => !form[key as keyof typeof form].trim())
       .map(([, label]) => label);
-    if (!cancer && !form.requestedDate) missing.push("วันที่ผ่าตัด");
+    if ((!cancer || form.cancerSchedulingMode === "specific") && !form.requestedDate) {
+      missing.push("วันที่ผ่าตัด");
+    }
     if (missing.length) {
       setNotice({ type: "error", text: `ยังบันทึกไม่ได้ กรุณากรอก: ${missing.join(", ")}` });
       return;
@@ -234,12 +248,13 @@ export default function SchedulerApp() {
         <section className="panel booking-panel">
           <div className="panel-heading">
             <div><span className="step">01</span><h3>ข้อมูลผู้ป่วยและการผ่าตัด</h3></div>
-            <span className={`diagnosis-badge ${cancer ? "cancer" : "general"}`}>{cancer ? "Cancer · คิวเร็วที่สุด" : "OR 17 · เลือกวัน"}</span>
+            <span className={`diagnosis-badge ${cancer ? "cancer" : "general"}`}>{cancer ? `Cancer · ${form.cancerSchedulingMode === "specific" ? "ระบุวันเอง" : "คิวเร็วที่สุด"}` : "OR 17 · เลือกวัน"}</span>
           </div>
 
           <form onSubmit={submitBooking} noValidate>
             <label className="field full"><span>Diagnosis <b>*</b></span><input value={form.diagnosis} onChange={(e) => updateField("diagnosis", e.target.value)} placeholder="เช่น Breast Cancer" autoComplete="off" /></label>
-            {cancer && nextCancerDay && <div className="cancer-suggestion"><span>คิวว่างเร็วที่สุด</span><strong>{displayDate(nextCancerDay.date)} · {nextCancerDay.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><small>ระบบจะตรวจคิวล่าสุดอีกครั้งเมื่อกดบันทึก</small></div>}
+            {cancer && <fieldset className="cancer-mode"><legend>การเลือกคิวสำหรับ Cancer</legend><div className="mode-options"><label aria-label="คิวเร็วที่สุด" htmlFor="cancer-mode-earliest" className={form.cancerSchedulingMode === "earliest" ? "selected" : ""}><input id="cancer-mode-earliest" type="radio" name="cancerSchedulingMode" value="earliest" checked={form.cancerSchedulingMode === "earliest"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "earliest", requestedDate: "", requestedQueueType: "" }))} /><span><strong>คิวเร็วที่สุด</strong><small>ให้ระบบเลือกคิวว่างแรกอัตโนมัติ</small></span></label><label aria-label="ระบุวันเอง" htmlFor="cancer-mode-specific" className={form.cancerSchedulingMode === "specific" ? "selected" : ""}><input id="cancer-mode-specific" type="radio" name="cancerSchedulingMode" value="specific" checked={form.cancerSchedulingMode === "specific"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "specific", requestedDate: "", requestedQueueType: "" }))} /><span><strong>ระบุวันเอง</strong><small>เลือก OR 17 หรือ OR Extra ที่ยังว่าง</small></span></label></div></fieldset>}
+            {cancer && form.cancerSchedulingMode === "earliest" && nextCancerDay && <div className="cancer-suggestion"><span>คิวว่างเร็วที่สุด</span><strong>{displayDate(nextCancerDay.date)} · {nextCancerDay.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><small>ระบบจะตรวจคิวล่าสุดอีกครั้งเมื่อกดบันทึก</small></div>}
             <div className="form-grid">
               <label className="field"><span>HN <b>*</b></span><input value={form.hn} onChange={(e) => updateField("hn", e.target.value)} inputMode="numeric" placeholder="Hospital number" /></label>
               <label className="field"><span>Tel <b>*</b></span><input value={form.phone} onChange={(e) => updateField("phone", e.target.value)} inputMode="tel" placeholder="เบอร์โทรศัพท์" /></label>
@@ -247,7 +262,7 @@ export default function SchedulerApp() {
               <label className="field"><span>สกุล <b>*</b></span><input value={form.lastName} onChange={(e) => updateField("lastName", e.target.value)} placeholder="นามสกุล" /></label>
               <label className="field full"><span>Operation <b>*</b></span><input value={form.operation} onChange={(e) => updateField("operation", e.target.value)} placeholder="ชื่อหัตถการ / การผ่าตัด" /></label>
               <label className="field"><span>Staff <b>*</b></span><select value={form.staff} onChange={(e) => updateField("staff", e.target.value)}><option value="">เลือก Staff</option>{STAFF.map((staff) => <option key={staff}>{staff}</option>)}</select></label>
-              <label className={`field ${cancer ? "muted-field" : ""}`}><span>วันที่ผ่าตัด {!cancer && <b>*</b>}</span><select value={form.requestedDate} onChange={(e) => updateField("requestedDate", e.target.value)} disabled={cancer}><option value="">{cancer ? "ระบบเลือกคิวเร็วที่สุด" : "เลือกวัน OR 17"}</option>{normalDates.map((day) => <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}</option>)}</select></label>
+              {cancer ? <label className={`field ${form.cancerSchedulingMode === "earliest" ? "muted-field" : ""}`}><span>วันที่ผ่าตัด {form.cancerSchedulingMode === "specific" && <b>*</b>}</span><select value={form.requestedDate && form.requestedQueueType ? `${form.requestedDate}|${form.requestedQueueType}` : ""} onChange={(e) => chooseCancerDate(e.target.value)} disabled={form.cancerSchedulingMode === "earliest"}><option value="">{form.cancerSchedulingMode === "earliest" ? "ระบบเลือกคิวเร็วที่สุด" : "เลือกวันและประเภทคิว"}</option>{cancerDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}</select></label> : <label className="field"><span>วันที่ผ่าตัด <b>*</b></span><select value={form.requestedDate} onChange={(e) => setForm((current) => ({ ...current, requestedDate: e.target.value, requestedQueueType: "OR17" }))}><option value="">เลือกวัน OR 17</option>{normalDates.map((day) => <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}</option>)}</select></label>}
             </div>
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
             <button className="save-button" type="submit" disabled={saving}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>

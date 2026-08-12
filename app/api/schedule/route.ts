@@ -107,7 +107,7 @@ export async function GET(request: Request) {
   }
   try {
     const today = dateOnly();
-    const { days, bookings: rows } = await getDays(today, addDays(today, 55));
+    const { days, bookings: rows } = await getDays(today, addDays(today, 120));
     return Response.json({
       days,
       bookings: rows,
@@ -142,6 +142,8 @@ export async function POST(request: Request) {
     const operation = String(payload.operation || "").trim();
     const staff = String(payload.staff || "").trim();
     const requestedDate = String(payload.requestedDate || "").trim();
+    const requestedQueueType = String(payload.requestedQueueType || "").trim();
+    const cancerSchedulingMode = String(payload.cancerSchedulingMode || "earliest").trim();
     const missing = [
       [diagnosis, "Diagnosis"],
       [hn, "HN"],
@@ -162,6 +164,19 @@ export async function POST(request: Request) {
     }
 
     const isCancer = diagnosisIsCancer(diagnosis);
+    if (isCancer && !["earliest", "specific"].includes(cancerSchedulingMode)) {
+      return Response.json({ error: "กรุณาเลือกวิธีจัดคิว Cancer" }, { status: 400 });
+    }
+    if (
+      isCancer &&
+      cancerSchedulingMode === "specific" &&
+      (!requestedDate || !["OR17", "EXTRA"].includes(requestedQueueType))
+    ) {
+      return Response.json(
+        { error: "กรุณาเลือกวันที่และประเภทคิวสำหรับ Cancer" },
+        { status: 400 },
+      );
+    }
     if (!isCancer && (!requestedDate || !isNormalDay(requestedDate))) {
       return Response.json(
         { error: "เคสที่ไม่ใช่ Cancer เลือกได้เฉพาะคิวปกติ OR 17 วันอังคารหรือพฤหัสบดี" },
@@ -172,13 +187,25 @@ export async function POST(request: Request) {
     const today = dateOnly();
     const { days } = await getDays(today, addDays(today, 120));
     const candidates = isCancer
-      ? days.filter((day) => day.count < day.capacity)
+      ? cancerSchedulingMode === "specific"
+        ? days.filter(
+            (day) =>
+              day.date === requestedDate &&
+              day.queueType === requestedQueueType &&
+              day.count < day.capacity,
+          )
+        : days.filter((day) => day.count < day.capacity)
       : days.filter(
           (day) => day.date === requestedDate && day.queueType === "OR17",
         );
     if (!candidates.length) {
       return Response.json(
-        { error: isCancer ? "ไม่พบคิวว่างใน 120 วันข้างหน้า" : "วันที่เลือกเต็มหรือไม่เปิดรับคิว" },
+        {
+          error:
+            isCancer && cancerSchedulingMode === "earliest"
+              ? "ไม่พบคิวว่างใน 120 วันข้างหน้า"
+              : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว",
+        },
         { status: 409 },
       );
     }

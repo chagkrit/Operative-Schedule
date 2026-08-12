@@ -78,6 +78,15 @@ button { cursor: pointer; }
 .field input:focus, .field select:focus, .extra-form input:focus { border-color: var(--rose); box-shadow: 0 0 0 3px rgba(167, 25, 85, .09); }
 .field input::placeholder { color: #b0a2a7; }
 .muted-field { opacity: .62; }
+.cancer-mode { margin: -5px 0 18px; padding: 0; border: 0; }
+.cancer-mode legend { margin-bottom: 8px; color: #57454d; font-size: 11px; font-weight: 800; }
+.mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mode-options label { min-height: 64px; display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid #dfd4d7; border-radius: 13px; background: #fff; cursor: pointer; transition: border-color .2s, background .2s, box-shadow .2s; }
+.mode-options label.selected { border-color: var(--rose); background: var(--rose-soft); box-shadow: 0 0 0 3px rgba(167, 25, 85, .07); }
+.mode-options input { accent-color: var(--rose); }
+.mode-options label > span { display: grid; gap: 2px; }
+.mode-options strong { font-size: 12px; }
+.mode-options small { color: var(--muted); font-size: 9px; line-height: 1.35; }
 .cancer-suggestion { display: grid; gap: 3px; margin: -6px 0 19px; padding: 15px 17px; border-left: 3px solid var(--rose); border-radius: 5px 13px 13px 5px; background: var(--rose-soft); }
 .cancer-suggestion span { color: var(--rose); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .cancer-suggestion strong { font-size: 13px; }
@@ -150,6 +159,7 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .panel-heading h3 { font-size: 17px; }
   .diagnosis-badge { max-width: 135px; text-align: center; }
   .form-grid { grid-template-columns: 1fr; gap: 14px; }
+  .mode-options { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
   .schedule-list { grid-template-columns: 1fr; }
   .extra-form { grid-template-columns: 1fr 80px; }
