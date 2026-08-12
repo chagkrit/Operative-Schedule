@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
+import { signOutAction } from "./actions";
 
 type Day = {
   date: string;
@@ -73,7 +74,7 @@ function StatusDot({ synced }: { synced: boolean }) {
   return <span className={`status-dot ${synced ? "synced" : "pending"}`} aria-hidden="true" />;
 }
 
-export default function SchedulerApp() {
+export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: string }) {
   const [data, setData] = useState<ScheduleResponse | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
@@ -214,9 +215,12 @@ export default function SchedulerApp() {
             <h1>OR Queue</h1>
           </div>
         </div>
-        <div className={`calendar-pill ${data?.calendarConnected ? "connected" : "disconnected"}`}>
-          <StatusDot synced={Boolean(data?.calendarConnected)} />
-          <span>{data?.calendarConnected ? `เชื่อมแล้ว · ${data.calendarName}` : "รอเชื่อม Google Calendar"}</span>
+        <div className="topbar-actions">
+          <div className={`calendar-pill ${data?.calendarConnected ? "connected" : "disconnected"}`}>
+            <StatusDot synced={Boolean(data?.calendarConnected)} />
+            <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : "กำลังเชื่อม Google Calendar"}</span>
+          </div>
+          <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
         </div>
       </header>
 
