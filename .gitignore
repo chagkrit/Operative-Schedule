@@ -40,3 +40,4 @@ yarn-error.log*
 *.tsbuildinfo
 /outputs/
 /work/
+/.playwright-cli/

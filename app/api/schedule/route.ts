@@ -1,51 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
-import { createBookingEvent, listCalendarData, type QueueType } from "../../lib/calendar";
+import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
+import { destinationError, getSchedule, nextAvailableSlot } from "../../lib/queue";
 import { addDays, dateOnly, diagnosisIsCancer, isNormalDay, STAFF_OPTIONS } from "../../lib/schedule";
-
-type DaySummary = {
-  date: string;
-  queueType: QueueType;
-  capacity: number;
-  note: string;
-  count: number;
-  cancerCount: number;
-};
-
-async function getDays(request: Request, from: string, to: string) {
-  const { bookings, extras } = await listCalendarData(request, from, to);
-  const summaries = new Map<string, DaySummary>();
-  for (let date = from; date <= to; date = addDays(date, 1)) {
-    if (isNormalDay(date)) {
-      summaries.set(`${date}:OR17`, { date, queueType: "OR17", capacity: 4, note: "คิวปกติ OR 17", count: 0, cancerCount: 0 });
-    }
-  }
-  for (const extra of extras) {
-    summaries.set(`${extra.date}:EXTRA`, { date: extra.date, queueType: "EXTRA", capacity: extra.capacity, note: extra.note || "คิว OR Extra", count: 0, cancerCount: 0 });
-  }
-  for (const booking of bookings) {
-    const summary = summaries.get(`${booking.scheduleDate}:${booking.queueType}`);
-    if (summary) {
-      summary.count += 1;
-      if (booking.isCancer) summary.cancerCount += 1;
-    }
-  }
-  return {
-    days: [...summaries.values()].sort((a, b) => a.date === b.date ? (a.queueType === "OR17" ? -1 : 1) : a.date.localeCompare(b.date)),
-    bookings: bookings.sort((a, b) => a.scheduleDate.localeCompare(b.scheduleDate) || a.slotNo - b.slotNo).map((booking) => ({
-      id: booking.id,
-      scheduleDate: booking.scheduleDate,
-      queueType: booking.queueType,
-      slotNo: booking.slotNo,
-      diagnosis: booking.diagnosis,
-      isCancer: booking.isCancer,
-      hn: booking.hn,
-      patientName: `${booking.firstName} ${booking.lastName}`,
-      operation: booking.operation,
-      staff: booking.staff,
-      calendarSyncStatus: "synced" as const,
-    })),
-  };
-}
 
 function statusFor(error: unknown) {
   const message = error instanceof Error ? error.message : "เกิดข้อผิดพลาด";
@@ -57,8 +13,40 @@ function statusFor(error: unknown) {
 export async function GET(request: Request) {
   try {
     const today = dateOnly();
-    const { days, bookings } = await getDays(request, today, addDays(today, 120));
-    return Response.json({ days, bookings, calendarConnected: true, calendarName: AUTHORIZED_EMAIL });
+    const [{ days, bookings }, recentMoves] = await Promise.all([
+      getSchedule(request, today, addDays(today, 120)),
+      listRecentMoves(request, addDays(today, -730), addDays(today, 120)),
+    ]);
+    return Response.json({
+      days,
+      bookings: bookings
+        .sort((a, b) => a.scheduleDate.localeCompare(b.scheduleDate) || a.slotNo - b.slotNo)
+        .map((booking) => ({
+          id: booking.id,
+          scheduleDate: booking.scheduleDate,
+          queueType: booking.queueType,
+          slotNo: booking.slotNo,
+          diagnosis: booking.diagnosis,
+          isCancer: booking.isCancer,
+          hn: booking.hn,
+          patientName: `${booking.firstName} ${booking.lastName}`,
+          operation: booking.operation,
+          staff: booking.staff,
+          calendarSyncStatus: "synced" as const,
+        })),
+      recentMoves: recentMoves.map((booking) => ({
+        id: booking.id,
+        hn: booking.hn,
+        patientName: `${booking.firstName} ${booking.lastName}`,
+        operation: booking.operation,
+        fromDate: booking.lastMoveFrom,
+        toDate: booking.lastMoveTo,
+        movedAt: booking.lastMoveAt,
+        moveCount: booking.moveCount,
+      })),
+      calendarConnected: true,
+      calendarName: AUTHORIZED_EMAIL,
+    });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ" }, { status: statusFor(error) });
   }
@@ -92,7 +80,7 @@ export async function POST(request: Request) {
     }
 
     const today = dateOnly();
-    const { days } = await getDays(request, today, addDays(today, 120));
+    const { days, bookings } = await getSchedule(request, today, addDays(today, 120));
     const candidates = isCancer
       ? cancerSchedulingMode === "specific"
         ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && day.count < day.capacity)
@@ -102,12 +90,10 @@ export async function POST(request: Request) {
       return Response.json({ error: isCancer && cancerSchedulingMode === "earliest" ? "ไม่พบคิวว่างใน 120 วันข้างหน้า" : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว" }, { status: 409 });
     }
     const selected = candidates[0];
-    if (!isCancer && selected.queueType === "OR17" && selected.count === 3 && selected.cancerCount === 0) {
-      return Response.json({ error: "ลงเคสที่ 4 ไม่ได้: วันนี้ยังไม่มีเคส Cancer อย่างน้อย 1 เคส" }, { status: 409 });
-    }
-    if (!isCancer && selected.queueType === "EXTRA") return Response.json({ error: "OR Extra รับเฉพาะเคสที่ Diagnosis ระบุ Cancer" }, { status: 400 });
+    const invalidDestination = destinationError({ isCancer }, selected);
+    if (invalidDestination) return Response.json({ error: invalidDestination }, { status: 409 });
 
-    const slotNo = selected.count + 1;
+    const slotNo = nextAvailableSlot(bookings, selected.date, selected.queueType, selected.capacity);
     const id = await createBookingEvent(request, {
       scheduleDate: selected.date,
       queueType: selected.queueType,
@@ -122,6 +108,15 @@ export async function POST(request: Request) {
       staff,
       bookedByEmail: AUTHORIZED_EMAIL,
     });
+    const verified = await getSchedule(request, selected.date, selected.date);
+    const verifiedDay = verified.days.find((day) => day.date === selected.date && day.queueType === selected.queueType);
+    if (!verifiedDay || verifiedDay.count > verifiedDay.capacity) {
+      await deleteBookingEvent(request, id);
+      return Response.json(
+        { error: "มีผู้ลงคิวพร้อมกันและคิวเต็ม กรุณาเลือกวันใหม่หรือกดบันทึกอีกครั้ง" },
+        { status: 409 },
+      );
+    }
     return Response.json({ booking: { id, date: selected.date, queueType: selected.queueType, slotNo }, message: "บันทึกและเพิ่มใน Google Calendar แล้ว" }, { status: 201 });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" }, { status: statusFor(error) });

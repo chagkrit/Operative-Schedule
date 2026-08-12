@@ -30,9 +30,34 @@ type Booking = {
 type ScheduleResponse = {
   days: Day[];
   bookings: Booking[];
+  recentMoves: RecentMove[];
   calendarConnected: boolean;
   calendarName: string;
   error?: string;
+};
+
+type RecentMove = {
+  id: string;
+  hn: string;
+  patientName: string;
+  operation: string;
+  fromDate: string;
+  toDate: string;
+  movedAt: string;
+  moveCount: number;
+};
+
+type SearchResult = {
+  id: string;
+  hn: string;
+  patientName: string;
+  diagnosis: string;
+  isCancer: boolean;
+  operation: string;
+  staff: string;
+  scheduleDate: string;
+  queueType: "OR17" | "EXTRA";
+  slotNo: number;
 };
 
 const STAFF = [
@@ -82,6 +107,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showExtra, setShowExtra] = useState(false);
   const [extra, setExtra] = useState({ date: "", capacity: "4", note: "" });
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searched, setSearched] = useState(false);
+  const [selectedCase, setSelectedCase] = useState<SearchResult | null>(null);
+  const [moveTarget, setMoveTarget] = useState("");
+  const [moving, setMoving] = useState(false);
 
   const loadSchedule = useCallback(async () => {
     try {
@@ -123,6 +155,16 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
     return map;
   }, [data]);
+  const moveDates = useMemo(() => {
+    if (!selectedCase) return [];
+    return (data?.days || []).filter((day) => {
+      if (day.count >= day.capacity) return false;
+      if (day.date === selectedCase.scheduleDate && day.queueType === selectedCase.queueType) return false;
+      if (!selectedCase.isCancer && day.queueType !== "OR17") return false;
+      if (!selectedCase.isCancer && day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0) return false;
+      return true;
+    });
+  }, [data, selectedCase]);
 
   function updateField(name: keyof typeof EMPTY_FORM, value: string) {
     setForm((current) => ({ ...current, [name]: value } as typeof EMPTY_FORM));
@@ -202,6 +244,62 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       await loadSchedule();
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "กำหนดวันไม่สำเร็จ" });
+    }
+  }
+
+  async function searchCases(event?: FormEvent) {
+    event?.preventDefault();
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      setNotice({ type: "error", text: "กรุณาพิมพ์ HN ชื่อ หรือสกุล อย่างน้อย 2 ตัวอักษร" });
+      return;
+    }
+    setSearching(true);
+    setSearched(true);
+    setSelectedCase(null);
+    setMoveTarget("");
+    try {
+      const response = await fetch(`/api/cases/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
+      const payload = (await response.json()) as { results?: SearchResult[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || "ค้นหาไม่สำเร็จ");
+      setSearchResults(payload.results || []);
+    } catch (error) {
+      setSearchResults([]);
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "ค้นหาไม่สำเร็จ" });
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function moveCase(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedCase || !moveTarget) {
+      setNotice({ type: "error", text: "กรุณาเลือกเคสและวันผ่าตัดปลายทาง" });
+      return;
+    }
+    const [date, queueType] = moveTarget.split("|");
+    setMoving(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(selectedCase.id)}/move`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ date, queueType }),
+      });
+      const payload = (await response.json()) as { error?: string; message?: string; move?: { fromDate: string; toDate: string } };
+      if (!response.ok) throw new Error(payload.error || "สลับวันผ่าตัดไม่สำเร็จ");
+      setNotice({
+        type: "success",
+        text: `${payload.message} • ${displayDate(payload.move!.fromDate, true)} → ${displayDate(payload.move!.toDate, true)}`,
+      });
+      setSelectedCase(null);
+      setMoveTarget("");
+      await loadSchedule();
+      await searchCases();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "สลับวันผ่าตัดไม่สำเร็จ" });
+    } finally {
+      setMoving(false);
     }
   }
 
@@ -297,6 +395,61 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           </div>
         </aside>
       </div>
+
+      <section className="case-tools-grid" aria-label="ค้นหาและประวัติการสลับวันผ่าตัด">
+        <div className="panel case-search-panel">
+          <div className="panel-heading compact">
+            <div><span className="step">03</span><h3>ค้นหาเคสและสลับวันผ่าตัด</h3></div>
+            <span className="search-scope">HN · ชื่อ · สกุล</span>
+          </div>
+          <form className="case-search-form" onSubmit={searchCases}>
+            <label htmlFor="case-search">ค้นหาจากเคสใน Google Calendar</label>
+            <div>
+              <input id="case-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="พิมพ์ HN ชื่อ หรือสกุล" autoComplete="off" />
+              <button type="submit" disabled={searching}>{searching ? "กำลังค้นหา…" : "ค้นหา"}</button>
+            </div>
+          </form>
+
+          <div className="case-results" aria-live="polite">
+            {searched && !searching && searchResults.length === 0 && <div className="case-empty">ไม่พบเคสที่ตรงกับคำค้น</div>}
+            {searchResults.map((result) => (
+              <article className={`case-result ${selectedCase?.id === result.id ? "selected" : ""}`} key={result.id}>
+                <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); }}>
+                  <span className="case-identity"><strong>{result.patientName}</strong><small>HN {result.hn} · {result.diagnosis}</small></span>
+                  <span className="case-current"><strong>{displayDate(result.scheduleDate, true)}</strong><small>{result.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${result.slotNo}`}</small></span>
+                  <span className="case-operation">{result.operation}<small>{result.staff}</small></span>
+                  <span className="select-case">{selectedCase?.id === result.id ? "เลือกแล้ว" : "เลือกสลับวัน"}</span>
+                </button>
+                {selectedCase?.id === result.id && (
+                  <form className="move-form" onSubmit={moveCase}>
+                    <label htmlFor={`move-${result.id}`}>วันผ่าตัดใหม่</label>
+                    <select id={`move-${result.id}`} value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>
+                      <option value="">เลือกคิวปลายทางที่ยังว่าง</option>
+                      {moveDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}
+                    </select>
+                    <button type="submit" disabled={moving || !moveTarget}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
+                  </form>
+                )}
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <aside className="panel move-history-panel">
+          <div className="panel-heading compact"><div><span className="step">04</span><h3>แจ้งเตือนการสลับวันล่าสุด</h3></div><span className="history-count">{data?.recentMoves.length || 0}/10</span></div>
+          <div className="move-history-list">
+            {(data?.recentMoves || []).length === 0 && <div className="case-empty">ยังไม่มีการสลับวันผ่าตัด</div>}
+            {(data?.recentMoves || []).map((move) => (
+              <article key={move.id}>
+                <div><strong>{move.patientName}</strong><small>HN ••••{move.hn.slice(-4)} · {move.operation}</small></div>
+                <p><span>{displayDate(move.fromDate, true)}</span><b>→</b><span>{displayDate(move.toDate, true)}</span></p>
+                <time dateTime={move.movedAt}>{new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(move.movedAt))}</time>
+              </article>
+            ))}
+          </div>
+        </aside>
+      </section>
 
       <footer><span>Breast &amp; Endocrine Surgery CMU</span><p>ข้อมูลผู้ป่วยเป็นความลับ · กรุณาใช้งานผ่านบัญชีที่ได้รับอนุญาตเท่านั้น</p></footer>
     </main>

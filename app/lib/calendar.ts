@@ -18,6 +18,10 @@ export type CalendarBooking = {
   operation: string;
   staff: string;
   bookedByEmail: string;
+  lastMoveFrom: string;
+  lastMoveTo: string;
+  lastMoveAt: string;
+  moveCount: number;
 };
 
 export type CalendarExtraDay = {
@@ -29,7 +33,13 @@ export type CalendarExtraDay = {
 
 type GoogleEvent = {
   id?: string;
+  summary?: string;
+  description?: string;
+  location?: string;
+  colorId?: string;
+  updated?: string;
   start?: { date?: string };
+  end?: { date?: string };
   extendedProperties?: { private?: Record<string, string> };
 };
 
@@ -108,30 +118,39 @@ async function listTaggedEvents(request: Request, tag: "booking" | "extra_day", 
   return events;
 }
 
+function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
+  const data = event.extendedProperties?.private;
+  const date = event.start?.date;
+  if (!event.id || !data || !date || !["OR17", "EXTRA"].includes(data.queue_type)) return null;
+  return {
+    id: event.id,
+    scheduleDate: date,
+    queueType: data.queue_type as QueueType,
+    slotNo: Number(data.slot_no || 0),
+    diagnosis: data.diagnosis || "",
+    isCancer: data.is_cancer === "true",
+    hn: data.hn || "",
+    firstName: data.first_name || "",
+    lastName: data.last_name || "",
+    phone: data.phone || "",
+    operation: data.operation || "",
+    staff: data.staff || "",
+    bookedByEmail: data.booked_by || AUTHORIZED_EMAIL,
+    lastMoveFrom: data.last_move_from || "",
+    lastMoveTo: data.last_move_to || "",
+    lastMoveAt: data.last_move_at || "",
+    moveCount: Number(data.move_count || 0),
+  };
+}
+
 export async function listCalendarData(request: Request, from: string, to: string) {
   const [bookingEvents, extraEvents] = await Promise.all([
     listTaggedEvents(request, "booking", from, to),
     listTaggedEvents(request, "extra_day", from, to),
   ]);
   const bookings = bookingEvents.flatMap((event): CalendarBooking[] => {
-    const data = event.extendedProperties?.private;
-    const date = event.start?.date;
-    if (!event.id || !data || !date || !["OR17", "EXTRA"].includes(data.queue_type)) return [];
-    return [{
-      id: event.id,
-      scheduleDate: date,
-      queueType: data.queue_type as QueueType,
-      slotNo: Number(data.slot_no || 0),
-      diagnosis: data.diagnosis || "",
-      isCancer: data.is_cancer === "true",
-      hn: data.hn || "",
-      firstName: data.first_name || "",
-      lastName: data.last_name || "",
-      phone: data.phone || "",
-      operation: data.operation || "",
-      staff: data.staff || "",
-      bookedByEmail: data.booked_by || AUTHORIZED_EMAIL,
-    }];
+    const booking = bookingFromEvent(event);
+    return booking ? [booking] : [];
   });
   const extras = extraEvents.flatMap((event): CalendarExtraDay[] => {
     const data = event.extendedProperties?.private;
@@ -152,8 +171,11 @@ function maskedHn(hn: string) {
   return hn.length <= 4 ? hn : `••••${hn.slice(-4)}`;
 }
 
-export async function createBookingEvent(request: Request, booking: Omit<CalendarBooking, "id">) {
-  const id = await deterministicId("oq", `${booking.scheduleDate}:${booking.queueType}:${booking.slotNo}`);
+export async function createBookingEvent(
+  request: Request,
+  booking: Omit<CalendarBooking, "id" | "lastMoveFrom" | "lastMoveTo" | "lastMoveAt" | "moveCount">,
+) {
+  const id = `oq${crypto.randomUUID().replaceAll("-", "")}`;
   const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
   try {
     await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?sendUpdates=none`, {
@@ -188,6 +210,10 @@ export async function createBookingEvent(request: Request, booking: Omit<Calenda
           operation: booking.operation,
           staff: booking.staff,
           booked_by: booking.bookedByEmail,
+          last_move_from: "",
+          last_move_to: "",
+          last_move_at: "",
+          move_count: "0",
         } },
       }),
     });
@@ -198,6 +224,157 @@ export async function createBookingEvent(request: Request, booking: Omit<Calenda
     throw error;
   }
   return id;
+}
+
+function normalizedSearch(value: string) {
+  return value.toLocaleLowerCase("th-TH").replace(/\s+/g, " ").trim();
+}
+
+export async function searchCalendarBookings(
+  request: Request,
+  query: string,
+  from: string,
+  to: string,
+) {
+  const params = new URLSearchParams({
+    timeMin: `${from}T00:00:00+07:00`,
+    timeMax: `${addDays(to, 1)}T00:00:00+07:00`,
+    singleEvents: "true",
+    maxResults: "100",
+    q: query,
+    privateExtendedProperty: "or_queue=booking",
+  });
+  const response = await googleFetch(
+    request,
+    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params.toString()}`,
+  );
+  const payload = (await response.json()) as { items?: GoogleEvent[] };
+  const needle = normalizedSearch(query);
+  return (payload.items || [])
+    .flatMap((event): CalendarBooking[] => {
+      const booking = bookingFromEvent(event);
+      return booking ? [booking] : [];
+    })
+    .filter((booking) => normalizedSearch(`${booking.hn} ${booking.firstName} ${booking.lastName}`).includes(needle))
+    .sort((a, b) => b.scheduleDate.localeCompare(a.scheduleDate))
+    .slice(0, 25);
+}
+
+export async function listRecentMoves(request: Request, from: string, to: string) {
+  const events = await listTaggedEvents(request, "booking", from, to);
+  return events
+    .flatMap((event): CalendarBooking[] => {
+      const booking = bookingFromEvent(event);
+      return booking?.lastMoveAt ? [booking] : [];
+    })
+    .sort((a, b) => b.lastMoveAt.localeCompare(a.lastMoveAt))
+    .slice(0, 10);
+}
+
+export async function getCalendarBooking(request: Request, id: string) {
+  const response = await googleFetch(
+    request,
+    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`,
+  );
+  const event = (await response.json()) as GoogleEvent;
+  const booking = bookingFromEvent(event);
+  if (!booking || event.extendedProperties?.private?.or_queue !== "booking") {
+    const error = new Error("ไม่พบเคสผ่าตัดในระบบ");
+    Object.assign(error, { status: 404 });
+    throw error;
+  }
+  return { booking, event };
+}
+
+function eventDescription(booking: CalendarBooking) {
+  const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
+  return [
+    `Diagnosis: ${booking.diagnosis}`,
+    `HN: ${booking.hn}`,
+    `ชื่อ-สกุล: ${booking.firstName} ${booking.lastName}`,
+    `Tel: ${booking.phone}`,
+    `Operation: ${booking.operation}`,
+    `Staff: ${booking.staff}`,
+    `ประเภทคิว: ${room}`,
+    `ลงคิวโดย: ${booking.bookedByEmail}`,
+  ].join("\n");
+}
+
+export async function moveCalendarBooking(
+  request: Request,
+  id: string,
+  target: { date: string; queueType: QueueType; slotNo: number },
+) {
+  const { booking, event } = await getCalendarBooking(request, id);
+  const movedAt = new Date().toISOString();
+  const moved: CalendarBooking = {
+    ...booking,
+    scheduleDate: target.date,
+    queueType: target.queueType,
+    slotNo: target.slotNo,
+    lastMoveFrom: booking.scheduleDate,
+    lastMoveTo: target.date,
+    lastMoveAt: movedAt,
+    moveCount: booking.moveCount + 1,
+  };
+  const room = moved.queueType === "OR17" ? "OR 17" : "OR Extra";
+  const privateData = {
+    ...(event.extendedProperties?.private || {}),
+    queue_type: moved.queueType,
+    slot_no: String(moved.slotNo),
+    last_move_from: booking.scheduleDate,
+    last_move_to: moved.scheduleDate,
+    last_move_at: movedAt,
+    move_count: String(moved.moveCount),
+  };
+  await googleFetch(
+    request,
+    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        summary: `${room} #${moved.slotNo} • ${moved.operation} • HN ${maskedHn(moved.hn)}`,
+        description: eventDescription(moved),
+        location: room,
+        start: { date: moved.scheduleDate },
+        end: { date: addDays(moved.scheduleDate, 1) },
+        extendedProperties: { private: privateData },
+      }),
+    },
+  );
+  return { before: booking, after: moved };
+}
+
+export async function restoreCalendarBooking(
+  request: Request,
+  id: string,
+  booking: CalendarBooking,
+) {
+  const { event } = await getCalendarBooking(request, id);
+  const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
+  await googleFetch(
+    request,
+    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        summary: `${room} #${booking.slotNo} • ${booking.operation} • HN ${maskedHn(booking.hn)}`,
+        description: eventDescription(booking),
+        location: room,
+        start: { date: booking.scheduleDate },
+        end: { date: addDays(booking.scheduleDate, 1) },
+        extendedProperties: { private: {
+          ...(event.extendedProperties?.private || {}),
+          queue_type: booking.queueType,
+          slot_no: String(booking.slotNo),
+          last_move_from: booking.lastMoveFrom,
+          last_move_to: booking.lastMoveTo,
+          last_move_at: booking.lastMoveAt,
+          move_count: String(booking.moveCount),
+        } },
+      }),
+    },
+  );
 }
 
 export async function upsertExtraDayEvent(request: Request, extra: Omit<CalendarExtraDay, "id">) {
@@ -227,4 +404,12 @@ export async function upsertExtraDayEvent(request: Request, extra: Omit<Calendar
 
 export async function deleteExtraDayEvent(request: Request, id: string) {
   await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function deleteBookingEvent(request: Request, id: string) {
+  await googleFetch(
+    request,
+    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    { method: "DELETE" },
+  );
 }
