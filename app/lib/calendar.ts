@@ -222,7 +222,7 @@ export async function listCalendarData(request: Request, from: string, to: strin
     const data = event.extendedProperties?.private;
     const date = event.start?.date;
     if (!event.id || !data || !date) return [];
-    return [{ id: event.id, date, capacity: Number(data.capacity || 4), note: data.note || "" }];
+    return [{ id: event.id, date, capacity: 4, note: data.note || "" }];
   });
   return { bookings, extras };
 }
@@ -449,17 +449,18 @@ export async function restoreCalendarBooking(
 
 export async function upsertExtraDayEvent(request: Request, extra: Omit<CalendarExtraDay, "id">) {
   const id = await deterministicId("oe", extra.date);
+  const capacity = 4;
   const body = JSON.stringify({
     id,
-    summary: `เปิดคิว OR Extra • ${extra.capacity} เคส`,
-    description: `กำหนดคิว OR Extra\nจำนวน: ${extra.capacity} เคส\nหมายเหตุ: ${extra.note || "-"}`,
+    summary: `เปิดคิว OR Extra • ${capacity} เคส`,
+    description: `กำหนดคิว OR Extra\nจำนวน: ${capacity} เคส\nหมายเหตุ: ${extra.note || "-"}`,
     start: { date: extra.date },
     end: { date: addDays(extra.date, 1) },
     colorId: "3",
     transparency: "transparent",
     extendedProperties: { private: {
       or_queue: "extra_day",
-      capacity: String(extra.capacity),
+      capacity: String(capacity),
       note: extra.note,
     } },
   });

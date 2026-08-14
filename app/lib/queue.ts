@@ -29,7 +29,7 @@ export async function getSchedule(request: Request, from: string, to: string) {
     summaries.set(`${extra.date}:EXTRA`, {
       date: extra.date,
       queueType: "EXTRA",
-      capacity: extra.capacity,
+      capacity: 4,
       note: extra.note || "คิว OR Extra",
       count: 0,
       cancerCount: 0,
@@ -41,11 +41,11 @@ export async function getSchedule(request: Request, from: string, to: string) {
       legacyExtraCounts.set(booking.scheduleDate, (legacyExtraCounts.get(booking.scheduleDate) || 0) + 1);
     }
   }
-  for (const [date, count] of legacyExtraCounts) {
+  for (const date of legacyExtraCounts.keys()) {
     summaries.set(`${date}:EXTRA`, {
       date,
       queueType: "EXTRA",
-      capacity: Math.max(4, count),
+      capacity: 4,
       note: "นำเข้าจาก Google Calendar",
       count: 0,
       cancerCount: 0,

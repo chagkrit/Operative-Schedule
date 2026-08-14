@@ -97,3 +97,29 @@ test("searches cases and records verified calendar moves", async () => {
   assert.match(moveRoute, /restoreCalendarBooking/);
   assert.match(moveRoute, /verifiedDay\.count > verifiedDay\.capacity/);
 });
+
+test("supports manual surgery dates and shows the calculated waiting time", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /dateEntryMode: "list" as "list" \| "manual"/);
+  assert.match(app, /ระบุวันเอง/);
+  assert.match(app, /type="date" min=\{bangkokToday\(\)\}/);
+  assert.match(app, /daysBetween\(bangkokToday\(\), selectedSurgeryDate\)/);
+  assert.match(app, /ระยะเวลารอคิว/);
+  assert.match(app, /OR 17/);
+});
+
+test("keeps OR Extra at four cases and exposes a monthly count calendar", async () => {
+  const extraRoute = await read("app/api/extra-days/route.ts");
+  const calendar = await read("app/lib/calendar.ts");
+  const queue = await read("app/lib/queue.ts");
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(extraRoute, /const capacity = 4/);
+  assert.doesNotMatch(extraRoute, /capacity < 1 \|\| capacity > 8/);
+  assert.match(calendar, /date, capacity: 4/);
+  assert.match(queue, /queueType: "EXTRA",\s+capacity: 4/);
+  assert.match(app, /ปฏิทินรายเดือน/);
+  assert.match(app, /selectedCount/);
+  assert.match(app, /ลงแล้ว \{day\.count\}\/\{day\.capacity\} เคส/);
+  assert.match(app, /ไม่สามารถเปลี่ยนได้/);
+  assert.doesNotMatch(app, /type="number" min="1" max="8"/);
+});

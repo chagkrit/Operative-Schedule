@@ -3,13 +3,12 @@ import { dateOnly, isExtraEligibleDay } from "../../lib/schedule";
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as { date?: string; capacity?: number; note?: string };
+    const payload = (await request.json()) as { date?: string; note?: string };
     const date = payload.date?.trim() || "";
-    const capacity = Number(payload.capacity || 4);
+    const capacity = 4;
     const note = payload.note?.trim() || "";
     if (!date || date < dateOnly()) return Response.json({ error: "กรุณาเลือกวันที่วันนี้เป็นต้นไป" }, { status: 400 });
     if (!isExtraEligibleDay(date)) return Response.json({ error: "OR Extra กำหนดได้เฉพาะวันจันทร์หรือพฤหัสบดี" }, { status: 400 });
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 8) return Response.json({ error: "จำนวนเคสต้องอยู่ระหว่าง 1–8" }, { status: 400 });
     await upsertExtraDayEvent(request, { date, capacity, note });
     return Response.json({ message: "กำหนด OR Extra และเพิ่มใน Google Calendar แล้ว" }, { status: 201 });
   } catch (error) {

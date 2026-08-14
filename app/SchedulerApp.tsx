@@ -74,6 +74,7 @@ const STAFF = [
 const EMPTY_FORM = {
   diagnosis: "",
   cancerSchedulingMode: "earliest" as "earliest" | "specific",
+  dateEntryMode: "list" as "list" | "manual",
   hn: "",
   firstName: "",
   lastName: "",
@@ -99,6 +100,109 @@ function displaySlotTime(slotNo: number) {
   return `${hour(startHour)}:00–${hour(startHour + 1)}:00`;
 }
 
+function bangkokToday() {
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date());
+}
+
+function daysBetween(from: string, to: string) {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  return Math.max(0, Math.round((end - start) / 86_400_000));
+}
+
+function displayMonth(value: string) {
+  return new Intl.DateTimeFormat("th-TH", {
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date(`${value}-15T12:00:00+07:00`));
+}
+
+type MonthlyCalendarProps = {
+  days: Day[];
+  month: string;
+  selectedDate: string;
+  onMonthChange: (value: string) => void;
+  onSelectDate: (value: string) => void;
+};
+
+function MonthlyCalendar({ days, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
+  const availableMonths = [...new Set(days.map((day) => day.date.slice(0, 7)))];
+  const monthIndex = availableMonths.indexOf(month);
+  const [year, monthNumber] = month.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const summariesByDate = new Map<string, Day[]>();
+  for (const day of days) {
+    summariesByDate.set(day.date, [...(summariesByDate.get(day.date) || []), day]);
+  }
+  const cells = [
+    ...Array.from({ length: firstWeekday }, () => ""),
+    ...Array.from({ length: daysInMonth }, (_, index) => `${month}-${String(index + 1).padStart(2, "0")}`),
+  ];
+  while (cells.length % 7 !== 0) cells.push("");
+  const selectedSummaries = summariesByDate.get(selectedDate) || [];
+  const selectedCount = selectedSummaries.reduce((total, day) => total + day.count, 0);
+  const today = bangkokToday();
+
+  function changeMonth(direction: -1 | 1) {
+    const target = availableMonths[monthIndex + direction];
+    if (!target) return;
+    onMonthChange(target);
+    onSelectDate(`${target}-01`);
+  }
+
+  return (
+    <div className="monthly-calendar">
+      <div className="month-toolbar">
+        <button type="button" onClick={() => changeMonth(-1)} disabled={monthIndex <= 0} aria-label="เดือนก่อนหน้า">‹</button>
+        <strong>{displayMonth(month)}</strong>
+        <button type="button" onClick={() => changeMonth(1)} disabled={monthIndex < 0 || monthIndex >= availableMonths.length - 1} aria-label="เดือนถัดไป">›</button>
+      </div>
+      <div className="month-grid" role="grid" aria-label={`ปฏิทิน ${displayMonth(month)}`}>
+        {['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'].map((label) => <span className="month-weekday" key={label}>{label}</span>)}
+        {cells.map((date, index) => {
+          if (!date) return <span className="month-blank" key={`blank-${index}`} />;
+          const summaries = summariesByDate.get(date) || [];
+          const count = summaries.reduce((total, day) => total + day.count, 0);
+          const hasExtra = summaries.some((day) => day.queueType === "EXTRA");
+          return (
+            <button
+              type="button"
+              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""}`}
+              key={date}
+              onClick={() => onSelectDate(date)}
+              aria-label={`${displayDate(date)} ${count} เคส`}
+              aria-pressed={date === selectedDate}
+            >
+              <span>{Number(date.slice(-2))}</span>
+              {count > 0 ? <b>{count}</b> : summaries.length > 0 ? <i aria-label="เปิดรับคิว" /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <div className="month-day-summary" aria-live="polite">
+        <div>
+          <span>{displayDate(selectedDate)}</span>
+          <strong>{selectedCount} เคส</strong>
+        </div>
+        {selectedSummaries.length > 0 ? selectedSummaries.map((day) => (
+          <p key={`${day.date}:${day.queueType}`}>
+            <b>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</b>
+            <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}</span>
+          </p>
+        )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
+      </div>
+      <p className="month-legend"><span /> วันที่มี OR Extra <b>ตัวเลขในวงกลม = จำนวนเคส</b></p>
+    </div>
+  );
+}
+
 function StatusDot({ synced }: { synced: boolean }) {
   return <span className={`status-dot ${synced ? "synced" : "pending"}`} aria-hidden="true" />;
 }
@@ -113,7 +217,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showExtra, setShowExtra] = useState(false);
-  const [extra, setExtra] = useState({ date: "", capacity: "4", note: "" });
+  const [extra, setExtra] = useState({ date: "", note: "" });
+  const [scheduleView, setScheduleView] = useState<"list" | "month">("list");
+  const [calendarMonth, setCalendarMonth] = useState(() => bangkokToday().slice(0, 7));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => bangkokToday());
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -163,6 +270,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     () => data?.days.find((day) => day.count < day.capacity),
     [data],
   );
+  const selectedSurgeryDate = cancer && form.cancerSchedulingMode === "earliest"
+    ? nextCancerDay?.date || ""
+    : form.requestedDate;
+  const selectedQueueType = cancer && form.cancerSchedulingMode === "earliest"
+    ? nextCancerDay?.queueType || ""
+    : form.requestedQueueType || (!cancer ? "OR17" : "");
+  const waitingDays = selectedSurgeryDate ? daysBetween(bangkokToday(), selectedSurgeryDate) : null;
+  const latestScheduleDate = data?.days.length ? data.days[data.days.length - 1].date : "";
   const bookingsByDay = useMemo(() => {
     const map = new Map<string, Booking[]>();
     for (const booking of data?.bookings || []) {
@@ -190,6 +305,25 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   function chooseCancerDate(value: string) {
     const [requestedDate = "", requestedQueueType = ""] = value.split("|");
     setForm((current) => ({ ...current, requestedDate, requestedQueueType }));
+    setNotice(null);
+  }
+
+  function setDateEntryMode(mode: "list" | "manual") {
+    setForm((current) => ({
+      ...current,
+      dateEntryMode: mode,
+      requestedDate: "",
+      requestedQueueType: "OR17",
+    }));
+    setNotice(null);
+  }
+
+  function chooseManualDate(value: string) {
+    setForm((current) => ({
+      ...current,
+      requestedDate: value,
+      requestedQueueType: current.requestedQueueType || "OR17",
+    }));
     setNotice(null);
   }
 
@@ -260,12 +394,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       const response = await fetch("/api/extra-days", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...extra, capacity: Number(extra.capacity) }),
+        body: JSON.stringify(extra),
       });
       const payload = (await response.json()) as { error?: string; message?: string };
       if (!response.ok) throw new Error(payload.error || "กำหนดวันไม่สำเร็จ");
       setNotice({ type: "success", text: payload.message || "กำหนด OR Extra แล้ว" });
-      setExtra({ date: "", capacity: "4", note: "" });
+      setExtra({ date: "", note: "" });
       setShowExtra(false);
       await loadSchedule();
     } catch (error) {
@@ -385,7 +519,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
 
           <form onSubmit={submitBooking} noValidate>
             <label className="field full"><span>Diagnosis <b>*</b></span><input value={form.diagnosis} onChange={(e) => updateField("diagnosis", e.target.value)} placeholder="เช่น DCIS, Breast Cancer, CA breast, CA thyroid" autoComplete="off" /><small className="field-help">คำที่ระบบจัดเป็น Cancer: DCIS, Cancer, CA breast, CA thyroid และ Thyroid cancer</small></label>
-            {cancer && <fieldset className="cancer-mode"><legend>การเลือกคิวสำหรับ Cancer</legend><div className="mode-options"><label aria-label="คิวเร็วที่สุด" htmlFor="cancer-mode-earliest" className={form.cancerSchedulingMode === "earliest" ? "selected" : ""}><input id="cancer-mode-earliest" type="radio" name="cancerSchedulingMode" value="earliest" checked={form.cancerSchedulingMode === "earliest"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "earliest", requestedDate: "", requestedQueueType: "" }))} /><span><strong>คิวเร็วที่สุด</strong><small>ให้ระบบเลือกคิวว่างแรกอัตโนมัติ</small></span></label><label aria-label="ระบุวันเอง" htmlFor="cancer-mode-specific" className={form.cancerSchedulingMode === "specific" ? "selected" : ""}><input id="cancer-mode-specific" type="radio" name="cancerSchedulingMode" value="specific" checked={form.cancerSchedulingMode === "specific"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "specific", requestedDate: "", requestedQueueType: "" }))} /><span><strong>ระบุวันเอง</strong><small>เลือก OR 17 หรือ OR Extra ที่ยังว่าง</small></span></label></div></fieldset>}
+            {cancer && <fieldset className="cancer-mode"><legend>การเลือกคิวสำหรับ Cancer</legend><div className="mode-options"><label aria-label="คิวเร็วที่สุด" htmlFor="cancer-mode-earliest" className={form.cancerSchedulingMode === "earliest" ? "selected" : ""}><input id="cancer-mode-earliest" type="radio" name="cancerSchedulingMode" value="earliest" checked={form.cancerSchedulingMode === "earliest"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "earliest", dateEntryMode: "list", requestedDate: "", requestedQueueType: "" }))} /><span><strong>คิวเร็วที่สุด</strong><small>ให้ระบบเลือกคิวว่างแรกอัตโนมัติ</small></span></label><label aria-label="ระบุวันเอง" htmlFor="cancer-mode-specific" className={form.cancerSchedulingMode === "specific" ? "selected" : ""}><input id="cancer-mode-specific" type="radio" name="cancerSchedulingMode" value="specific" checked={form.cancerSchedulingMode === "specific"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "specific", dateEntryMode: "list", requestedDate: "", requestedQueueType: "OR17" }))} /><span><strong>ระบุวันเอง</strong><small>เลือก OR 17 หรือ OR Extra ที่ยังว่าง</small></span></label></div></fieldset>}
             {cancer && form.cancerSchedulingMode === "earliest" && nextCancerDay && <div className="cancer-suggestion"><span>คิวว่างเร็วที่สุด</span><strong>{displayDate(nextCancerDay.date)} · {nextCancerDay.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><small>ระบบจะตรวจคิวล่าสุดอีกครั้งเมื่อกดบันทึก</small></div>}
             <div className="form-grid">
               <label className="field"><span>HN <b>*</b></span><input value={form.hn} onChange={(e) => updateField("hn", e.target.value)} inputMode="numeric" placeholder="Hospital number" /></label>
@@ -394,8 +528,50 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <label className="field"><span>สกุล <b>*</b></span><input value={form.lastName} onChange={(e) => updateField("lastName", e.target.value)} placeholder="นามสกุล" /></label>
               <label className="field full"><span>Operation <b>*</b></span><input value={form.operation} onChange={(e) => updateField("operation", e.target.value)} placeholder="ชื่อหัตถการ / การผ่าตัด" /></label>
               <label className="field"><span>Staff <b>*</b></span><select value={form.staff} onChange={(e) => updateField("staff", e.target.value)}><option value="">เลือก Staff</option>{STAFF.map((staff) => <option key={staff}>{staff}</option>)}</select></label>
-              {cancer ? <label className={`field ${form.cancerSchedulingMode === "earliest" ? "muted-field" : ""}`}><span>วันที่ผ่าตัด {form.cancerSchedulingMode === "specific" && <b>*</b>}</span><select value={form.requestedDate && form.requestedQueueType ? `${form.requestedDate}|${form.requestedQueueType}` : ""} onChange={(e) => chooseCancerDate(e.target.value)} disabled={form.cancerSchedulingMode === "earliest"}><option value="">{form.cancerSchedulingMode === "earliest" ? "ระบบเลือกคิวเร็วที่สุด" : "เลือกวันและประเภทคิว"}</option>{cancerDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}</select></label> : <label className="field"><span>วันที่ผ่าตัด <b>*</b></span><select value={form.requestedDate} onChange={(e) => setForm((current) => ({ ...current, requestedDate: e.target.value, requestedQueueType: "OR17" }))}><option value="">เลือกวัน OR 17</option>{normalDates.map((day) => <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}</option>)}</select></label>}
+              <div className={`field date-choice-field ${cancer && form.cancerSchedulingMode === "earliest" ? "muted-field" : ""}`}>
+                <span>วันที่ผ่าตัด {(!cancer || form.cancerSchedulingMode === "specific") && <b>*</b>}</span>
+                {cancer && form.cancerSchedulingMode === "earliest" ? (
+                  <select value="" disabled aria-label="ระบบเลือกคิวเร็วที่สุด"><option>ระบบเลือกคิวเร็วที่สุด</option></select>
+                ) : (
+                  <>
+                    <div className="date-entry-toggle" role="group" aria-label="วิธีเลือกวันที่ผ่าตัด">
+                      <button type="button" className={form.dateEntryMode === "list" ? "active" : ""} onClick={() => setDateEntryMode("list")}>เลือกจากคิวว่าง</button>
+                      <button type="button" className={form.dateEntryMode === "manual" ? "active" : ""} onClick={() => setDateEntryMode("manual")}>ระบุวันเอง</button>
+                    </div>
+                    {form.dateEntryMode === "list" ? (
+                      cancer ? (
+                        <select value={form.requestedDate && form.requestedQueueType ? `${form.requestedDate}|${form.requestedQueueType}` : ""} onChange={(e) => chooseCancerDate(e.target.value)} aria-label="เลือกวันและประเภทคิว">
+                          <option value="">เลือกวันและประเภทคิว</option>
+                          {cancerDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}
+                        </select>
+                      ) : (
+                        <select value={form.requestedDate} onChange={(e) => setForm((current) => ({ ...current, requestedDate: e.target.value, requestedQueueType: "OR17" }))} aria-label="เลือกวัน OR 17">
+                          <option value="">เลือกวัน OR 17</option>
+                          {normalDates.map((day) => <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}</option>)}
+                        </select>
+                      )
+                    ) : (
+                      <div className={`manual-date-grid ${cancer ? "" : "single"}`}>
+                        <input type="date" min={bangkokToday()} max={latestScheduleDate} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label="ระบุวันที่ผ่าตัดเอง" />
+                        {cancer ? (
+                          <select value={form.requestedQueueType || "OR17"} onChange={(e) => updateField("requestedQueueType", e.target.value)} aria-label="เลือกห้องผ่าตัด">
+                            <option value="OR17">OR 17</option>
+                            <option value="EXTRA">OR Extra</option>
+                          </select>
+                        ) : <span className="fixed-room">OR 17</span>}
+                      </div>
+                    )}
+                    {form.dateEntryMode === "manual" && <small className="field-help">ระบบจะตรวจว่าวันที่ ห้องผ่าตัด และจำนวนคิวยังเปิดรับก่อนบันทึก</small>}
+                  </>
+                )}
+              </div>
             </div>
+            {selectedSurgeryDate && waitingDays !== null && (
+              <div className="wait-time-card" role="status">
+                <div><span>ระยะเวลารอคิว</span><strong>{waitingDays} วัน</strong></div>
+                <p>{displayDate(selectedSurgeryDate)} · {selectedQueueType === "EXTRA" ? "OR Extra" : "OR 17"}</p>
+              </div>
+            )}
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
             <button className="save-button" type="submit" disabled={saving}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
@@ -403,26 +579,36 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
 
         <aside className="panel schedule-panel">
           <div className="panel-heading compact"><div><span className="step">02</span><h3>คิวที่กำลังจะมาถึง</h3></div><button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button></div>
-          {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><label><span>จำนวนเคส</span><input type="number" min="1" max="8" value={extra.capacity} onChange={(e) => setExtra({ ...extra, capacity: e.target.value })} /></label><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
-          <div className="schedule-list">
-            {loading && <div className="empty-state">กำลังโหลดคิว…</div>}
-            {!loading && upcomingDays.length === 0 && <div className="empty-state">ยังไม่มีวันผ่าตัดที่เปิดรับคิว</div>}
-            {upcomingDays.map((day) => {
-              const rows = bookingsByDay.get(`${day.date}:${day.queueType}`) || [];
-              const remaining = day.capacity - day.count;
-              const needsCancer = day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0;
-              return <article className={`day-card ${day.queueType === "EXTRA" ? "extra" : ""}`} key={`${day.date}:${day.queueType}`}>
-                <div className="date-block"><strong>{new Date(`${day.date}T12:00:00+07:00`).getDate()}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short" }).format(new Date(`${day.date}T12:00:00+07:00`))}</span></div>
-                <div className="day-main"><div className="day-title"><div><strong>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><span>{displayDate(day.date, true)} · {day.note}</span></div><em>{day.count}/{day.capacity}</em></div>
-                  <div className="capacity-bar"><i style={{ width: `${Math.min(100, (day.count / day.capacity) * 100)}%` }} /></div>
-                  {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
-                  {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer</p>}
-                  {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {row.staff}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
-                  {remaining === 0 && <span className="full-label">คิวเต็ม</span>}
-                </div>
-              </article>;
-            })}
+          <div className="schedule-tabs" role="tablist" aria-label="รูปแบบแสดงตารางผ่าตัด">
+            <button type="button" role="tab" aria-selected={scheduleView === "list"} className={scheduleView === "list" ? "active" : ""} onClick={() => setScheduleView("list")}>รายการคิว</button>
+            <button type="button" role="tab" aria-selected={scheduleView === "month"} className={scheduleView === "month" ? "active" : ""} onClick={() => setScheduleView("month")}>ปฏิทินรายเดือน</button>
           </div>
+          {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
+          {scheduleView === "list" ? (
+            <div className="schedule-list" role="tabpanel" aria-label="รายการคิวที่กำลังจะมาถึง">
+              {loading && <div className="empty-state">กำลังโหลดคิว…</div>}
+              {!loading && upcomingDays.length === 0 && <div className="empty-state">ยังไม่มีวันผ่าตัดที่เปิดรับคิว</div>}
+              {upcomingDays.map((day) => {
+                const rows = bookingsByDay.get(`${day.date}:${day.queueType}`) || [];
+                const remaining = day.capacity - day.count;
+                const needsCancer = day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0;
+                return <article className={`day-card ${day.queueType === "EXTRA" ? "extra" : ""}`} key={`${day.date}:${day.queueType}`}>
+                  <div className="date-block"><strong>{new Date(`${day.date}T12:00:00+07:00`).getDate()}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short" }).format(new Date(`${day.date}T12:00:00+07:00`))}</span></div>
+                  <div className="day-main"><div className="day-title"><div><strong>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><span>{displayDate(day.date, true)} · {day.note}</span></div><em>{day.count}/{day.capacity}</em></div>
+                    <div className="capacity-bar"><i style={{ width: `${Math.min(100, (day.count / day.capacity) * 100)}%` }} /></div>
+                    {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
+                    {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
+                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {row.staff}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
+                    {remaining <= 0 && <span className="full-label">คิวเต็ม</span>}
+                  </div>
+                </article>;
+              })}
+            </div>
+          ) : (
+            <div role="tabpanel" aria-label="ปฏิทินผ่าตัดรายเดือน">
+              <MonthlyCalendar days={data?.days || []} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+            </div>
+          )}
         </aside>
       </div>
 
