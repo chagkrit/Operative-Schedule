@@ -82,13 +82,11 @@ export async function POST(request: Request) {
     if (isCancer && cancerSchedulingMode === "specific" && (!requestedDate || !["OR17", "EXTRA"].includes(requestedQueueType))) {
       return Response.json({ error: "กรุณาเลือกวันที่และประเภทคิวสำหรับ Cancer" }, { status: 400 });
     }
-    if (!isCancer && (!requestedDate || !isNormalDay(requestedDate))) {
-      return Response.json({ error: "เคสที่ไม่ใช่ Cancer เลือกได้เฉพาะคิวปกติ OR 17 วันอังคารหรือพฤหัสบดี" }, { status: 400 });
-    }
+    if (!isCancer && !requestedDate) return Response.json({ error: "กรุณาเลือกวันที่ผ่าตัด" }, { status: 400 });
 
     const hasSpecificDate = !isCancer || cancerSchedulingMode === "specific";
     const scheduleFrom = hasSpecificDate ? requestedDate : today;
-    const scheduleTo = hasSpecificDate ? requestedDate : addDays(today, 120);
+    const scheduleTo = hasSpecificDate ? addDays(requestedDate, 365) : addDays(today, 120);
     const { days, bookings } = await getSchedule(request, scheduleFrom, scheduleTo);
     const staffDayKeys = new Set(
       bookings
@@ -97,22 +95,41 @@ export async function POST(request: Request) {
     );
     const matchesStaffPreference = (day: (typeof days)[number]) =>
       staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`);
+    const matchesClinicalRules = (day: (typeof days)[number]) => !destinationError({ isCancer }, day);
+    const alternativeDays = days
+      .filter((day) => {
+        if (day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17")) return false;
+        if (!isCancer && day.queueType !== "OR17") return false;
+        return matchesStaffPreference(day) && matchesClinicalRules(day);
+      })
+      .slice(0, 5)
+      .map((day) => ({
+        date: day.date,
+        queueType: day.queueType,
+        availableSlots: day.capacity - day.count,
+      }));
     const candidates = isCancer
       ? cancerSchedulingMode === "specific"
-        ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && day.count < day.capacity && matchesStaffPreference(day))
-        : days.filter((day) => day.count < day.capacity && matchesStaffPreference(day))
-      : days.filter((day) => day.date === requestedDate && day.queueType === "OR17" && day.count < day.capacity && matchesStaffPreference(day));
+        ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && matchesStaffPreference(day) && matchesClinicalRules(day))
+        : days.filter((day) => matchesStaffPreference(day) && matchesClinicalRules(day))
+      : days.filter((day) => day.date === requestedDate && day.queueType === "OR17" && matchesStaffPreference(day) && matchesClinicalRules(day));
     if (!candidates.length) {
-      const error = staffQueuePreference === "same_staff"
+      const selectedDay = days.find((day) => day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17"));
+      const selectedDayError = hasSpecificDate ? destinationError({ isCancer }, selectedDay) : "";
+      const error = staffQueuePreference === "same_staff" && selectedDay && !matchesStaffPreference(selectedDay)
         ? `ไม่พบคิวว่างที่ ${staff} มีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
+        : selectedDayError
+          ? selectedDayError
         : isCancer && cancerSchedulingMode === "earliest"
           ? "ไม่พบคิวว่างใน 120 วันข้างหน้า"
-          : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว";
-      return Response.json({ error }, { status: 409 });
+          : !isCancer && !isNormalDay(requestedDate)
+            ? "เคสที่ไม่ใช่ Cancer เลือกได้เฉพาะคิวปกติ OR 17 วันอังคารหรือพฤหัสบดี"
+            : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว";
+      return Response.json({ error, suggestions: alternativeDays }, { status: 409 });
     }
     const selected = candidates[0];
     const invalidDestination = destinationError({ isCancer }, selected);
-    if (invalidDestination) return Response.json({ error: invalidDestination }, { status: 409 });
+    if (invalidDestination) return Response.json({ error: invalidDestination, suggestions: alternativeDays }, { status: 409 });
 
     const slotNo = nextAvailableSlot(bookings, selected.date, selected.queueType, selected.capacity);
     const id = await createBookingEvent(request, {
@@ -134,7 +151,7 @@ export async function POST(request: Request) {
     if (!verifiedDay || verifiedDay.count > verifiedDay.capacity) {
       await deleteBookingEvent(request, id);
       return Response.json(
-        { error: "มีผู้ลงคิวพร้อมกันและคิวเต็ม กรุณาเลือกวันใหม่หรือกดบันทึกอีกครั้ง" },
+        { error: "มีผู้ลงคิวพร้อมกันและคิวเต็ม กรุณาเลือกวันใหม่หรือกดบันทึกอีกครั้ง", suggestions: alternativeDays },
         { status: 409 },
       );
     }

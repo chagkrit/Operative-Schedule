@@ -110,7 +110,7 @@ test("supports manual surgery dates and shows the calculated waiting time", asyn
   assert.match(app, /ระยะเวลารอคิว/);
   assert.match(app, /OR 17/);
   assert.match(route, /const scheduleFrom = hasSpecificDate \? requestedDate : today/);
-  assert.match(route, /const scheduleTo = hasSpecificDate \? requestedDate : addDays\(today, 120\)/);
+  assert.match(route, /const scheduleTo = hasSpecificDate \? addDays\(requestedDate, 365\) : addDays\(today, 120\)/);
   assert.match(route, /requestedDate < today/);
 });
 
@@ -145,4 +145,18 @@ test("filters available OR rooms by the selected Staff when requested", async ()
   assert.match(route, /staffQueuePreference === "any" \|\| staffDayKeys\.has/);
   assert.match(route, /booking\.staff === staff/);
   assert.match(route, /ไม่พบคิวว่างที่ \$\{staff\} มีเคสอยู่แล้ว/);
+});
+
+test("shows a conflict popup and suggests valid alternative OR dates", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const route = await read("app/api/schedule/route.ts");
+  assert.match(app, /role="dialog" aria-modal="true"/);
+  assert.match(app, /กรุณาเลือกคิวใหม่/);
+  assert.match(app, /คิวที่ว่างและตรงเกณฑ์/);
+  assert.match(app, /chooseSuggestedQueue/);
+  assert.match(app, /response\.status === 409/);
+  assert.match(route, /addDays\(requestedDate, 365\)/);
+  assert.match(route, /matchesClinicalRules/);
+  assert.match(route, /suggestions: alternativeDays/);
+  assert.match(route, /availableSlots: day\.capacity - day\.count/);
 });

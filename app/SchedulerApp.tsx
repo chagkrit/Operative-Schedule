@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
@@ -60,6 +60,17 @@ type SearchResult = {
   scheduleDate: string;
   queueType: "OR17" | "EXTRA";
   slotNo: number;
+};
+
+type QueueSuggestion = {
+  date: string;
+  queueType: "OR17" | "EXTRA";
+  availableSlots: number;
+};
+
+type BookingConflict = {
+  message: string;
+  suggestions: QueueSuggestion[];
 };
 
 const STAFF = [
@@ -257,6 +268,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [selectedCase, setSelectedCase] = useState<SearchResult | null>(null);
   const [moveTarget, setMoveTarget] = useState("");
   const [moving, setMoving] = useState(false);
+  const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
+  const conflictCloseRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async (showSuccess = false) => {
     try {
@@ -284,6 +297,21 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     const timer = window.setTimeout(() => void loadSchedule(), 0);
     return () => window.clearTimeout(timer);
   }, [loadSchedule]);
+
+  useEffect(() => {
+    if (!bookingConflict) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setBookingConflict(null);
+    };
+    document.body.style.overflow = "hidden";
+    conflictCloseRef.current?.focus();
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [bookingConflict]);
 
   const cancer = diagnosisIsCancer(form.diagnosis);
   const staffDayKeys = useMemo(() => new Set(
@@ -388,6 +416,18 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setNotice(null);
   }
 
+  function chooseSuggestedQueue(suggestion: QueueSuggestion) {
+    setForm((current) => ({
+      ...current,
+      cancerSchedulingMode: diagnosisIsCancer(current.diagnosis) ? "specific" : current.cancerSchedulingMode,
+      dateEntryMode: "manual",
+      requestedDate: suggestion.date,
+      requestedQueueType: suggestion.queueType,
+    }));
+    setBookingConflict(null);
+    setNotice({ type: "success", text: "เลือกคิวใหม่แล้ว กรุณาตรวจสอบและกดบันทึกอีกครั้ง" });
+  }
+
   async function syncCalendar() {
     setSyncing(true);
     setNotice(null);
@@ -432,10 +472,23 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         headers: { "content-type": "application/json" },
         body: JSON.stringify(form),
       });
-      const payload = (await response.json()) as { error?: string; message?: string; booking?: { date: string; queueType: string } };
-      if (!response.ok) throw new Error(payload.error || "บันทึกไม่สำเร็จ");
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+        booking?: { date: string; queueType: string };
+        suggestions?: QueueSuggestion[];
+      };
+      if (!response.ok) {
+        const message = payload.error || "บันทึกไม่สำเร็จ";
+        if (response.status === 409) {
+          setBookingConflict({ message, suggestions: payload.suggestions || [] });
+        }
+        setNotice({ type: "error", text: message });
+        return;
+      }
       const room = payload.booking?.queueType === "EXTRA" ? "OR Extra" : "OR 17";
       setNotice({ type: "success", text: `${payload.message} • ${displayDate(payload.booking!.date, true)} • ${room}` });
+      setBookingConflict(null);
       setForm(EMPTY_FORM);
       await loadSchedule();
     } catch (error) {
@@ -570,6 +623,34 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       {lastSyncedAt && data?.calendarConnected && <p className="last-sync" role="status">อัปเดตจาก Google Calendar ล่าสุด {new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Bangkok" }).format(lastSyncedAt)} น. · ข้อมูลเดิม {data.importedCount} เคส</p>}
 
       {notice && <div className={`notice ${notice.type}`} role="alert">{notice.text}</div>}
+
+      {bookingConflict && (
+        <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setBookingConflict(null)}>
+          <section className="queue-conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="queue-conflict-title" aria-describedby="queue-conflict-message">
+            <button ref={conflictCloseRef} className="queue-conflict-close" type="button" aria-label="ปิดคำเตือน" onClick={() => setBookingConflict(null)}>×</button>
+            <span className="queue-conflict-icon" aria-hidden="true">!</span>
+            <div className="queue-conflict-heading">
+              <span>ไม่สามารถลงคิวที่เลือกได้</span>
+              <h3 id="queue-conflict-title">กรุณาเลือกคิวใหม่</h3>
+              <p id="queue-conflict-message">{bookingConflict.message}</p>
+            </div>
+            {bookingConflict.suggestions.length > 0 ? (
+              <div className="queue-suggestion-list" aria-label="วันที่และห้องผ่าตัดที่แนะนำ">
+                <strong>คิวที่ว่างและตรงเกณฑ์</strong>
+                {bookingConflict.suggestions.map((suggestion) => (
+                  <button type="button" key={`${suggestion.date}:${suggestion.queueType}`} onClick={() => chooseSuggestedQueue(suggestion)}>
+                    <span><b>{displayDate(suggestion.date, true)}</b><small>{suggestion.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</small></span>
+                    <span>ว่าง {suggestion.availableSlots} เคส <b>เลือกคิวนี้ →</b></span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="queue-suggestion-empty">ยังไม่พบคิวอื่นที่ตรงทุกเงื่อนไขใน 365 วัน กรุณาปิดหน้าต่างแล้วเปลี่ยนเงื่อนไข Staff หรือเลือก “ห้องไหนก็ได้ที่ยังว่าง”</p>
+            )}
+            <small className="queue-conflict-footnote">การเลือกจากรายการนี้ยังไม่บันทึกคิว กรุณาตรวจสอบข้อมูลแล้วกด “ตรวจสอบและบันทึกคิว” อีกครั้ง</small>
+          </section>
+        </div>
+      )}
 
       <div className="workspace-grid">
         <section className="panel booking-panel">
