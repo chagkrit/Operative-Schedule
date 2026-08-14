@@ -126,6 +126,10 @@ test("keeps OR Extra at four cases and exposes a monthly count calendar", async 
   assert.match(app, /ปฏิทินรายเดือน/);
   assert.match(app, /selectedCount/);
   assert.match(app, /ลงแล้ว \{day\.count\}\/\{day\.capacity\} เคส/);
+  assert.match(app, /booking\.scheduleDate === selectedDate/);
+  assert.match(app, /เคสที่ลงคิวแล้ว/);
+  assert.match(app, /booking\.patientName/);
+  assert.match(app, /displaySlotTime\(booking\.slotNo\)/);
   assert.match(app, /ไม่สามารถเปลี่ยนได้/);
   assert.doesNotMatch(app, /type="number" min="1" max="8"/);
 });

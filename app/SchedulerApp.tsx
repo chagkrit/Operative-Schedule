@@ -125,13 +125,14 @@ function displayMonth(value: string) {
 
 type MonthlyCalendarProps = {
   days: Day[];
+  bookings: Booking[];
   month: string;
   selectedDate: string;
   onMonthChange: (value: string) => void;
   onSelectDate: (value: string) => void;
 };
 
-function MonthlyCalendar({ days, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
+function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
   const availableMonths = [...new Set(days.map((day) => day.date.slice(0, 7)))];
   const monthIndex = availableMonths.indexOf(month);
   const [year, monthNumber] = month.split("-").map(Number);
@@ -148,6 +149,9 @@ function MonthlyCalendar({ days, month, selectedDate, onMonthChange, onSelectDat
   while (cells.length % 7 !== 0) cells.push("");
   const selectedSummaries = summariesByDate.get(selectedDate) || [];
   const selectedCount = selectedSummaries.reduce((total, day) => total + day.count, 0);
+  const selectedBookings = bookings
+    .filter((booking) => booking.scheduleDate === selectedDate)
+    .sort((a, b) => a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1);
   const today = bangkokToday();
 
   function changeMonth(direction: -1 | 1) {
@@ -198,6 +202,30 @@ function MonthlyCalendar({ days, month, selectedDate, onMonthChange, onSelectDat
           </p>
         )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
       </div>
+      <section className="month-bookings" aria-live="polite" aria-label={`เคสผ่าตัดวันที่ ${displayDate(selectedDate)}`}>
+        <div className="month-bookings-heading">
+          <strong>เคสที่ลงคิวแล้ว</strong>
+          <span>{selectedBookings.length} เคส</span>
+        </div>
+        {selectedBookings.length > 0 ? (
+          <div className="month-booking-list">
+            {selectedBookings.map((booking) => (
+              <article key={booking.id}>
+                <div className={`month-booking-slot ${booking.isCancer ? "cancer" : ""}`}>
+                  <strong>#{booking.slotNo}</strong>
+                  <small>{displaySlotTime(booking.slotNo)}</small>
+                </div>
+                <div className="month-booking-detail">
+                  <strong>{booking.operation}</strong>
+                  <span>{booking.patientName} · HN ••••{booking.hn.slice(-4)}</span>
+                  <small>{booking.diagnosis} · {booking.staff} · {booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</small>
+                </div>
+                <StatusDot synced={booking.calendarSyncStatus === "synced"} />
+              </article>
+            ))}
+          </div>
+        ) : <p className="month-bookings-empty">ยังไม่มีเคสลงคิวในวันที่เลือก</p>}
+      </section>
       <p className="month-legend"><span /> วันที่มี OR Extra <b>ตัวเลขในวงกลม = จำนวนเคส</b></p>
     </div>
   );
@@ -605,7 +633,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
           ) : (
             <div role="tabpanel" aria-label="ปฏิทินผ่าตัดรายเดือน">
-              <MonthlyCalendar days={data?.days || []} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
             </div>
           )}
         </aside>

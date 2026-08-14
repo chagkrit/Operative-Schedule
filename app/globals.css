@@ -184,6 +184,23 @@ button { cursor: pointer; }
 .month-day-summary p b { color: #49373f; }
 .month-day-summary p span { color: var(--muted); }
 .month-day-summary > small { display: block; padding-top: 12px; color: var(--muted); font-size: 9px; }
+.month-bookings { overflow: hidden; border: 1px solid #eadfe1; border-radius: 14px; background: #fff; }
+.month-bookings-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid #eee5e7; background: #fffafb; }
+.month-bookings-heading strong { color: #49373f; font-size: 11px; }
+.month-bookings-heading span { padding: 4px 8px; border-radius: 999px; color: var(--rose); background: var(--rose-soft); font-size: 8px; font-weight: 900; }
+.month-booking-list { display: grid; max-height: 330px; overflow-y: auto; }
+.month-booking-list article { display: grid; grid-template-columns: 64px minmax(0, 1fr) 8px; align-items: center; gap: 10px; padding: 11px 13px; border-bottom: 1px dashed #ece3e5; }
+.month-booking-list article:last-child { border-bottom: 0; }
+.month-booking-slot { display: grid; place-items: center; gap: 2px; min-height: 46px; padding: 5px; border-radius: 10px; color: #6d5962; background: #f2edef; }
+.month-booking-slot.cancer { color: #fff; background: var(--rose); }
+.month-booking-slot strong { font-size: 10px; }
+.month-booking-slot small { font-size: 7px; white-space: nowrap; }
+.month-booking-detail { min-width: 0; display: grid; gap: 2px; }
+.month-booking-detail strong, .month-booking-detail span, .month-booking-detail small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.month-booking-detail strong { color: #3f3036; font-size: 10px; }
+.month-booking-detail span { color: #66535b; font-size: 9px; font-weight: 700; }
+.month-booking-detail small { color: var(--muted); font-size: 8px; }
+.month-bookings-empty { margin: 0; padding: 24px 14px; color: var(--muted); text-align: center; font-size: 9px; }
 .month-legend { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); font-size: 8px; }
 .month-legend > span { width: 6px; height: 6px; border-radius: 50%; background: #d88a30; }
 .month-legend b { margin-left: auto; color: #8b727c; }
@@ -280,6 +297,7 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .wait-time-card p { text-align: left; }
   .month-blank, .month-day { min-height: 43px; }
   .month-day { border-radius: 8px; }
+  .month-booking-list article { grid-template-columns: 58px minmax(0, 1fr) 8px; padding: 10px; }
   .case-search-panel, .move-history-panel { padding: 20px 16px; }
   .case-search-form > div { grid-template-columns: 1fr 88px; }
   .case-result > button { grid-template-columns: 1fr auto; gap: 9px; }
