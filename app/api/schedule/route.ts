@@ -72,6 +72,10 @@ export async function POST(request: Request) {
     if (!STAFF_OPTIONS.includes(staff as (typeof STAFF_OPTIONS)[number])) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
 
     const isCancer = diagnosisIsCancer(diagnosis);
+    const today = dateOnly();
+    if (requestedDate && (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate) || requestedDate < today)) {
+      return Response.json({ error: "กรุณาเลือกวันที่ผ่าตัดตั้งแต่วันนี้เป็นต้นไป" }, { status: 400 });
+    }
     if (isCancer && !["earliest", "specific"].includes(cancerSchedulingMode)) return Response.json({ error: "กรุณาเลือกวิธีจัดคิว Cancer" }, { status: 400 });
     if (isCancer && cancerSchedulingMode === "specific" && (!requestedDate || !["OR17", "EXTRA"].includes(requestedQueueType))) {
       return Response.json({ error: "กรุณาเลือกวันที่และประเภทคิวสำหรับ Cancer" }, { status: 400 });
@@ -80,8 +84,10 @@ export async function POST(request: Request) {
       return Response.json({ error: "เคสที่ไม่ใช่ Cancer เลือกได้เฉพาะคิวปกติ OR 17 วันอังคารหรือพฤหัสบดี" }, { status: 400 });
     }
 
-    const today = dateOnly();
-    const { days, bookings } = await getSchedule(request, today, addDays(today, 120));
+    const hasSpecificDate = !isCancer || cancerSchedulingMode === "specific";
+    const scheduleFrom = hasSpecificDate ? requestedDate : today;
+    const scheduleTo = hasSpecificDate ? requestedDate : addDays(today, 120);
+    const { days, bookings } = await getSchedule(request, scheduleFrom, scheduleTo);
     const candidates = isCancer
       ? cancerSchedulingMode === "specific"
         ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && day.count < day.capacity)

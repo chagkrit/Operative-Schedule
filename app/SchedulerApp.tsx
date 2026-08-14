@@ -277,7 +277,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     ? nextCancerDay?.queueType || ""
     : form.requestedQueueType || (!cancer ? "OR17" : "");
   const waitingDays = selectedSurgeryDate ? daysBetween(bangkokToday(), selectedSurgeryDate) : null;
-  const latestScheduleDate = data?.days.length ? data.days[data.days.length - 1].date : "";
   const bookingsByDay = useMemo(() => {
     const map = new Map<string, Booking[]>();
     for (const booking of data?.bookings || []) {
@@ -552,7 +551,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                       )
                     ) : (
                       <div className={`manual-date-grid ${cancer ? "" : "single"}`}>
-                        <input type="date" min={bangkokToday()} max={latestScheduleDate} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label="ระบุวันที่ผ่าตัดเอง" />
+                        <input type="date" min={bangkokToday()} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label="ระบุวันที่ผ่าตัดเอง" />
                         {cancer ? (
                           <select value={form.requestedQueueType || "OR17"} onChange={(e) => updateField("requestedQueueType", e.target.value)} aria-label="เลือกห้องผ่าตัด">
                             <option value="OR17">OR 17</option>
@@ -561,7 +560,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         ) : <span className="fixed-room">OR 17</span>}
                       </div>
                     )}
-                    {form.dateEntryMode === "manual" && <small className="field-help">ระบบจะตรวจว่าวันที่ ห้องผ่าตัด และจำนวนคิวยังเปิดรับก่อนบันทึก</small>}
+                    {form.dateEntryMode === "manual" && <small className="field-help">เลือกวันในอนาคตได้โดยไม่จำกัดช่วงเวลา เช่น มกราคม 2570 โดยระบบจะตรวจวันที่ ห้องผ่าตัด และจำนวนคิวก่อนบันทึก</small>}
                   </>
                 )}
               </div>

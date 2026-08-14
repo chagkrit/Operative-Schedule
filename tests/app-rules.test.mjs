@@ -100,12 +100,18 @@ test("searches cases and records verified calendar moves", async () => {
 
 test("supports manual surgery dates and shows the calculated waiting time", async () => {
   const app = await read("app/SchedulerApp.tsx");
+  const route = await read("app/api/schedule/route.ts");
   assert.match(app, /dateEntryMode: "list" as "list" \| "manual"/);
   assert.match(app, /ระบุวันเอง/);
   assert.match(app, /type="date" min=\{bangkokToday\(\)\}/);
+  assert.doesNotMatch(app, /type="date" min=\{bangkokToday\(\)\} max=/);
+  assert.match(app, /ไม่จำกัดช่วงเวลา/);
   assert.match(app, /daysBetween\(bangkokToday\(\), selectedSurgeryDate\)/);
   assert.match(app, /ระยะเวลารอคิว/);
   assert.match(app, /OR 17/);
+  assert.match(route, /const scheduleFrom = hasSpecificDate \? requestedDate : today/);
+  assert.match(route, /const scheduleTo = hasSpecificDate \? requestedDate : addDays\(today, 120\)/);
+  assert.match(route, /requestedDate < today/);
 });
 
 test("keeps OR Extra at four cases and exposes a monthly count calendar", async () => {
