@@ -63,6 +63,7 @@ export async function POST(request: Request) {
     const phone = String(payload.phone || "").trim();
     const operation = String(payload.operation || "").trim();
     const staff = String(payload.staff || "").trim();
+    const staffQueuePreference = String(payload.staffQueuePreference || "any").trim();
     const requestedDate = String(payload.requestedDate || "").trim();
     const requestedQueueType = String(payload.requestedQueueType || "").trim();
     const cancerSchedulingMode = String(payload.cancerSchedulingMode || "earliest").trim();
@@ -70,6 +71,7 @@ export async function POST(request: Request) {
       .filter(([value]) => !value).map(([, label]) => label);
     if (missing.length) return Response.json({ error: `กรุณากรอกข้อมูลให้ครบ: ${missing.join(", ")}` }, { status: 400 });
     if (!STAFF_OPTIONS.includes(staff as (typeof STAFF_OPTIONS)[number])) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
+    if (!["same_staff", "any"].includes(staffQueuePreference)) return Response.json({ error: "กรุณาเลือกเงื่อนไขห้องผ่าตัดตาม Staff" }, { status: 400 });
 
     const isCancer = diagnosisIsCancer(diagnosis);
     const today = dateOnly();
@@ -88,13 +90,25 @@ export async function POST(request: Request) {
     const scheduleFrom = hasSpecificDate ? requestedDate : today;
     const scheduleTo = hasSpecificDate ? requestedDate : addDays(today, 120);
     const { days, bookings } = await getSchedule(request, scheduleFrom, scheduleTo);
+    const staffDayKeys = new Set(
+      bookings
+        .filter((booking) => booking.staff === staff)
+        .map((booking) => `${booking.scheduleDate}:${booking.queueType}`),
+    );
+    const matchesStaffPreference = (day: (typeof days)[number]) =>
+      staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`);
     const candidates = isCancer
       ? cancerSchedulingMode === "specific"
-        ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && day.count < day.capacity)
-        : days.filter((day) => day.count < day.capacity)
-      : days.filter((day) => day.date === requestedDate && day.queueType === "OR17" && day.count < day.capacity);
+        ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && day.count < day.capacity && matchesStaffPreference(day))
+        : days.filter((day) => day.count < day.capacity && matchesStaffPreference(day))
+      : days.filter((day) => day.date === requestedDate && day.queueType === "OR17" && day.count < day.capacity && matchesStaffPreference(day));
     if (!candidates.length) {
-      return Response.json({ error: isCancer && cancerSchedulingMode === "earliest" ? "ไม่พบคิวว่างใน 120 วันข้างหน้า" : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว" }, { status: 409 });
+      const error = staffQueuePreference === "same_staff"
+        ? `ไม่พบคิวว่างที่ ${staff} มีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
+        : isCancer && cancerSchedulingMode === "earliest"
+          ? "ไม่พบคิวว่างใน 120 วันข้างหน้า"
+          : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว";
+      return Response.json({ error }, { status: 409 });
     }
     const selected = candidates[0];
     const invalidDestination = destinationError({ isCancer }, selected);

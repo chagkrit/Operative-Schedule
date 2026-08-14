@@ -133,3 +133,16 @@ test("keeps OR Extra at four cases and exposes a monthly count calendar", async 
   assert.match(app, /ไม่สามารถเปลี่ยนได้/);
   assert.doesNotMatch(app, /type="number" min="1" max="8"/);
 });
+
+test("filters available OR rooms by the selected Staff when requested", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const route = await read("app/api/schedule/route.ts");
+  assert.match(app, /staffQueuePreference: "any" as "same_staff" \| "any"/);
+  assert.match(app, /ห้องที่ Staff มีเคสแล้ว/);
+  assert.match(app, /ห้องไหนก็ได้ที่ยังว่าง/);
+  assert.match(app, /booking\.staff === form\.staff/);
+  assert.match(app, /staffDayKeys\.has\(`\$\{day\.date\}:\$\{day\.queueType\}`\)/);
+  assert.match(route, /staffQueuePreference === "any" \|\| staffDayKeys\.has/);
+  assert.match(route, /booking\.staff === staff/);
+  assert.match(route, /ไม่พบคิวว่างที่ \$\{staff\} มีเคสอยู่แล้ว/);
+});
