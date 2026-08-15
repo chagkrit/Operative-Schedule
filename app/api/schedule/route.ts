@@ -67,11 +67,13 @@ export async function POST(request: Request) {
     const requestedDate = String(payload.requestedDate || "").trim();
     const requestedQueueType = String(payload.requestedQueueType || "").trim();
     const cancerSchedulingMode = String(payload.cancerSchedulingMode || "earliest").trim();
+    const dateEntryMode = String(payload.dateEntryMode || "list").trim();
     const missing = [[diagnosis, "Diagnosis"], [hn, "HN"], [firstName, "ชื่อ"], [lastName, "สกุล"], [phone, "Tel"], [operation, "Operation"], [staff, "Staff"]]
       .filter(([value]) => !value).map(([, label]) => label);
     if (missing.length) return Response.json({ error: `กรุณากรอกข้อมูลให้ครบ: ${missing.join(", ")}` }, { status: 400 });
     if (!STAFF_OPTIONS.includes(staff as (typeof STAFF_OPTIONS)[number])) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
     if (!["same_staff", "any"].includes(staffQueuePreference)) return Response.json({ error: "กรุณาเลือกเงื่อนไขห้องผ่าตัดตาม Staff" }, { status: 400 });
+    if (!["list", "manual"].includes(dateEntryMode)) return Response.json({ error: "กรุณาเลือกวิธีระบุวันที่ผ่าตัด" }, { status: 400 });
 
     const isCancer = diagnosisIsCancer(diagnosis);
     const today = dateOnly();
@@ -87,7 +89,13 @@ export async function POST(request: Request) {
     const hasSpecificDate = !isCancer || cancerSchedulingMode === "specific";
     const scheduleFrom = hasSpecificDate ? requestedDate : today;
     const scheduleTo = hasSpecificDate ? addDays(requestedDate, 365) : addDays(today, 120);
-    const { days, bookings } = await getSchedule(request, scheduleFrom, scheduleTo);
+    const [requestedSchedule, dropdownSchedule] = await Promise.all([
+      getSchedule(request, scheduleFrom, scheduleTo),
+      dateEntryMode === "manual" && hasSpecificDate
+        ? getSchedule(request, today, addDays(today, 120))
+        : Promise.resolve(null),
+    ]);
+    const { days, bookings } = requestedSchedule;
     const staffDayKeys = new Set(
       bookings
         .filter((booking) => booking.staff === staff)
@@ -96,8 +104,24 @@ export async function POST(request: Request) {
     const matchesStaffPreference = (day: (typeof days)[number]) =>
       staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`);
     const matchesClinicalRules = (day: (typeof days)[number]) => !destinationError({ isCancer }, day);
+    let manualMinDate = "";
+    if (dropdownSchedule) {
+      const dropdownStaffDayKeys = new Set(
+        dropdownSchedule.bookings
+          .filter((booking) => booking.staff === staff)
+          .map((booking) => `${booking.scheduleDate}:${booking.queueType}`),
+      );
+      const dropdownDays = dropdownSchedule.days.filter((day) => {
+        if (!isCancer && day.queueType !== "OR17") return false;
+        if (staffQueuePreference === "same_staff" && !dropdownStaffDayKeys.has(`${day.date}:${day.queueType}`)) return false;
+        return !destinationError({ isCancer }, day);
+      });
+      const lastDropdownDate = dropdownDays.at(-1)?.date || dropdownSchedule.days.at(-1)?.date || today;
+      manualMinDate = addDays(lastDropdownDate, 1);
+    }
     const alternativeDays = days
       .filter((day) => {
+        if (manualMinDate && day.date < manualMinDate) return false;
         if (day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17")) return false;
         if (!isCancer && day.queueType !== "OR17") return false;
         return matchesStaffPreference(day) && matchesClinicalRules(day);
@@ -108,6 +132,15 @@ export async function POST(request: Request) {
         queueType: day.queueType,
         availableSlots: day.capacity - day.count,
       }));
+    if (manualMinDate && requestedDate < manualMinDate) {
+      return Response.json(
+        {
+          error: `ระบุวันเองได้ตั้งแต่ ${manualMinDate} เป็นต้นไป เพราะเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down`,
+          suggestions: alternativeDays,
+        },
+        { status: 409 },
+      );
+    }
     const candidates = isCancer
       ? cancerSchedulingMode === "specific"
         ? days.filter((day) => day.date === requestedDate && day.queueType === requestedQueueType && matchesStaffPreference(day) && matchesClinicalRules(day))

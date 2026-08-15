@@ -103,8 +103,8 @@ test("supports manual surgery dates and shows the calculated waiting time", asyn
   const route = await read("app/api/schedule/route.ts");
   assert.match(app, /dateEntryMode: "list" as "list" \| "manual"/);
   assert.match(app, /ระบุวันเอง/);
-  assert.match(app, /type="date" min=\{bangkokToday\(\)\}/);
-  assert.doesNotMatch(app, /type="date" min=\{bangkokToday\(\)\} max=/);
+  assert.match(app, /type="date" min=\{manualDateStart\}/);
+  assert.doesNotMatch(app, /type="date" min=\{manualDateStart\} max=/);
   assert.match(app, /ไม่จำกัดช่วงเวลา/);
   assert.match(app, /daysBetween\(bangkokToday\(\), selectedSurgeryDate\)/);
   assert.match(app, /ระยะเวลารอคิว/);
@@ -159,4 +159,21 @@ test("shows a conflict popup and suggests valid alternative OR dates", async () 
   assert.match(route, /matchesClinicalRules/);
   assert.match(route, /suggestions: alternativeDays/);
   assert.match(route, /availableSlots: day\.capacity - day\.count/);
+});
+
+test("starts manual dates after the last dropdown option and prompts Calendar sync", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const scheduleRoute = await read("app/api/schedule/route.ts");
+  const presenceRoute = await read("app/api/presence/route.ts");
+  assert.match(app, /const manualDateStart = useMemo/);
+  assert.match(app, /dropdownDays\.at\(-1\)\?\.date/);
+  assert.match(app, /min=\{manualDateStart\}/);
+  assert.match(app, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);
+  assert.match(app, /กด Sync ทันที เพื่อบันทึกลงใน Calendar/);
+  assert.match(app, /ขณะนี้มีเครื่องมี log in เข้าระบบอยู่/);
+  assert.match(scheduleRoute, /dateEntryMode === "manual"/);
+  assert.match(scheduleRoute, /requestedDate < manualMinDate/);
+  assert.match(scheduleRoute, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);
+  assert.match(presenceRoute, /PRESENCE_TTL_MS = 90_000/);
+  assert.match(presenceRoute, /orQueueActiveDevices/);
 });

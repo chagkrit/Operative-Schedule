@@ -127,6 +127,12 @@ function daysBetween(from: string, to: string) {
   return Math.max(0, Math.round((end - start) / 86_400_000));
 }
 
+function addCalendarDays(value: string, amount: number) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + amount);
+  return date.toISOString().slice(0, 10);
+}
+
 function displayMonth(value: string) {
   return new Intl.DateTimeFormat("th-TH", {
     month: "long",
@@ -269,7 +275,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [moveTarget, setMoveTarget] = useState("");
   const [moving, setMoving] = useState(false);
   const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
+  const [showSyncPrompt, setShowSyncPrompt] = useState(false);
+  const [activeDeviceCount, setActiveDeviceCount] = useState(1);
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
+  const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async (showSuccess = false) => {
     try {
@@ -299,19 +308,56 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict) return;
+    if (!bookingConflict && !showSyncPrompt) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setBookingConflict(null);
+      if (event.key === "Escape") {
+        setBookingConflict(null);
+        setShowSyncPrompt(false);
+      }
     };
     document.body.style.overflow = "hidden";
-    conflictCloseRef.current?.focus();
+    (bookingConflict ? conflictCloseRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict]);
+  }, [bookingConflict, showSyncPrompt]);
+
+  useEffect(() => {
+    const storageKey = "or-queue-device-id";
+    const deviceId = window.localStorage.getItem(storageKey) || crypto.randomUUID();
+    window.localStorage.setItem(storageKey, deviceId);
+    let stopped = false;
+
+    async function heartbeat() {
+      try {
+        const response = await fetch("/api/presence", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deviceId, active: true }),
+        });
+        const payload = (await response.json()) as { activeDevices?: number };
+        if (!stopped && response.ok && payload.activeDevices) setActiveDeviceCount(payload.activeDevices);
+      } catch {
+        // Keep the last known count when the presence heartbeat is unavailable.
+      }
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void heartbeat();
+    };
+    void heartbeat();
+    const timer = window.setInterval(() => void heartbeat(), 30_000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      navigator.sendBeacon("/api/presence", new Blob([JSON.stringify({ deviceId, active: false })], { type: "application/json" }));
+    };
+  }, []);
 
   const cancer = diagnosisIsCancer(form.diagnosis);
   const staffDayKeys = useMemo(() => new Set(
@@ -322,9 +368,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const availableDays = useMemo(
     () => (data?.days || []).filter((day) =>
       day.count < day.capacity
+      && (cancer || day.queueType !== "OR17" || day.count < 3 || day.cancerCount > 0)
       && (form.staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`)),
     ),
-    [data, form.staffQueuePreference, staffDayKeys],
+    [cancer, data, form.staffQueuePreference, staffDayKeys],
   );
   const normalDates = useMemo(
     () => availableDays.filter((day) => day.queueType === "OR17"),
@@ -339,6 +386,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     () => availableDays[0],
     [availableDays],
   );
+  const manualDateStart = useMemo(() => {
+    const dropdownDays = cancer ? cancerDates : normalDates;
+    const lastDropdownDate = dropdownDays.at(-1)?.date || data?.days.at(-1)?.date || bangkokToday();
+    return addCalendarDays(lastDropdownDate, 1);
+  }, [cancer, cancerDates, data, normalDates]);
   const selectedSurgeryDate = cancer && form.cancerSchedulingMode === "earliest"
     ? nextCancerDay?.date || ""
     : form.requestedDate;
@@ -432,10 +484,15 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setSyncing(true);
     setNotice(null);
     try {
-      await loadSchedule(true);
+      return await loadSchedule(true);
     } finally {
       setSyncing(false);
     }
+  }
+
+  async function confirmSyncAfterBooking() {
+    const synced = await syncCalendar();
+    if (synced) setShowSyncPrompt(false);
   }
 
   async function submitBooking(event: FormEvent) {
@@ -457,6 +514,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
     if (missing.length) {
       setNotice({ type: "error", text: `ยังบันทึกไม่ได้ กรุณากรอก: ${missing.join(", ")}` });
+      return;
+    }
+    if (form.dateEntryMode === "manual" && form.requestedDate && form.requestedDate < manualDateStart) {
+      setNotice({ type: "error", text: `ระบุวันเองได้ตั้งแต่ ${displayDate(manualDateStart)} เป็นต้นไป` });
       return;
     }
     if (!data?.calendarConnected) {
@@ -489,6 +550,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       const room = payload.booking?.queueType === "EXTRA" ? "OR Extra" : "OR 17";
       setNotice({ type: "success", text: `${payload.message} • ${displayDate(payload.booking!.date, true)} • ${room}` });
       setBookingConflict(null);
+      setShowSyncPrompt(true);
       setForm(EMPTY_FORM);
       await loadSchedule();
     } catch (error) {
@@ -602,6 +664,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           <p className="eyebrow pink">SURGICAL SCHEDULING</p>
           <h2>ลงคิวผ่าตัด<br /><span>ชัดเจน ปลอดภัย ไม่ชนกัน</span></h2>
           <p className="hero-copy">ระบบจัดคิว OR 17 และ OR Extra ตามเกณฑ์ของหน่วย พร้อมส่งรายการเข้าปฏิทินกลางทันทีหลังบันทึก</p>
+          <div className="presence-marquee" role="status" aria-live="polite" title="จำนวนอุปกรณ์ที่ส่งสัญญาณใช้งานภายใน 90 วินาทีล่าสุด">
+            <div className="presence-marquee-track">
+              <span>ขณะนี้มีเครื่องมี log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
+              <span aria-hidden="true">ขณะนี้มีเครื่องมี log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
+            </div>
+          </div>
         </div>
         <div className="rule-card">
           <div className="rule-number">4</div>
@@ -648,6 +716,18 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <p className="queue-suggestion-empty">ยังไม่พบคิวอื่นที่ตรงทุกเงื่อนไขใน 365 วัน กรุณาปิดหน้าต่างแล้วเปลี่ยนเงื่อนไข Staff หรือเลือก “ห้องไหนก็ได้ที่ยังว่าง”</p>
             )}
             <small className="queue-conflict-footnote">การเลือกจากรายการนี้ยังไม่บันทึกคิว กรุณาตรวจสอบข้อมูลแล้วกด “ตรวจสอบและบันทึกคิว” อีกครั้ง</small>
+          </section>
+        </div>
+      )}
+
+      {showSyncPrompt && (
+        <div className="queue-conflict-backdrop" role="presentation">
+          <section className="queue-conflict-dialog sync-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-prompt-title" aria-describedby="sync-prompt-message">
+            <span className="sync-confirm-icon" aria-hidden="true">↻</span>
+            <span>บันทึกคิวสำเร็จ</span>
+            <h3 id="sync-prompt-title">กด Sync ทันที เพื่อบันทึกลงใน Calendar</h3>
+            <p id="sync-prompt-message">ระบบส่งรายการเข้าปฏิทินแล้ว การ Sync จะดึงข้อมูลล่าสุดกลับมายืนยันบนหน้าเว็บ</p>
+            <button ref={syncPromptButtonRef} type="button" onClick={() => void confirmSyncAfterBooking()} disabled={syncing}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           </section>
         </div>
       )}
@@ -708,7 +788,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                       )
                     ) : (
                       <div className={`manual-date-grid ${cancer ? "" : "single"}`}>
-                        <input type="date" min={bangkokToday()} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label="ระบุวันที่ผ่าตัดเอง" />
+                        <input type="date" min={manualDateStart} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label={`ระบุวันที่ผ่าตัดเอง เริ่มตั้งแต่ ${displayDate(manualDateStart)}`} />
                         {cancer ? (
                           <select value={form.requestedQueueType || "OR17"} onChange={(e) => updateField("requestedQueueType", e.target.value)} aria-label="เลือกห้องผ่าตัด">
                             <option value="OR17">OR 17</option>
@@ -717,7 +797,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         ) : <span className="fixed-room">OR 17</span>}
                       </div>
                     )}
-                    {form.dateEntryMode === "manual" && <small className="field-help">เลือกวันในอนาคตได้โดยไม่จำกัดช่วงเวลา ระบบจะตรวจวันที่ ห้อง จำนวนคิว และเงื่อนไขว่า Staff มีเคสอยู่แล้วตามตัวเลือกก่อนบันทึก</small>}
+                    {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down และเลือกต่อไปได้โดยไม่จำกัดช่วงเวลา</small>}
                   </>
                 )}
               </div>
