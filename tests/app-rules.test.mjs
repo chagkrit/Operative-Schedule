@@ -170,7 +170,7 @@ test("starts manual dates after the last dropdown option and prompts Calendar sy
   assert.match(app, /min=\{manualDateStart\}/);
   assert.match(app, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);
   assert.match(app, /กด Sync ทันที เพื่อบันทึกลงใน Calendar/);
-  assert.match(app, /ขณะนี้มีเครื่องมี log in เข้าระบบอยู่/);
+  assert.match(app, /ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่/);
   assert.match(scheduleRoute, /dateEntryMode === "manual"/);
   assert.match(scheduleRoute, /requestedDate < manualMinDate/);
   assert.match(scheduleRoute, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);

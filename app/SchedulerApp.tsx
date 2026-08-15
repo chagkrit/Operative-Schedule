@@ -666,8 +666,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           <p className="hero-copy">ระบบจัดคิว OR 17 และ OR Extra ตามเกณฑ์ของหน่วย พร้อมส่งรายการเข้าปฏิทินกลางทันทีหลังบันทึก</p>
           <div className="presence-marquee" role="status" aria-live="polite" title="จำนวนอุปกรณ์ที่ส่งสัญญาณใช้งานภายใน 90 วินาทีล่าสุด">
             <div className="presence-marquee-track">
-              <span>ขณะนี้มีเครื่องมี log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
-              <span aria-hidden="true">ขณะนี้มีเครื่องมี log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
+              <span>ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
+              <span aria-hidden="true">ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
             </div>
           </div>
         </div>
