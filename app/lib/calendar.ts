@@ -144,16 +144,16 @@ async function listTaggedEvents(request: Request, tag: "booking" | "extra_day", 
   return events;
 }
 
-async function listAllEvents(request: Request, from: string, to: string, query = "") {
+async function listAllEvents(request: Request, from: string, to?: string, query = "") {
   const events: GoogleEvent[] = [];
   let pageToken = "";
   do {
     const params = new URLSearchParams({
       timeMin: `${from}T00:00:00+07:00`,
-      timeMax: `${addDays(to, 1)}T00:00:00+07:00`,
       singleEvents: "true",
       maxResults: "2500",
     });
+    if (to) params.set("timeMax", `${addDays(to, 1)}T00:00:00+07:00`);
     if (query) params.set("q", query);
     if (pageToken) params.set("pageToken", pageToken);
     const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params.toString()}`);
@@ -162,6 +162,17 @@ async function listAllEvents(request: Request, from: string, to: string, query =
     pageToken = payload.nextPageToken || "";
   } while (pageToken);
   return events;
+}
+
+export async function listUpcomingCalendarBookings(request: Request, from: string) {
+  const events = await listAllEvents(request, from);
+  return events
+    .flatMap((event): CalendarBooking[] => {
+      const booking = bookingFromEvent(event) || parseLegacyCalendarEvent(event);
+      return booking && booking.scheduleDate >= from ? [booking] : [];
+    })
+    .sort((a, b) => a.scheduleDate.localeCompare(b.scheduleDate)
+      || (a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1));
 }
 
 function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {

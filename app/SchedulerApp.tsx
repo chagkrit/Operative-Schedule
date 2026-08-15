@@ -73,6 +73,21 @@ type BookingConflict = {
   suggestions: QueueSuggestion[];
 };
 
+type StaffUpcomingCase = {
+  id: string;
+  scheduleDate: string;
+  queueType: "OR17" | "EXTRA";
+  slotNo: number;
+  diagnosis: string;
+  operation: string;
+};
+
+type StaffScheduleState = {
+  staff: string;
+  cases: StaffUpcomingCase[];
+  error: string;
+};
+
 const STAFF = [
   "อ อารีวรรณ",
   "อ กีรติ",
@@ -277,6 +292,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
   const [showSyncPrompt, setShowSyncPrompt] = useState(false);
   const [activeDeviceCount, setActiveDeviceCount] = useState(1);
+  const [staffSchedule, setStaffSchedule] = useState<StaffScheduleState>({ staff: "", cases: [], error: "" });
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -358,6 +374,36 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       navigator.sendBeacon("/api/presence", new Blob([JSON.stringify({ deviceId, active: false })], { type: "application/json" }));
     };
   }, []);
+
+  useEffect(() => {
+    if (!form.staff) return;
+
+    const selectedStaff = form.staff;
+    const controller = new AbortController();
+    fetch(`/api/staff-schedule?staff=${encodeURIComponent(selectedStaff)}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as { cases?: StaffUpcomingCase[]; error?: string };
+        if (!response.ok) throw new Error(payload.error || "โหลดคิวของ Staff ไม่สำเร็จ");
+        setStaffSchedule({ staff: selectedStaff, cases: payload.cases || [], error: "" });
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setStaffSchedule({
+          staff: selectedStaff,
+          cases: [],
+          error: error instanceof Error ? error.message : "โหลดคิวของ Staff ไม่สำเร็จ",
+        });
+      });
+
+    return () => controller.abort();
+  }, [form.staff, lastSyncedAt]);
+
+  const staffScheduleLoading = Boolean(form.staff) && staffSchedule.staff !== form.staff;
+  const staffUpcomingCases = staffSchedule.staff === form.staff ? staffSchedule.cases : [];
+  const staffScheduleError = staffSchedule.staff === form.staff ? staffSchedule.error : "";
 
   const cancer = diagnosisIsCancer(form.diagnosis);
   const staffDayKeys = useMemo(() => new Set(
@@ -754,14 +800,40 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <span id="staff-label">Staff <b>*</b></span>
                 <select aria-labelledby="staff-label" value={form.staff} onChange={(e) => chooseStaff(e.target.value)}><option value="">เลือก Staff</option>{STAFF.map((staff) => <option key={staff}>{staff}</option>)}</select>
                 {form.staff && (
-                  <fieldset className="staff-queue-preference">
-                    <legend>เลือกห้องตามคิวของ Staff</legend>
-                    <div role="group" aria-label="เงื่อนไขเลือกห้องผ่าตัดตาม Staff">
-                      <button type="button" aria-pressed={form.staffQueuePreference === "same_staff"} className={form.staffQueuePreference === "same_staff" ? "active" : ""} onClick={() => chooseStaffQueuePreference("same_staff")}>ห้องที่ Staff มีเคสแล้ว</button>
-                      <button type="button" aria-pressed={form.staffQueuePreference === "any"} className={form.staffQueuePreference === "any" ? "active" : ""} onClick={() => chooseStaffQueuePreference("any")}>ห้องไหนก็ได้ที่ยังว่าง</button>
-                    </div>
-                    <small>{form.staffQueuePreference === "same_staff" ? `พบคิวว่างที่ ${form.staff} มีเคสอยู่แล้ว ${availableDays.length} คิว` : "แสดงทุกห้องผ่าตัดที่ยังว่างตามกติกา"}</small>
-                  </fieldset>
+                  <>
+                    <fieldset className="staff-queue-preference">
+                      <legend>เลือกห้องตามคิวของ Staff</legend>
+                      <div role="group" aria-label="เงื่อนไขเลือกห้องผ่าตัดตาม Staff">
+                        <button type="button" aria-pressed={form.staffQueuePreference === "same_staff"} className={form.staffQueuePreference === "same_staff" ? "active" : ""} onClick={() => chooseStaffQueuePreference("same_staff")}>ห้องที่ Staff มีเคสแล้ว</button>
+                        <button type="button" aria-pressed={form.staffQueuePreference === "any"} className={form.staffQueuePreference === "any" ? "active" : ""} onClick={() => chooseStaffQueuePreference("any")}>ห้องไหนก็ได้ที่ยังว่าง</button>
+                      </div>
+                      <small>{form.staffQueuePreference === "same_staff" ? `พบคิวว่างที่ ${form.staff} มีเคสอยู่แล้ว ${availableDays.length} คิว` : "แสดงทุกห้องผ่าตัดที่ยังว่างตามกติกา"}</small>
+                    </fieldset>
+                    <section className="staff-smart-search" aria-label={`Smart search คิวผ่าตัดของ ${form.staff}`} aria-live="polite">
+                      <div className="staff-smart-heading">
+                        <div><span>SMART SEARCH</span><strong>คิวผ่าตัดของ {form.staff}</strong></div>
+                        {!staffScheduleLoading && !staffScheduleError && <b>{staffUpcomingCases.length} เคส</b>}
+                      </div>
+                      {staffScheduleLoading ? <p className="staff-smart-state">กำลังค้นหาคิวผ่าตัด…</p>
+                        : staffScheduleError ? <p className="staff-smart-state error">{staffScheduleError}</p>
+                          : staffUpcomingCases.length === 0 ? <p className="staff-smart-state">ยังไม่มีคิวผ่าตัดที่กำลังจะมาถึง</p>
+                            : <div className="staff-smart-list">
+                              {staffUpcomingCases.map((booking) => (
+                                <article key={booking.id}>
+                                  <div className="staff-smart-date">
+                                    <strong>{displayDate(booking.scheduleDate, true)}</strong>
+                                    <small>{booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · {displaySlotTime(booking.slotNo)}</small>
+                                  </div>
+                                  <dl>
+                                    <div><dt>Diagnosis</dt><dd>{booking.diagnosis || "ไม่ระบุ"}</dd></div>
+                                    <div><dt>Operation</dt><dd>{booking.operation || "ไม่ระบุ"}</dd></div>
+                                  </dl>
+                                </article>
+                              ))}
+                            </div>}
+                      <small className="staff-smart-privacy">แสดงเฉพาะ Diagnosis และ Operation · ไม่แสดงชื่อ สกุล หรือ HN</small>
+                    </section>
+                  </>
                 )}
               </div>
               <div className={`field date-choice-field ${cancer && form.cancerSchedulingMode === "earliest" ? "muted-field" : ""}`}>

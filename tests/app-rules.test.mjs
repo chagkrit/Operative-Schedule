@@ -177,3 +177,22 @@ test("starts manual dates after the last dropdown option and prompts Calendar sy
   assert.match(presenceRoute, /PRESENCE_TTL_MS = 90_000/);
   assert.match(presenceRoute, /orQueueActiveDevices/);
 });
+
+test("smart-searches all upcoming cases for the selected Staff without patient identifiers", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const route = await read("app/api/staff-schedule/route.ts");
+  const calendar = await read("app/lib/calendar.ts");
+  assert.match(app, /\/api\/staff-schedule\?staff=/);
+  assert.match(app, /SMART SEARCH/);
+  assert.match(app, /คิวผ่าตัดของ \{form\.staff\}/);
+  assert.match(app, /booking\.diagnosis/);
+  assert.match(app, /booking\.operation/);
+  assert.match(app, /ไม่แสดงชื่อ สกุล หรือ HN/);
+  assert.match(route, /booking\.staff === staff/);
+  assert.match(route, /diagnosis: booking\.diagnosis/);
+  assert.match(route, /operation: booking\.operation/);
+  assert.doesNotMatch(route, /hn: booking\.hn/);
+  assert.doesNotMatch(route, /patientName/);
+  assert.match(calendar, /listUpcomingCalendarBookings/);
+  assert.match(calendar, /listAllEvents\(request, from\)/);
+});

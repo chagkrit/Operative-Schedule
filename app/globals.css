@@ -125,6 +125,25 @@ button { cursor: pointer; }
 .staff-queue-preference button { min-height: 34px; padding: 5px 7px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 8px; font-weight: 800; line-height: 1.25; }
 .staff-queue-preference button.active { color: var(--rose); background: #fff; box-shadow: 0 2px 8px rgba(65, 29, 42, .09); }
 .staff-queue-preference small { color: var(--muted); font-size: 8px; line-height: 1.4; }
+.staff-smart-search { min-width: 0; margin-top: 5px; overflow: hidden; border: 1px solid #e4d5da; border-radius: 14px; background: #fff; }
+.staff-smart-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border-bottom: 1px solid #eee4e7; background: linear-gradient(115deg, #fff7fa, #fbf8f9); }
+.staff-smart-heading > div { min-width: 0; display: grid; gap: 2px; }
+.staff-smart-heading span { color: var(--rose); font-size: 7px; font-weight: 900; letter-spacing: .1em; }
+.staff-smart-heading strong { overflow: hidden; text-overflow: ellipsis; color: var(--ink); font-size: 10px; white-space: nowrap; }
+.staff-smart-heading > b { flex: 0 0 auto; padding: 5px 7px; border-radius: 999px; color: var(--rose); background: var(--rose-soft); font-size: 8px; }
+.staff-smart-list { display: grid; max-height: 260px; overflow-y: auto; }
+.staff-smart-list article { display: grid; gap: 8px; padding: 11px 12px; border-bottom: 1px dashed #eee4e7; }
+.staff-smart-list article:last-child { border-bottom: 0; }
+.staff-smart-date { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.staff-smart-date strong { color: var(--ink); font-size: 10px; }
+.staff-smart-date small { color: var(--green); font-size: 8px; font-weight: 800; white-space: nowrap; }
+.staff-smart-list dl { display: grid; gap: 5px; margin: 0; }
+.staff-smart-list dl > div { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 7px; }
+.staff-smart-list dt { color: var(--muted); font-size: 8px; font-weight: 800; }
+.staff-smart-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #493940; font-size: 9px; line-height: 1.35; }
+.staff-smart-state { margin: 0; padding: 18px 12px; color: var(--muted); text-align: center; font-size: 9px; line-height: 1.45; }
+.staff-smart-state.error { color: #9b302b; background: #fff5f3; }
+.staff-smart-privacy { display: block; padding: 8px 12px; border-top: 1px solid #eee4e7; color: #826c74; background: #fbf8f9; font-size: 7px; line-height: 1.4; }
 .staff-queue-empty { margin: -6px 0 19px; padding: 12px 14px; border: 1px solid #eed9b7; border-radius: 12px; color: #74501e; background: #fff7e9; font-size: 9px; font-weight: 700; line-height: 1.5; }
 .date-choice-field { align-content: start; }
 .date-entry-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 11px; background: #f2edef; }
@@ -330,6 +349,8 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .diagnosis-badge { max-width: 135px; text-align: center; }
   .form-grid { grid-template-columns: 1fr; gap: 14px; }
   .staff-queue-preference button { min-height: 38px; font-size: 9px; }
+  .staff-smart-list { max-height: 310px; }
+  .staff-smart-list article { padding: 12px; }
   .mode-options { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
   .schedule-list { grid-template-columns: 1fr; }
