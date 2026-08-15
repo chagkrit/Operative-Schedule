@@ -196,3 +196,18 @@ test("smart-searches all upcoming cases for the selected Staff without patient i
   assert.match(calendar, /listUpcomingCalendarBookings/);
   assert.match(calendar, /listAllEvents\(request, from\)/);
 });
+
+test("keeps the active-device status static and supports desktop, tablet, and mobile layouts", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const styles = await read("app/globals.css");
+  assert.match(app, /className="presence-status"/);
+  assert.match(app, /ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่/);
+  assert.doesNotMatch(app, /presence-marquee-track/);
+  assert.doesNotMatch(styles, /presence-scroll/);
+  assert.doesNotMatch(styles, /presence-marquee-track/);
+  assert.match(styles, /@media \(max-width: 1000px\)/);
+  assert.match(styles, /@media \(max-width: 820px\)/);
+  assert.match(styles, /@media \(max-width: 650px\)/);
+  assert.match(styles, /@media \(max-width: 480px\)/);
+  assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) auto auto/);
+});

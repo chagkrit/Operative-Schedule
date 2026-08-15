@@ -710,11 +710,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           <p className="eyebrow pink">SURGICAL SCHEDULING</p>
           <h2>ลงคิวผ่าตัด<br /><span>ชัดเจน ปลอดภัย ไม่ชนกัน</span></h2>
           <p className="hero-copy">ระบบจัดคิว OR 17 และ OR Extra ตามเกณฑ์ของหน่วย พร้อมส่งรายการเข้าปฏิทินกลางทันทีหลังบันทึก</p>
-          <div className="presence-marquee" role="status" aria-live="polite" title="จำนวนอุปกรณ์ที่ส่งสัญญาณใช้งานภายใน 90 วินาทีล่าสุด">
-            <div className="presence-marquee-track">
-              <span>ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
-              <span aria-hidden="true">ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่ {activeDeviceCount} เครื่อง</span>
-            </div>
+          <div className="presence-status" role="status" aria-live="polite" title="จำนวนอุปกรณ์ที่ส่งสัญญาณใช้งานภายใน 90 วินาทีล่าสุด">
+            <span className="presence-status-dot" aria-hidden="true" />
+            <span>ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่ <strong>{activeDeviceCount}</strong> เครื่อง</span>
           </div>
         </div>
         <div className="rule-card">

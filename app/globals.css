@@ -49,10 +49,9 @@ button { cursor: pointer; }
 .hero h2 { margin: 0; max-width: 780px; font: 500 clamp(42px, 5vw, 72px)/.98 Georgia, "Times New Roman", serif; letter-spacing: -.045em; }
 .hero h2 span { color: var(--rose); font-style: italic; }
 .hero-copy { max-width: 700px; margin: 26px 0 0; color: var(--muted); font-size: 15px; line-height: 1.7; }
-.presence-marquee { max-width: 700px; margin-top: 12px; overflow: hidden; border: 1px solid #e4cbd3; border-radius: 999px; color: var(--rose-deep); background: rgba(255,255,255,.72); }
-.presence-marquee-track { width: max-content; display: flex; animation: presence-scroll 18s linear infinite; }
-.presence-marquee-track span { min-width: 700px; padding: 8px 28px; text-align: center; font-size: 10px; font-weight: 900; letter-spacing: .02em; white-space: nowrap; }
-@keyframes presence-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.presence-status { width: fit-content; max-width: 700px; min-height: 36px; display: flex; align-items: center; gap: 9px; margin-top: 12px; padding: 8px 16px; border: 1px solid #e4cbd3; border-radius: 999px; color: var(--rose-deep); background: rgba(255,255,255,.72); font-size: 10px; font-weight: 800; line-height: 1.45; }
+.presence-status strong { color: var(--rose); font-size: 12px; }
+.presence-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(38,125,96,.12); }
 .rule-card { justify-self: end; max-width: 420px; display: flex; align-items: center; gap: 22px; padding: 25px 26px; border: 1px solid #e6ccd2; border-radius: 24px; background: rgba(255, 255, 255, .65); box-shadow: 0 18px 55px rgba(83, 32, 50, .06); }
 .rule-number { color: var(--rose); font: italic 600 62px/1 Georgia, serif; border-right: 1px solid #e3c7cf; padding-right: 22px; }
 .rule-card strong { font-size: 15px; }
@@ -323,6 +322,12 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .move-history-list { grid-template-columns: 1fr 1fr; }
 }
 
+@media (max-width: 820px) {
+  .topbar { height: auto; min-height: 104px; padding: 14px 0; gap: 14px; }
+  .topbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .calendar-pill { max-width: min(100%, 250px); font-size: 10px; line-height: 1.35; }
+}
+
 @media (max-width: 650px) {
   .app-shell { padding: 0 14px; }
   .topbar { height: auto; padding: 15px 0; align-items: flex-start; gap: 12px; }
@@ -341,7 +346,7 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .hero { padding: 38px 2px 28px; }
   .hero h2 { font-size: 43px; }
   .hero-copy { font-size: 13px; }
-  .presence-marquee-track span { min-width: 520px; font-size: 9px; }
+  .presence-status { width: 100%; border-radius: 13px; padding: 9px 12px; font-size: 9px; }
   .rule-card { padding: 19px; }
   .booking-panel, .schedule-panel { padding: 20px 16px; border-radius: 20px; }
   .panel-heading { align-items: flex-start; }
@@ -375,9 +380,20 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .signin-card { padding: 32px 22px; border-radius: 22px; }
 }
 
+@media (max-width: 480px) {
+  .topbar { flex-wrap: wrap; }
+  .brand { width: 100%; }
+  .topbar-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; }
+  .calendar-pill { max-width: none; min-width: 0; padding: 8px 10px; }
+  .calendar-pill span { min-width: 0; overflow-wrap: anywhere; }
+  .sync-button, .signout-button { padding: 0 9px; }
+  .hero h2 { font-size: clamp(36px, 12vw, 43px); }
+  .rule-card { width: 100%; gap: 16px; }
+  .rule-number { font-size: 52px; padding-right: 16px; }
+  .staff-smart-date { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .month-day-summary p { align-items: flex-start; flex-direction: column; gap: 3px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
-  .presence-marquee-track { width: 100%; animation: none; }
-  .presence-marquee-track span { min-width: 100%; }
-  .presence-marquee-track span[aria-hidden="true"] { display: none; }
 }
