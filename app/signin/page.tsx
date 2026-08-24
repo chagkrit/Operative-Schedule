@@ -17,7 +17,6 @@ export default async function SignInPage() {
         <form action={signInWithGoogle}>
           <button className="google-button" type="submit">เข้าสู่ระบบด้วย Google</button>
         </form>
-        <small>อนุญาตเฉพาะบัญชี <strong>{AUTHORIZED_EMAIL}</strong></small>
       </section>
     </main>
   );

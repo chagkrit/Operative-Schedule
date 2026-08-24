@@ -6,9 +6,12 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("protects the app with the exact authorized Google account", async () => {
   const auth = await read("auth.ts");
+  const signIn = await read("app/signin/page.tsx");
   assert.match(auth, /AUTHORIZED_EMAIL = "hnbcmu@gmail\.com"/);
   assert.match(auth, /profile\.email\?\.toLowerCase\(\) === AUTHORIZED_EMAIL/);
   assert.match(auth, /calendar\.events/);
+  assert.doesNotMatch(signIn, /อนุญาตเฉพาะบัญชี/);
+  assert.doesNotMatch(signIn, /hnbcmu@gmail\.com/);
 });
 
 test("keeps the clinical queue safeguards in the server API", async () => {
