@@ -8,10 +8,14 @@ export type DaySummary = {
   note: string;
   count: number;
   cancerCount: number;
+  closed: boolean;
+  closureName: string;
+  closureNote: string;
 };
 
 export async function getSchedule(request: Request, from: string, to: string) {
-  const { bookings, extras } = await listCalendarData(request, from, to);
+  const { bookings, extras, closures } = await listCalendarData(request, from, to);
+  const closuresByDate = new Map(closures.map((closure) => [closure.date, closure]));
   const summaries = new Map<string, DaySummary>();
   for (let date = from; date <= to; date = addDays(date, 1)) {
     if (isNormalDay(date)) {
@@ -22,6 +26,9 @@ export async function getSchedule(request: Request, from: string, to: string) {
         note: "คิวปกติ OR 17",
         count: 0,
         cancerCount: 0,
+        closed: closuresByDate.has(date),
+        closureName: closuresByDate.get(date)?.name || "",
+        closureNote: closuresByDate.get(date)?.note || "",
       });
     }
   }
@@ -33,6 +40,9 @@ export async function getSchedule(request: Request, from: string, to: string) {
       note: extra.note || "คิว OR Extra",
       count: 0,
       cancerCount: 0,
+      closed: closuresByDate.has(extra.date),
+      closureName: closuresByDate.get(extra.date)?.name || "",
+      closureNote: closuresByDate.get(extra.date)?.note || "",
     });
   }
   const legacyExtraCounts = new Map<string, number>();
@@ -49,6 +59,9 @@ export async function getSchedule(request: Request, from: string, to: string) {
       note: "นำเข้าจาก Google Calendar",
       count: 0,
       cancerCount: 0,
+      closed: closuresByDate.has(date),
+      closureName: closuresByDate.get(date)?.name || "",
+      closureNote: closuresByDate.get(date)?.note || "",
     });
   }
   for (const booking of bookings) {
@@ -63,11 +76,13 @@ export async function getSchedule(request: Request, from: string, to: string) {
       a.date === b.date ? (a.queueType === "OR17" ? -1 : 1) : a.date.localeCompare(b.date),
     ),
     bookings,
+    closures,
   };
 }
 
 export function destinationError(booking: Pick<CalendarBooking, "isCancer">, day?: DaySummary) {
   if (!day) return "วันที่หรือประเภทคิวที่เลือกไม่ได้เปิดรับคิว";
+  if (day.closed) return `วันที่เลือกปิดรับคิว${day.closureName ? `: ${day.closureName}` : ""}`;
   if (day.count >= day.capacity) return "วันที่เลือกคิวเต็มแล้ว";
   if (!booking.isCancer && day.queueType === "EXTRA") return "OR Extra รับเฉพาะเคส Cancer";
   if (!booking.isCancer && day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0) {

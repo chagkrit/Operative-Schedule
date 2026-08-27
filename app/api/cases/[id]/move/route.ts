@@ -5,7 +5,7 @@ import {
   type QueueType,
 } from "../../../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot } from "../../../../lib/queue";
-import { addDays, dateOnly, isNormalDay } from "../../../../lib/schedule";
+import { dateOnly, endOfRollingHorizon, isNormalDay } from "../../../../lib/schedule";
 
 export async function PATCH(
   request: Request,
@@ -17,8 +17,9 @@ export async function PATCH(
     const date = payload.date?.trim() || "";
     const queueType = payload.queueType;
     const today = dateOnly();
-    if (!date || date < today || date > addDays(today, 120) || !["OR17", "EXTRA"].includes(queueType || "")) {
-      return Response.json({ error: "กรุณาเลือกคิวภายใน 120 วันข้างหน้า" }, { status: 400 });
+    const horizonEnd = endOfRollingHorizon(today);
+    if (!date || date < today || date > horizonEnd || !["OR17", "EXTRA"].includes(queueType || "")) {
+      return Response.json({ error: "กรุณาเลือกคิวภายในช่วง 12 เดือนข้างหน้า" }, { status: 400 });
     }
 
     const { booking } = await getCalendarBooking(request, id);
@@ -29,7 +30,7 @@ export async function PATCH(
       return Response.json({ error: "เคสที่ไม่ใช่ Cancer ย้ายได้เฉพาะ OR 17 วันอังคารหรือพฤหัสบดี" }, { status: 400 });
     }
 
-    const { days, bookings } = await getSchedule(request, today, addDays(today, 120));
+    const { days, bookings } = await getSchedule(request, today, horizonEnd);
     const destination = days.find((day) => day.date === date && day.queueType === queueType);
     const invalidDestination = destinationError(booking, destination);
     if (invalidDestination) return Response.json({ error: invalidDestination }, { status: 409 });
@@ -44,7 +45,7 @@ export async function PATCH(
     // restore this case to its previous date and ask the user to choose again.
     const verified = await getSchedule(request, date, date);
     const verifiedDay = verified.days.find((day) => day.date === date && day.queueType === queueType);
-    if (!verifiedDay || verifiedDay.count > verifiedDay.capacity) {
+    if (!verifiedDay || verifiedDay.closed || verifiedDay.count > verifiedDay.capacity) {
       await restoreCalendarBooking(request, id, move.before);
       return Response.json(
         { error: "มีผู้สลับคิวพร้อมกันและคิวปลายทางเต็ม กรุณาเลือกวันใหม่" },

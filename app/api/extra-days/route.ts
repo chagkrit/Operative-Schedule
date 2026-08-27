@@ -1,5 +1,5 @@
 import { deleteExtraDayEvent, listCalendarData, upsertExtraDayEvent } from "../../lib/calendar";
-import { dateOnly, isExtraEligibleDay } from "../../lib/schedule";
+import { dateOnly, endOfRollingHorizon, isExtraEligibleDay } from "../../lib/schedule";
 
 export async function POST(request: Request) {
   try {
@@ -7,8 +7,12 @@ export async function POST(request: Request) {
     const date = payload.date?.trim() || "";
     const capacity = 4;
     const note = payload.note?.trim() || "";
-    if (!date || date < dateOnly()) return Response.json({ error: "กรุณาเลือกวันที่วันนี้เป็นต้นไป" }, { status: 400 });
+    const today = dateOnly();
+    if (!date || date < today || date > endOfRollingHorizon(today)) return Response.json({ error: "กรุณาเลือกวันที่ภายในช่วง 12 เดือนข้างหน้า" }, { status: 400 });
     if (!isExtraEligibleDay(date)) return Response.json({ error: "OR Extra กำหนดได้เฉพาะวันจันทร์หรือพฤหัสบดี" }, { status: 400 });
+    const { closures } = await listCalendarData(request, date, date);
+    const closure = closures.find((item) => item.date === date);
+    if (closure) return Response.json({ error: `วันนี้ปิดรับคิว: ${closure.name}` }, { status: 409 });
     await upsertExtraDayEvent(request, { date, capacity, note });
     return Response.json({ message: "กำหนด OR Extra และเพิ่มใน Google Calendar แล้ว" }, { status: 201 });
   } catch (error) {

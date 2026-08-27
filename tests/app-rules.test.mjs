@@ -98,7 +98,7 @@ test("searches cases and records verified calendar moves", async () => {
   assert.match(app, /HN ชื่อ หรือสกุล/);
   assert.match(moveRoute, /destinationError/);
   assert.match(moveRoute, /restoreCalendarBooking/);
-  assert.match(moveRoute, /verifiedDay\.count > verifiedDay\.capacity/);
+  assert.match(moveRoute, /verifiedDay\.closed \|\| verifiedDay\.count > verifiedDay\.capacity/);
 });
 
 test("supports manual surgery dates and shows the calculated waiting time", async () => {
@@ -106,15 +106,15 @@ test("supports manual surgery dates and shows the calculated waiting time", asyn
   const route = await read("app/api/schedule/route.ts");
   assert.match(app, /dateEntryMode: "list" as "list" \| "manual"/);
   assert.match(app, /ระบุวันเอง/);
-  assert.match(app, /type="date" min=\{manualDateStart\}/);
-  assert.doesNotMatch(app, /type="date" min=\{manualDateStart\} max=/);
-  assert.match(app, /ไม่จำกัดช่วงเวลา/);
+  assert.match(app, /type="date" min=\{manualDateStart\} max=\{data\?\.horizonEnd\}/);
+  assert.doesNotMatch(app, /ไม่จำกัดช่วงเวลา/);
   assert.match(app, /daysBetween\(bangkokToday\(\), selectedSurgeryDate\)/);
   assert.match(app, /ระยะเวลารอคิว/);
   assert.match(app, /OR 17/);
   assert.match(route, /const scheduleFrom = hasSpecificDate \? requestedDate : today/);
-  assert.match(route, /const scheduleTo = hasSpecificDate \? addDays\(requestedDate, 365\) : addDays\(today, 120\)/);
+  assert.match(route, /const scheduleTo = horizonEnd/);
   assert.match(route, /requestedDate < today/);
+  assert.match(route, /requestedDate > horizonEnd/);
 });
 
 test("keeps OR Extra at four cases and exposes a monthly count calendar", async () => {
@@ -158,7 +158,7 @@ test("shows a conflict popup and suggests valid alternative OR dates", async () 
   assert.match(app, /คิวที่ว่างและตรงเกณฑ์/);
   assert.match(app, /chooseSuggestedQueue/);
   assert.match(app, /response\.status === 409/);
-  assert.match(route, /addDays\(requestedDate, 365\)/);
+  assert.match(route, /endOfRollingHorizon/);
   assert.match(route, /matchesClinicalRules/);
   assert.match(route, /suggestions: alternativeDays/);
   assert.match(route, /availableSlots: day\.capacity - day\.count/);
@@ -179,6 +179,43 @@ test("starts manual dates after the last dropdown option and prompts Calendar sy
   assert.match(scheduleRoute, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);
   assert.match(presenceRoute, /PRESENCE_TTL_MS = 90_000/);
   assert.match(presenceRoute, /orQueueActiveDevices/);
+});
+
+test("stores full-day schedule closures in Calendar and blocks every queue path", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const queue = await read("app/lib/queue.ts");
+  const closureRoute = await read("app/api/schedule-closures/route.ts");
+  const scheduleRoute = await read("app/api/schedule/route.ts");
+  const moveRoute = await read("app/api/cases/[id]/move/route.ts");
+  const extraRoute = await read("app/api/extra-days/route.ts");
+  assert.match(calendar, /or_queue: "schedule_closure"/);
+  assert.match(calendar, /saveScheduleClosureEvent/);
+  assert.match(calendar, /deleteScheduleClosureEvent/);
+  assert.match(queue, /if \(day\.closed\)/);
+  assert.match(queue, /วันที่เลือกปิดรับคิว/);
+  assert.match(scheduleRoute, /verifiedDay\.closed/);
+  assert.match(moveRoute, /verifiedDay\.closed/);
+  assert.match(extraRoute, /วันนี้ปิดรับคิว/);
+  assert.match(closureRoute, /confirmExistingBookings/);
+  assert.match(closureRoute, /requiresConfirmation: true/);
+  assert.match(closureRoute, /affectedBookings/);
+});
+
+test("exposes closure management and a rolling 12-month Buddhist calendar", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const schedule = await read("app/lib/schedule.ts");
+  const styles = await read("app/globals.css");
+  assert.match(schedule, /endOfRollingHorizon/);
+  assert.match(schedule, /Date\.UTC\(year, month \+ 12, 0\)/);
+  assert.match(app, /scheduleView.*"closures"/);
+  assert.match(app, /ตั้งค่าวันปิดรับคิว/);
+  assert.match(app, /ค้นหาวันปิดรับคิว/);
+  assert.match(app, /ปิดทั้ง OR 17 และ OR Extra/);
+  assert.match(app, /disabled=\{Boolean\(closure\) \|\| outsideHorizon\}/);
+  assert.match(app, /month >= lastMonth/);
+  assert.match(app, /closures=\{data\?\.closures \|\| \[\]\}/);
+  assert.match(styles, /\.month-day\.closed/);
+  assert.match(styles, /\.closure-manager/);
 });
 
 test("smart-searches all upcoming cases for the selected Staff without patient identifiers", async () => {

@@ -177,7 +177,7 @@ button { cursor: pointer; }
 
 .panel-heading.compact { margin-bottom: 18px; }
 .text-button { border: 0; padding: 7px; color: var(--rose); background: none; font-size: 11px; font-weight: 800; }
-.schedule-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: -2px 0 14px; padding: 4px; border-radius: 12px; background: #f2edef; }
+.schedule-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: -2px 0 14px; padding: 4px; border-radius: 12px; background: #f2edef; }
 .schedule-tabs button { min-height: 35px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; font-size: 10px; font-weight: 800; }
 .schedule-tabs button.active { color: var(--rose); background: #fff; box-shadow: 0 3px 10px rgba(65, 29, 42, .08); }
 .extra-form { display: grid; grid-template-columns: 1fr 110px; gap: 10px; margin: 0 0 18px; padding: 15px; border-radius: 16px; background: #fbf4f6; border: 1px solid #eedbe0; }
@@ -192,6 +192,7 @@ button { cursor: pointer; }
 .schedule-list { display: grid; gap: 11px; max-height: 690px; overflow: auto; padding-right: 4px; }
 .day-card { display: grid; grid-template-columns: 54px 1fr; gap: 14px; padding: 15px; border: 1px solid #eadfe1; border-radius: 17px; background: #fff; }
 .day-card.extra { border-color: #e4cbd3; background: #fffafb; }
+.day-card.closed { border-color: #e8c3c0; background: #fff7f5; }
 .date-block { width: 52px; height: 58px; display: grid; place-content: center; text-align: center; border-radius: 13px; background: #f7eff1; color: var(--rose-deep); }
 .date-block strong { font: 600 23px/1 Georgia, serif; }
 .date-block span { margin-top: 3px; font-size: 10px; font-weight: 800; }
@@ -206,6 +207,7 @@ button { cursor: pointer; }
 .warning-line, .extra-line { margin: 8px 0 0; font-size: 9px; font-weight: 800; }
 .warning-line { color: var(--danger); }
 .extra-line { color: var(--rose); }
+.closure-line { margin: 8px 0 0; color: #9b302b; font-size: 9px; font-weight: 900; line-height: 1.45; }
 .mini-bookings { display: grid; gap: 5px; margin-top: 10px; }
 .mini-bookings > div { display: grid; grid-template-columns: 24px 1fr 8px; align-items: center; gap: 8px; padding-top: 7px; border-top: 1px dashed #ece3e5; }
 .mini-bookings > div > span:first-child { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 7px; background: #f0ecee; color: #73636a; font-size: 9px; font-weight: 800; }
@@ -225,6 +227,9 @@ button { cursor: pointer; }
 .month-blank, .month-day { min-height: 48px; }
 .month-day { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 1px solid transparent; border-radius: 10px; color: #5f4d55; background: #faf7f8; }
 .month-day:hover { border-color: #ddbdc7; background: #fff; }
+.month-day:disabled { cursor: not-allowed; opacity: .72; }
+.month-day.closed { border-color: #e8c3c0; color: #922f2a; background: repeating-linear-gradient(135deg, #fff4f1, #fff4f1 6px, #fce9e5 6px, #fce9e5 12px); }
+.month-day.closed em { color: #922f2a; font-size: 7px; font-style: normal; font-weight: 900; }
 .month-day.selected { border-color: var(--rose); color: var(--rose); background: var(--rose-soft); box-shadow: 0 0 0 2px rgba(167,25,85,.06); }
 .month-day.today > span { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .month-day > span { font-size: 10px; font-weight: 800; }
@@ -239,6 +244,9 @@ button { cursor: pointer; }
 .month-day-summary p b { color: #49373f; }
 .month-day-summary p span { color: var(--muted); }
 .month-day-summary > small { display: block; padding-top: 12px; color: var(--muted); font-size: 9px; }
+.month-closure-summary { display: grid !important; gap: 4px !important; margin-top: 9px; padding: 10px !important; border: 0 !important; border-radius: 10px; color: #7f2e2a; background: #fff0ed; }
+.month-closure-summary b { font-size: 10px; }
+.month-closure-summary span { color: #80615e !important; font-size: 9px !important; font-weight: 600 !important; }
 .month-bookings { overflow: hidden; border: 1px solid #eadfe1; border-radius: 14px; background: #fff; }
 .month-bookings-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid #eee5e7; background: #fffafb; }
 .month-bookings-heading strong { color: #49373f; font-size: 11px; }
@@ -258,6 +266,50 @@ button { cursor: pointer; }
 .month-bookings-empty { margin: 0; padding: 24px 14px; color: var(--muted); text-align: center; font-size: 9px; }
 .month-legend { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); font-size: 8px; }
 .month-legend > span { width: 6px; height: 6px; border-radius: 50%; background: #d88a30; }
+.month-legend em { padding: 2px 5px; border-radius: 5px; color: #922f2a; background: #fce9e5; font-size: 7px; font-style: normal; font-weight: 900; }
+
+.closure-manager { display: grid; gap: 14px; }
+.closure-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; border: 1px solid #eed8d4; border-radius: 16px; background: #fff8f6; }
+.closure-form-heading, .closure-form .wide, .closure-form-actions { grid-column: 1 / -1; }
+.closure-form-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.closure-form-heading strong { color: #702c29; font-size: 12px; }
+.closure-form-heading small { color: var(--muted); font-size: 8px; }
+.closure-form label { display: grid; gap: 5px; }
+.closure-form label span { color: #57454d; font-size: 9px; font-weight: 800; }
+.closure-form label b { color: var(--danger); }
+.closure-form input, .closure-form textarea, .closure-list-toolbar input { width: 100%; border: 1px solid #dfd4d7; border-radius: 10px; color: var(--ink); background: #fff; outline: none; }
+.closure-form input { height: 40px; padding: 0 11px; font-size: 10px; }
+.closure-form textarea { min-height: 68px; resize: vertical; padding: 10px 11px; font: inherit; font-size: 10px; }
+.closure-form input:focus, .closure-form textarea:focus, .closure-list-toolbar input:focus { border-color: var(--rose); box-shadow: 0 0 0 3px rgba(167, 25, 85, .08); }
+.closure-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.closure-form-actions button { min-height: 36px; padding: 7px 12px; border: 1px solid #e3cdd0; border-radius: 9px; color: var(--rose); background: #fff; font-size: 9px; font-weight: 800; }
+.closure-form-actions button:last-child { border-color: var(--rose); color: #fff; background: var(--rose); }
+.closure-list-toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
+.closure-list-toolbar strong { color: #49373f; font-size: 10px; white-space: nowrap; }
+.closure-list-toolbar strong span { color: var(--rose); }
+.closure-list-toolbar input { height: 36px; padding: 0 10px; font-size: 9px; }
+.closure-list { display: grid; gap: 8px; max-height: 375px; overflow-y: auto; }
+.closure-list > p { margin: 0; padding: 28px 12px; color: var(--muted); text-align: center; font-size: 10px; }
+.closure-list article { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px; border: 1px solid #eadfe1; border-radius: 13px; background: #fff; }
+.closure-date { min-height: 48px; display: grid; place-content: center; gap: 2px; border-radius: 10px; color: #8d312d; text-align: center; background: #fff0ed; }
+.closure-date strong { font: 700 18px/1 Georgia, serif; }
+.closure-date span { font-size: 7px; font-weight: 800; }
+.closure-detail { min-width: 0; display: grid; gap: 2px; }
+.closure-detail strong { color: #49373f; font-size: 10px; }
+.closure-detail span { overflow: hidden; text-overflow: ellipsis; color: #715d65; font-size: 9px; white-space: nowrap; }
+.closure-detail small { color: var(--muted); font-size: 7px; line-height: 1.4; }
+.closure-row-actions { display: grid; gap: 4px; }
+.closure-row-actions button { padding: 5px 7px; border: 1px solid #e3d5d8; border-radius: 7px; color: var(--rose); background: #fff; font-size: 8px; font-weight: 800; }
+.closure-row-actions button:last-child { color: #98332f; }
+.closure-confirm-dialog { max-width: 560px; }
+.closure-affected-list { display: grid; gap: 7px; max-height: 260px; overflow-y: auto; margin-top: 15px; }
+.closure-affected-list article { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 3px 10px; padding: 9px 10px; border: 1px solid #eee2e4; border-radius: 10px; text-align: left; background: #fff; }
+.closure-affected-list b { grid-row: 1 / 3; align-self: center; color: var(--rose); font-size: 9px; }
+.closure-affected-list span { overflow: hidden; text-overflow: ellipsis; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.closure-affected-list small { color: var(--muted); font-size: 8px; }
+.closure-confirm-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; margin-top: 15px; }
+.closure-confirm-actions button { min-height: 40px; border: 1px solid #dfd1d4; border-radius: 10px; color: var(--rose); background: #fff; font-size: 9px; font-weight: 900; }
+.closure-confirm-actions button:last-child { border-color: #9b302b; color: #fff; background: #9b302b; }
 .month-legend b { margin-left: auto; color: #8b727c; }
 
 .case-tools-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(340px, .7fr); gap: 22px; margin-top: 22px; align-items: start; }
@@ -366,6 +418,9 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .month-blank, .month-day { min-height: 43px; }
   .month-day { border-radius: 8px; }
   .month-booking-list article { grid-template-columns: 58px minmax(0, 1fr) 8px; padding: 10px; }
+  .closure-form { grid-template-columns: 1fr; }
+  .closure-form-heading, .closure-form label, .closure-form .wide, .closure-form-actions { grid-column: 1; }
+  .closure-list-toolbar { grid-template-columns: 1fr; }
   .case-search-panel, .move-history-panel { padding: 20px 16px; }
   .case-search-form > div { grid-template-columns: 1fr 88px; }
   .case-result > button { grid-template-columns: 1fr auto; gap: 9px; }
@@ -392,6 +447,10 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .rule-number { font-size: 52px; padding-right: 16px; }
   .staff-smart-date { align-items: flex-start; flex-direction: column; gap: 3px; }
   .month-day-summary p { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .schedule-tabs button { padding: 4px; font-size: 8px; }
+  .closure-list article { grid-template-columns: 42px minmax(0, 1fr); }
+  .closure-row-actions { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; }
+  .closure-confirm-actions { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

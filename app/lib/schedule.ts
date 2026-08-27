@@ -18,6 +18,11 @@ export function addDays(date: string, amount: number) {
   return value.toISOString().slice(0, 10);
 }
 
+export function endOfRollingHorizon(date = dateOnly()) {
+  const [year, month] = date.split("-").map(Number);
+  return new Date(Date.UTC(year, month + 12, 0)).toISOString().slice(0, 10);
+}
+
 export function weekday(date: string) {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }

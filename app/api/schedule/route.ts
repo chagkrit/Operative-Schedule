@@ -1,7 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot } from "../../lib/queue";
-import { addDays, dateOnly, diagnosisIsCancer, isNormalDay, STAFF_OPTIONS } from "../../lib/schedule";
+import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay, STAFF_OPTIONS } from "../../lib/schedule";
 
 function statusFor(error: unknown) {
   const message = error instanceof Error ? error.message : "เกิดข้อผิดพลาด";
@@ -13,12 +13,16 @@ function statusFor(error: unknown) {
 export async function GET(request: Request) {
   try {
     const today = dateOnly();
-    const [{ days, bookings }, recentMoves] = await Promise.all([
-      getSchedule(request, today, addDays(today, 120)),
-      listRecentMoves(request, addDays(today, -730), addDays(today, 120)),
+    const horizonEnd = endOfRollingHorizon(today);
+    const [{ days, bookings, closures }, recentMoves] = await Promise.all([
+      getSchedule(request, today, horizonEnd),
+      listRecentMoves(request, addDays(today, -730), horizonEnd),
     ]);
     return Response.json({
       days,
+      closures,
+      horizonStart: today,
+      horizonEnd,
       bookings: bookings
         .sort((a, b) => a.scheduleDate.localeCompare(b.scheduleDate) || a.slotNo - b.slotNo)
         .map((booking) => ({
@@ -77,8 +81,12 @@ export async function POST(request: Request) {
 
     const isCancer = diagnosisIsCancer(diagnosis);
     const today = dateOnly();
+    const horizonEnd = endOfRollingHorizon(today);
     if (requestedDate && (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate) || requestedDate < today)) {
       return Response.json({ error: "กรุณาเลือกวันที่ผ่าตัดตั้งแต่วันนี้เป็นต้นไป" }, { status: 400 });
+    }
+    if (requestedDate && requestedDate > horizonEnd) {
+      return Response.json({ error: `กรุณาเลือกวันที่ผ่าตัดไม่เกิน ${horizonEnd}` }, { status: 400 });
     }
     if (isCancer && !["earliest", "specific"].includes(cancerSchedulingMode)) return Response.json({ error: "กรุณาเลือกวิธีจัดคิว Cancer" }, { status: 400 });
     if (isCancer && cancerSchedulingMode === "specific" && (!requestedDate || !["OR17", "EXTRA"].includes(requestedQueueType))) {
@@ -88,7 +96,7 @@ export async function POST(request: Request) {
 
     const hasSpecificDate = !isCancer || cancerSchedulingMode === "specific";
     const scheduleFrom = hasSpecificDate ? requestedDate : today;
-    const scheduleTo = hasSpecificDate ? addDays(requestedDate, 365) : addDays(today, 120);
+    const scheduleTo = horizonEnd;
     const [requestedSchedule, dropdownSchedule] = await Promise.all([
       getSchedule(request, scheduleFrom, scheduleTo),
       dateEntryMode === "manual" && hasSpecificDate
@@ -154,7 +162,7 @@ export async function POST(request: Request) {
         : selectedDayError
           ? selectedDayError
         : isCancer && cancerSchedulingMode === "earliest"
-          ? "ไม่พบคิวว่างใน 120 วันข้างหน้า"
+          ? "ไม่พบคิวว่างในช่วง 12 เดือนข้างหน้า"
           : !isCancer && !isNormalDay(requestedDate)
             ? "เคสที่ไม่ใช่ Cancer เลือกได้เฉพาะคิวปกติ OR 17 วันอังคารหรือพฤหัสบดี"
             : "วันที่หรือประเภทคิวที่เลือกเต็ม หรือไม่ได้เปิดรับคิว";
@@ -181,7 +189,7 @@ export async function POST(request: Request) {
     });
     const verified = await getSchedule(request, selected.date, selected.date);
     const verifiedDay = verified.days.find((day) => day.date === selected.date && day.queueType === selected.queueType);
-    if (!verifiedDay || verifiedDay.count > verifiedDay.capacity) {
+    if (!verifiedDay || verifiedDay.closed || verifiedDay.count > verifiedDay.capacity) {
       await deleteBookingEvent(request, id);
       return Response.json(
         { error: "มีผู้ลงคิวพร้อมกันและคิวเต็ม กรุณาเลือกวันใหม่หรือกดบันทึกอีกครั้ง", suggestions: alternativeDays },

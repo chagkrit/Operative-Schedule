@@ -33,6 +33,17 @@ export type CalendarExtraDay = {
   note: string;
 };
 
+export type CalendarScheduleClosure = {
+  id: string;
+  date: string;
+  name: string;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  updatedBy: string;
+  updatedAt: string;
+};
+
 type GoogleEvent = LegacyCalendarEvent & {
   id?: string;
   summary?: string;
@@ -40,6 +51,7 @@ type GoogleEvent = LegacyCalendarEvent & {
   location?: string;
   colorId?: string;
   updated?: string;
+  created?: string;
   extendedProperties?: { private?: Record<string, string> };
 };
 
@@ -121,7 +133,7 @@ async function googleFetch(request: Request, path: string, init?: RequestInit) {
   return response;
 }
 
-async function listTaggedEvents(request: Request, tag: "booking" | "extra_day", from: string, to: string) {
+async function listTaggedEvents(request: Request, tag: "booking" | "extra_day" | "schedule_closure", from: string, to: string) {
   const events: GoogleEvent[] = [];
   let pageToken = "";
   do {
@@ -205,6 +217,7 @@ export async function listCalendarData(request: Request, from: string, to: strin
   const allEvents = await listAllEvents(request, from, to);
   const bookingEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "booking");
   const extraEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "extra_day");
+  const closureEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "schedule_closure");
   const taggedBookings = bookingEvents.flatMap((event): CalendarBooking[] => {
     const booking = bookingFromEvent(event);
     return booking ? [booking] : [];
@@ -235,7 +248,22 @@ export async function listCalendarData(request: Request, from: string, to: strin
     if (!event.id || !data || !date) return [];
     return [{ id: event.id, date, capacity: 4, note: data.note || "" }];
   });
-  return { bookings, extras };
+  const closures = closureEvents.flatMap((event): CalendarScheduleClosure[] => {
+    const data = event.extendedProperties?.private;
+    const date = event.start?.date;
+    if (!event.id || !data || !date) return [];
+    return [{
+      id: event.id,
+      date,
+      name: data.name || event.summary?.replace(/^ปิดรับคิว\s*•\s*/, "") || "วันปิดรับคิว",
+      note: data.note || "",
+      createdBy: data.created_by || AUTHORIZED_EMAIL,
+      createdAt: data.created_at || event.created || event.updated || "",
+      updatedBy: data.updated_by || AUTHORIZED_EMAIL,
+      updatedAt: event.updated || data.created_at || "",
+    }];
+  }).sort((a, b) => a.date.localeCompare(b.date));
+  return { bookings, extras, closures };
 }
 
 async function deterministicId(prefix: string, value: string) {
@@ -485,6 +513,46 @@ export async function upsertExtraDayEvent(request: Request, extra: Omit<Calendar
 }
 
 export async function deleteExtraDayEvent(request: Request, id: string) {
+  await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function saveScheduleClosureEvent(
+  request: Request,
+  closure: { id?: string; date: string; name: string; note: string; updatedBy: string; createdAt?: string; createdBy?: string },
+) {
+  const id = closure.id || await deterministicId("oc", closure.date);
+  const now = new Date().toISOString();
+  const body = JSON.stringify({
+    ...(closure.id ? {} : { id }),
+    summary: `ปิดรับคิว • ${closure.name}`,
+    description: [`วันปิดรับคิว`, `ชื่อ: ${closure.name}`, `หมายเหตุ: ${closure.note || "-"}`, `แก้ไขโดย: ${closure.updatedBy}`].join("\n"),
+    start: { date: closure.date },
+    end: { date: addDays(closure.date, 1) },
+    colorId: "11",
+    transparency: "transparent",
+    extendedProperties: { private: {
+      or_queue: "schedule_closure",
+      name: closure.name,
+      note: closure.note,
+      created_by: closure.createdBy || closure.updatedBy,
+      created_at: closure.createdAt || now,
+      updated_by: closure.updatedBy,
+    } },
+  });
+  if (closure.id) {
+    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "PATCH", body });
+    return id;
+  }
+  try {
+    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${id}`, { method: "PUT", body });
+  } catch (error) {
+    if ((error as { status?: number }).status !== 404) throw error;
+    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
+  }
+  return id;
+}
+
+export async function deleteScheduleClosureEvent(request: Request, id: string) {
   await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 

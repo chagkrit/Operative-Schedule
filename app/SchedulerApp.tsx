@@ -12,6 +12,20 @@ type Day = {
   note: string;
   count: number;
   cancerCount: number;
+  closed: boolean;
+  closureName: string;
+  closureNote: string;
+};
+
+type ScheduleClosure = {
+  id: string;
+  date: string;
+  name: string;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  updatedBy: string;
+  updatedAt: string;
 };
 
 type Booking = {
@@ -31,6 +45,9 @@ type Booking = {
 type ScheduleResponse = {
   days: Day[];
   bookings: Booking[];
+  closures: ScheduleClosure[];
+  horizonStart: string;
+  horizonEnd: string;
   recentMoves: RecentMove[];
   importedCount: number;
   calendarConnected: boolean;
@@ -87,6 +104,10 @@ type StaffScheduleState = {
   cases: StaffUpcomingCase[];
   error: string;
 };
+
+type AffectedBooking = Pick<Booking, "id" | "hn" | "patientName" | "operation" | "staff" | "queueType" | "slotNo">;
+
+const EMPTY_CLOSURE_FORM = { id: "", date: "", name: "", note: "" };
 
 const STAFF = [
   "อ อารีวรรณ",
@@ -156,22 +177,31 @@ function displayMonth(value: string) {
   }).format(new Date(`${value}-15T12:00:00+07:00`));
 }
 
+function addCalendarMonths(value: string, amount: number) {
+  const [year, month] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1 + amount, 1)).toISOString().slice(0, 7);
+}
+
 type MonthlyCalendarProps = {
   days: Day[];
   bookings: Booking[];
+  closures: ScheduleClosure[];
+  horizonStart: string;
+  horizonEnd: string;
   month: string;
   selectedDate: string;
   onMonthChange: (value: string) => void;
   onSelectDate: (value: string) => void;
 };
 
-function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
-  const availableMonths = [...new Set(days.map((day) => day.date.slice(0, 7)))];
-  const monthIndex = availableMonths.indexOf(month);
+function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
+  const firstMonth = horizonStart.slice(0, 7);
+  const lastMonth = horizonEnd.slice(0, 7);
   const [year, monthNumber] = month.split("-").map(Number);
   const firstWeekday = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
   const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
   const summariesByDate = new Map<string, Day[]>();
+  const closuresByDate = new Map(closures.map((closure) => [closure.date, closure]));
   for (const day of days) {
     summariesByDate.set(day.date, [...(summariesByDate.get(day.date) || []), day]);
   }
@@ -181,6 +211,7 @@ function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, o
   ];
   while (cells.length % 7 !== 0) cells.push("");
   const selectedSummaries = summariesByDate.get(selectedDate) || [];
+  const selectedClosure = closuresByDate.get(selectedDate);
   const selectedCount = selectedSummaries.reduce((total, day) => total + day.count, 0);
   const selectedBookings = bookings
     .filter((booking) => booking.scheduleDate === selectedDate)
@@ -188,8 +219,8 @@ function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, o
   const today = bangkokToday();
 
   function changeMonth(direction: -1 | 1) {
-    const target = availableMonths[monthIndex + direction];
-    if (!target) return;
+    const target = addCalendarMonths(month, direction);
+    if (target < firstMonth || target > lastMonth) return;
     onMonthChange(target);
     onSelectDate(`${target}-01`);
   }
@@ -197,9 +228,9 @@ function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, o
   return (
     <div className="monthly-calendar">
       <div className="month-toolbar">
-        <button type="button" onClick={() => changeMonth(-1)} disabled={monthIndex <= 0} aria-label="เดือนก่อนหน้า">‹</button>
+        <button type="button" onClick={() => changeMonth(-1)} disabled={month <= firstMonth} aria-label="เดือนก่อนหน้า">‹</button>
         <strong>{displayMonth(month)}</strong>
-        <button type="button" onClick={() => changeMonth(1)} disabled={monthIndex < 0 || monthIndex >= availableMonths.length - 1} aria-label="เดือนถัดไป">›</button>
+        <button type="button" onClick={() => changeMonth(1)} disabled={month >= lastMonth} aria-label="เดือนถัดไป">›</button>
       </div>
       <div className="month-grid" role="grid" aria-label={`ปฏิทิน ${displayMonth(month)}`}>
         {['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'].map((label) => <span className="month-weekday" key={label}>{label}</span>)}
@@ -208,16 +239,21 @@ function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, o
           const summaries = summariesByDate.get(date) || [];
           const count = summaries.reduce((total, day) => total + day.count, 0);
           const hasExtra = summaries.some((day) => day.queueType === "EXTRA");
+          const closure = closuresByDate.get(date);
+          const outsideHorizon = date < horizonStart || date > horizonEnd;
           return (
             <button
               type="button"
-              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""}`}
+              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""}`}
               key={date}
               onClick={() => onSelectDate(date)}
-              aria-label={`${displayDate(date)} ${count} เคส`}
+              disabled={Boolean(closure) || outsideHorizon}
+              title={closure ? `${closure.name}${closure.note ? ` — ${closure.note}` : ""}` : undefined}
+              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${count} เคส`}
               aria-pressed={date === selectedDate}
             >
               <span>{Number(date.slice(-2))}</span>
+              {closure ? <em>ปิด</em> : null}
               {count > 0 ? <b>{count}</b> : summaries.length > 0 ? <i aria-label="เปิดรับคิว" /> : null}
             </button>
           );
@@ -228,7 +264,8 @@ function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, o
           <span>{displayDate(selectedDate)}</span>
           <strong>{selectedCount} เคส</strong>
         </div>
-        {selectedSummaries.length > 0 ? selectedSummaries.map((day) => (
+        {selectedClosure ? <div className="month-closure-summary"><b>ปิดรับคิว · {selectedClosure.name}</b><span>{selectedClosure.note || "ไม่มีหมายเหตุ"}</span></div>
+          : selectedSummaries.length > 0 ? selectedSummaries.map((day) => (
           <p key={`${day.date}:${day.queueType}`}>
             <b>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</b>
             <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}</span>
@@ -259,7 +296,7 @@ function MonthlyCalendar({ days, bookings, month, selectedDate, onMonthChange, o
           </div>
         ) : <p className="month-bookings-empty">ยังไม่มีเคสลงคิวในวันที่เลือก</p>}
       </section>
-      <p className="month-legend"><span /> วันที่มี OR Extra <b>ตัวเลขในวงกลม = จำนวนเคส</b></p>
+      <p className="month-legend"><span /> วันที่มี OR Extra <em>ปิด</em> วันปิดรับคิว <b>ตัวเลขในวงกลม = จำนวนเคส</b></p>
     </div>
   );
 }
@@ -279,7 +316,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showExtra, setShowExtra] = useState(false);
   const [extra, setExtra] = useState({ date: "", note: "" });
-  const [scheduleView, setScheduleView] = useState<"list" | "month">("list");
+  const [scheduleView, setScheduleView] = useState<"list" | "month" | "closures">("list");
   const [calendarMonth, setCalendarMonth] = useState(() => bangkokToday().slice(0, 7));
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => bangkokToday());
   const [searchQuery, setSearchQuery] = useState("");
@@ -293,8 +330,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [showSyncPrompt, setShowSyncPrompt] = useState(false);
   const [activeDeviceCount, setActiveDeviceCount] = useState(1);
   const [staffSchedule, setStaffSchedule] = useState<StaffScheduleState>({ staff: "", cases: [], error: "" });
+  const [closureForm, setClosureForm] = useState(EMPTY_CLOSURE_FORM);
+  const [closureSearch, setClosureSearch] = useState("");
+  const [closureSaving, setClosureSaving] = useState(false);
+  const [pendingClosure, setPendingClosure] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
+  const closureConfirmRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async (showSuccess = false) => {
     try {
@@ -324,22 +366,23 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt) return;
+    if (!bookingConflict && !showSyncPrompt && !pendingClosure) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setBookingConflict(null);
         setShowSyncPrompt(false);
+        setPendingClosure(null);
       }
     };
     document.body.style.overflow = "hidden";
-    (bookingConflict ? conflictCloseRef.current : syncPromptButtonRef.current)?.focus();
+    (bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, showSyncPrompt]);
+  }, [bookingConflict, pendingClosure, showSyncPrompt]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -413,19 +456,25 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   ), [data, form.staff]);
   const availableDays = useMemo(
     () => (data?.days || []).filter((day) =>
-      day.count < day.capacity
+      !day.closed
+      && day.count < day.capacity
       && (cancer || day.queueType !== "OR17" || day.count < 3 || day.cancerCount > 0)
       && (form.staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`)),
     ),
     [cancer, data, form.staffQueuePreference, staffDayKeys],
   );
+  const dropdownCutoff = addCalendarDays(data?.horizonStart || bangkokToday(), 120);
+  const dropdownAvailableDays = useMemo(
+    () => availableDays.filter((day) => day.date <= dropdownCutoff),
+    [availableDays, dropdownCutoff],
+  );
   const normalDates = useMemo(
-    () => availableDays.filter((day) => day.queueType === "OR17"),
-    [availableDays],
+    () => dropdownAvailableDays.filter((day) => day.queueType === "OR17"),
+    [dropdownAvailableDays],
   );
   const cancerDates = useMemo(
-    () => availableDays,
-    [availableDays],
+    () => dropdownAvailableDays,
+    [dropdownAvailableDays],
   );
   const upcomingDays = data?.days.slice(0, 8) || [];
   const nextCancerDay = useMemo(
@@ -455,6 +504,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const moveDates = useMemo(() => {
     if (!selectedCase) return [];
     return (data?.days || []).filter((day) => {
+      if (day.closed) return false;
       if (day.count >= day.capacity) return false;
       if (day.date === selectedCase.scheduleDate && day.queueType === selectedCase.queueType) return false;
       if (!selectedCase.isCancer && day.queueType !== "OR17") return false;
@@ -462,6 +512,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       return true;
     });
   }, [data, selectedCase]);
+  const filteredClosures = useMemo(() => {
+    const query = closureSearch.trim().toLocaleLowerCase("th-TH");
+    return (data?.closures || []).filter((closure) => !query
+      || `${closure.date} ${closure.name} ${closure.note}`.toLocaleLowerCase("th-TH").includes(query));
+  }, [closureSearch, data]);
 
   function updateField(name: keyof typeof EMPTY_FORM, value: string) {
     setForm((current) => ({ ...current, [name]: value } as typeof EMPTY_FORM));
@@ -566,6 +621,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setNotice({ type: "error", text: `ระบุวันเองได้ตั้งแต่ ${displayDate(manualDateStart)} เป็นต้นไป` });
       return;
     }
+    if (form.requestedDate && data?.horizonEnd && form.requestedDate > data.horizonEnd) {
+      setNotice({ type: "error", text: `เลือกวันได้ไม่เกิน ${displayDate(data.horizonEnd)}` });
+      return;
+    }
     if (!data?.calendarConnected) {
       setNotice({ type: "error", text: "ยังบันทึกไม่ได้ กรุณาเชื่อม Google Calendar ก่อน" });
       return;
@@ -626,6 +685,69 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       await loadSchedule();
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "กำหนดวันไม่สำเร็จ" });
+    }
+  }
+
+  async function saveClosure(confirmExistingBookings = false) {
+    if (!closureForm.date || !closureForm.name.trim()) {
+      setNotice({ type: "error", text: "กรุณาระบุวันที่และชื่อวันปิดรับคิว" });
+      return;
+    }
+    setClosureSaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/schedule-closures", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...closureForm, confirmExistingBookings }),
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+        requiresConfirmation?: boolean;
+        affectedBookings?: AffectedBooking[];
+      };
+      if (response.status === 409 && payload.requiresConfirmation) {
+        setPendingClosure({ bookings: payload.affectedBookings || [], message: payload.message || "วันที่เลือกมีคิวเดิม" });
+        return;
+      }
+      if (!response.ok) throw new Error(payload.error || "บันทึกวันปิดรับคิวไม่สำเร็จ");
+      setPendingClosure(null);
+      setClosureForm(EMPTY_CLOSURE_FORM);
+      setNotice({ type: "success", text: payload.message || "บันทึกวันปิดรับคิวแล้ว" });
+      await loadSchedule();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "บันทึกวันปิดรับคิวไม่สำเร็จ" });
+    } finally {
+      setClosureSaving(false);
+    }
+  }
+
+  function submitClosure(event: FormEvent) {
+    event.preventDefault();
+    void saveClosure(false);
+  }
+
+  function editClosure(closure: ScheduleClosure) {
+    setClosureForm({ id: closure.id, date: closure.date, name: closure.name, note: closure.note });
+    setNotice(null);
+  }
+
+  async function deleteClosure(closure: ScheduleClosure) {
+    if (!window.confirm(`ลบวันปิดรับคิว ${displayDate(closure.date)} — ${closure.name} ใช่หรือไม่`)) return;
+    setClosureSaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/schedule-closures?id=${encodeURIComponent(closure.id)}`, { method: "DELETE" });
+      const payload = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "ลบวันปิดรับคิวไม่สำเร็จ");
+      if (closureForm.id === closure.id) setClosureForm(EMPTY_CLOSURE_FORM);
+      setNotice({ type: "success", text: payload.message || "ลบวันปิดรับคิวแล้ว" });
+      await loadSchedule();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "ลบวันปิดรับคิวไม่สำเร็จ" });
+    } finally {
+      setClosureSaving(false);
     }
   }
 
@@ -757,7 +879,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 ))}
               </div>
             ) : (
-              <p className="queue-suggestion-empty">ยังไม่พบคิวอื่นที่ตรงทุกเงื่อนไขใน 365 วัน กรุณาปิดหน้าต่างแล้วเปลี่ยนเงื่อนไข Staff หรือเลือก “ห้องไหนก็ได้ที่ยังว่าง”</p>
+              <p className="queue-suggestion-empty">ยังไม่พบคิวอื่นที่ตรงทุกเงื่อนไขในช่วง 12 เดือน กรุณาปิดหน้าต่างแล้วเปลี่ยนเงื่อนไข Staff หรือเลือก “ห้องไหนก็ได้ที่ยังว่าง”</p>
             )}
             <small className="queue-conflict-footnote">การเลือกจากรายการนี้ยังไม่บันทึกคิว กรุณาตรวจสอบข้อมูลแล้วกด “ตรวจสอบและบันทึกคิว” อีกครั้ง</small>
           </section>
@@ -776,6 +898,32 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       )}
 
+      {pendingClosure && (
+        <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setPendingClosure(null)}>
+          <section className="queue-conflict-dialog closure-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="closure-confirm-title" aria-describedby="closure-confirm-message">
+            <span className="queue-conflict-icon" aria-hidden="true">!</span>
+            <div className="queue-conflict-heading">
+              <span>พบคิวเดิมในวันที่ต้องการปิด</span>
+              <h3 id="closure-confirm-title">ยืนยันปิดรับเฉพาะคิวใหม่</h3>
+              <p id="closure-confirm-message">{pendingClosure.message}</p>
+            </div>
+            <div className="closure-affected-list" aria-label="คิวเดิมที่จะคงไว้">
+              {pendingClosure.bookings.map((booking) => (
+                <article key={booking.id}>
+                  <b>{booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #{booking.slotNo}</b>
+                  <span>{booking.operation}</span>
+                  <small>{booking.patientName} · HN ••••{booking.hn.slice(-4)} · {booking.staff}</small>
+                </article>
+              ))}
+            </div>
+            <div className="closure-confirm-actions">
+              <button type="button" onClick={() => setPendingClosure(null)}>กลับไปตรวจสอบ</button>
+              <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       <div className="workspace-grid">
         <section className="panel booking-panel">
           <div className="panel-heading">
@@ -787,7 +935,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <label className="field full"><span>Diagnosis <b>*</b></span><input value={form.diagnosis} onChange={(e) => updateField("diagnosis", e.target.value)} placeholder="เช่น DCIS, Breast Cancer, CA breast, CA thyroid" autoComplete="off" /><small className="field-help">คำที่ระบบจัดเป็น Cancer: DCIS, Cancer, CA breast, CA thyroid และ Thyroid cancer</small></label>
             {cancer && <fieldset className="cancer-mode"><legend>การเลือกคิวสำหรับ Cancer</legend><div className="mode-options"><label aria-label="คิวเร็วที่สุด" htmlFor="cancer-mode-earliest" className={form.cancerSchedulingMode === "earliest" ? "selected" : ""}><input id="cancer-mode-earliest" type="radio" name="cancerSchedulingMode" value="earliest" checked={form.cancerSchedulingMode === "earliest"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "earliest", dateEntryMode: "list", requestedDate: "", requestedQueueType: "" }))} /><span><strong>คิวเร็วที่สุด</strong><small>ให้ระบบเลือกคิวว่างแรกอัตโนมัติ</small></span></label><label aria-label="ระบุวันเอง" htmlFor="cancer-mode-specific" className={form.cancerSchedulingMode === "specific" ? "selected" : ""}><input id="cancer-mode-specific" type="radio" name="cancerSchedulingMode" value="specific" checked={form.cancerSchedulingMode === "specific"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "specific", dateEntryMode: "list", requestedDate: "", requestedQueueType: "OR17" }))} /><span><strong>ระบุวันเอง</strong><small>เลือก OR 17 หรือ OR Extra ที่ยังว่าง</small></span></label></div></fieldset>}
             {cancer && form.cancerSchedulingMode === "earliest" && nextCancerDay && <div className="cancer-suggestion"><span>คิวว่างเร็วที่สุด</span><strong>{displayDate(nextCancerDay.date)} · {nextCancerDay.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><small>ระบบจะตรวจคิวล่าสุดอีกครั้งเมื่อกดบันทึก</small></div>}
-            {cancer && form.cancerSchedulingMode === "earliest" && form.staff && form.staffQueuePreference === "same_staff" && !nextCancerDay && <div className="staff-queue-empty" role="status">ไม่พบคิวว่างใน 120 วันที่ {form.staff} มีเคสอยู่แล้ว กรุณาเลือก “ห้องไหนก็ได้ที่ยังว่าง” หรือระบุวันเอง</div>}
+            {cancer && form.cancerSchedulingMode === "earliest" && form.staff && form.staffQueuePreference === "same_staff" && !nextCancerDay && <div className="staff-queue-empty" role="status">ไม่พบคิวว่างในช่วง 12 เดือนที่ {form.staff} มีเคสอยู่แล้ว กรุณาเลือก “ห้องไหนก็ได้ที่ยังว่าง” หรือระบุวันเอง</div>}
             <div className="form-grid">
               <label className="field"><span>HN <b>*</b></span><input value={form.hn} onChange={(e) => updateField("hn", e.target.value)} inputMode="numeric" placeholder="Hospital number" /></label>
               <label className="field"><span>Tel <b>*</b></span><input value={form.phone} onChange={(e) => updateField("phone", e.target.value)} inputMode="tel" placeholder="เบอร์โทรศัพท์" /></label>
@@ -858,7 +1006,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                       )
                     ) : (
                       <div className={`manual-date-grid ${cancer ? "" : "single"}`}>
-                        <input type="date" min={manualDateStart} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label={`ระบุวันที่ผ่าตัดเอง เริ่มตั้งแต่ ${displayDate(manualDateStart)}`} />
+                        <input type="date" min={manualDateStart} max={data?.horizonEnd} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label={`ระบุวันที่ผ่าตัดเอง เริ่มตั้งแต่ ${displayDate(manualDateStart)} ถึง ${data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วงที่เปิดให้ลงคิว"}`} />
                         {cancer ? (
                           <select value={form.requestedQueueType || "OR17"} onChange={(e) => updateField("requestedQueueType", e.target.value)} aria-label="เลือกห้องผ่าตัด">
                             <option value="OR17">OR 17</option>
@@ -867,7 +1015,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         ) : <span className="fixed-room">OR 17</span>}
                       </div>
                     )}
-                    {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down และเลือกต่อไปได้โดยไม่จำกัดช่วงเวลา</small>}
+                    {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down ถึง {data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วง 12 เดือน"}</small>}
                   </>
                 )}
               </div>
@@ -884,12 +1032,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </section>
 
         <aside className="panel schedule-panel">
-          <div className="panel-heading compact"><div><span className="step">02</span><h3>คิวที่กำลังจะมาถึง</h3></div><button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button></div>
+          <div className="panel-heading compact"><div><span className="step">02</span><h3>{scheduleView === "closures" ? "ตั้งค่าวันปิดรับคิว" : "คิวที่กำลังจะมาถึง"}</h3></div>{scheduleView !== "closures" && <button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button>}</div>
           <div className="schedule-tabs" role="tablist" aria-label="รูปแบบแสดงตารางผ่าตัด">
             <button type="button" role="tab" aria-selected={scheduleView === "list"} className={scheduleView === "list" ? "active" : ""} onClick={() => setScheduleView("list")}>รายการคิว</button>
             <button type="button" role="tab" aria-selected={scheduleView === "month"} className={scheduleView === "month" ? "active" : ""} onClick={() => setScheduleView("month")}>ปฏิทินรายเดือน</button>
+            <button type="button" role="tab" aria-selected={scheduleView === "closures"} className={scheduleView === "closures" ? "active" : ""} onClick={() => { setScheduleView("closures"); setShowExtra(false); }}>วันปิดรับคิว</button>
           </div>
-          {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
+          {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
           {scheduleView === "list" ? (
             <div className="schedule-list" role="tabpanel" aria-label="รายการคิวที่กำลังจะมาถึง">
               {loading && <div className="empty-state">กำลังโหลดคิว…</div>}
@@ -898,10 +1047,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 const rows = bookingsByDay.get(`${day.date}:${day.queueType}`) || [];
                 const remaining = day.capacity - day.count;
                 const needsCancer = day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0;
-                return <article className={`day-card ${day.queueType === "EXTRA" ? "extra" : ""}`} key={`${day.date}:${day.queueType}`}>
+                return <article className={`day-card ${day.queueType === "EXTRA" ? "extra" : ""} ${day.closed ? "closed" : ""}`} key={`${day.date}:${day.queueType}`}>
                   <div className="date-block"><strong>{new Date(`${day.date}T12:00:00+07:00`).getDate()}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short" }).format(new Date(`${day.date}T12:00:00+07:00`))}</span></div>
                   <div className="day-main"><div className="day-title"><div><strong>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><span>{displayDate(day.date, true)} · {day.note}</span></div><em>{day.count}/{day.capacity}</em></div>
                     <div className="capacity-bar"><i style={{ width: `${Math.min(100, (day.count / day.capacity) * 100)}%` }} /></div>
+                    {day.closed && <p className="closure-line">ปิดรับคิว · {day.closureName}{day.closureNote ? ` — ${day.closureNote}` : ""}</p>}
                     {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                     {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
                     {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {row.staff}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
@@ -910,9 +1060,36 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 </article>;
               })}
             </div>
-          ) : (
+          ) : scheduleView === "month" ? (
             <div role="tabpanel" aria-label="ปฏิทินผ่าตัดรายเดือน">
-              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+            </div>
+          ) : (
+            <div className="closure-manager" role="tabpanel" aria-label="ตั้งค่าวันปิดรับคิว">
+              <form className="closure-form" onSubmit={submitClosure}>
+                <div className="closure-form-heading"><strong>{closureForm.id ? "แก้ไขวันปิดรับคิว" : "เพิ่มวันปิดรับคิว"}</strong><small>ปิดทั้ง OR 17 และ OR Extra</small></div>
+                <label><span>วันที่ <b>*</b></span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={closureForm.date} onChange={(event) => setClosureForm((current) => ({ ...current, date: event.target.value }))} required /></label>
+                <label><span>ชื่อวันปิด <b>*</b></span><input value={closureForm.name} maxLength={120} onChange={(event) => setClosureForm((current) => ({ ...current, name: event.target.value }))} placeholder="เช่น วันรัฐธรรมนูญ" required /></label>
+                <label className="wide"><span>หมายเหตุ</span><textarea value={closureForm.note} maxLength={500} onChange={(event) => setClosureForm((current) => ({ ...current, note: event.target.value }))} placeholder="รายละเอียดเพิ่มเติมหรือเหตุผลที่ปิดรับคิว" /></label>
+                <div className="closure-form-actions">
+                  {closureForm.id && <button type="button" onClick={() => setClosureForm(EMPTY_CLOSURE_FORM)}>ยกเลิกแก้ไข</button>}
+                  <button type="submit" disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : closureForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันปิดรับคิว"}</button>
+                </div>
+              </form>
+              <div className="closure-list-toolbar">
+                <strong>รายการวันปิดรับคิว <span>{data?.closures.length || 0}</span></strong>
+                <input type="search" value={closureSearch} onChange={(event) => setClosureSearch(event.target.value)} placeholder="ค้นหาวัน ชื่อ หรือหมายเหตุ" aria-label="ค้นหาวันปิดรับคิว" />
+              </div>
+              <div className="closure-list" aria-live="polite">
+                {filteredClosures.length === 0 ? <p>ไม่พบวันปิดรับคิว</p> : filteredClosures.map((closure) => {
+                  const affectedCount = (data?.bookings || []).filter((booking) => booking.scheduleDate === closure.date).length;
+                  return <article key={closure.id}>
+                    <div className="closure-date"><strong>{Number(closure.date.slice(-2))}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short", year: "numeric" }).format(new Date(`${closure.date}T12:00:00+07:00`))}</span></div>
+                    <div className="closure-detail"><strong>{closure.name}</strong><span>{closure.note || "ไม่มีหมายเหตุ"}</span><small>แก้ไขล่าสุด {closure.updatedAt ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(closure.updatedAt)) : "ไม่ระบุเวลา"}{affectedCount ? ` · มีคิวเดิม ${affectedCount} เคส` : ""}</small></div>
+                    <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={() => void deleteClosure(closure)} disabled={closureSaving}>ลบ</button></div>
+                  </article>;
+                })}
+              </div>
             </div>
           )}
         </aside>
