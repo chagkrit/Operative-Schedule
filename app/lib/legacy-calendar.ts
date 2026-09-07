@@ -71,6 +71,7 @@ export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0)
     lastName: "",
     phone: "",
     operation,
+    note: "",
     staff,
     bookedByEmail: "hnbcmu@gmail.com",
     lastMoveFrom: "",

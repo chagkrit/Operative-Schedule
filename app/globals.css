@@ -112,9 +112,12 @@ button { cursor: pointer; }
 .field.full { grid-column: 1 / -1; margin-bottom: 18px; }
 .field span, .extra-form label span { color: #57454d; font-size: 11px; font-weight: 800; letter-spacing: .02em; }
 .field b { color: var(--rose); }
-.field input, .field select, .extra-form input { width: 100%; height: 48px; padding: 0 14px; border: 1px solid #dfd4d7; border-radius: 12px; color: var(--ink); background: #fff; outline: none; transition: border-color .2s, box-shadow .2s; }
-.field input:focus, .field select:focus, .extra-form input:focus { border-color: var(--rose); box-shadow: 0 0 0 3px rgba(167, 25, 85, .09); }
+.field input, .field select, .field textarea, .extra-form input { width: 100%; height: 48px; padding: 0 14px; border: 1px solid #dfd4d7; border-radius: 12px; color: var(--ink); background: #fff; outline: none; transition: border-color .2s, box-shadow .2s; }
+.field input:focus, .field select:focus, .field textarea:focus, .extra-form input:focus { border-color: var(--rose); box-shadow: 0 0 0 3px rgba(167, 25, 85, .09); }
 .field input::placeholder { color: #b0a2a7; }
+.note-field { margin-top: -2px; }
+.field textarea { min-height: 82px; padding: 12px 14px; resize: vertical; font: inherit; line-height: 1.45; }
+.field textarea::placeholder { color: #b0a2a7; }
 .field-help { margin-top: -2px; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .muted-field { opacity: .62; }
 .staff-field { align-content: start; }

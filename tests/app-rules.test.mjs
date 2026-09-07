@@ -36,6 +36,20 @@ test("supports direct Google Calendar sync and secure production cookies", async
   assert.match(app, /cancerSchedulingMode === "specific"/);
 });
 
+test("stores an optional booking note from the Operation form in Google Calendar", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const route = await read("app/api/schedule/route.ts");
+  const calendar = await read("app/lib/calendar.ts");
+  assert.match(app, /<span>หมายเหตุ<\/span><textarea/);
+  assert.match(app, /updateField\("note", e\.target\.value\)/);
+  assert.match(route, /const note = String\(payload\.note \|\| ""\)\.trim\(\)/);
+  assert.match(route, /note\.length > 1000/);
+  assert.match(calendar, /note: data\.note \|\| ""/);
+  assert.match(calendar, /หมายเหตุ: \$\{booking\.note \|\| "-"\}/);
+  assert.match(calendar, /note: booking\.note/);
+  assert.match(calendar, /note: moved\.note/);
+});
+
 test("imports legacy Calendar cases without duplicating tagged events", async () => {
   const legacy = await read("app/lib/legacy-calendar.ts");
   const calendar = await read("app/lib/calendar.ts");

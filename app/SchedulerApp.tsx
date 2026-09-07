@@ -38,6 +38,7 @@ type Booking = {
   hn: string;
   patientName: string;
   operation: string;
+  note: string;
   staff: string;
   calendarSyncStatus: "pending" | "synced" | "failed";
 };
@@ -127,6 +128,7 @@ const EMPTY_FORM = {
   lastName: "",
   phone: "",
   operation: "",
+  note: "",
   staff: "",
   staffQueuePreference: "any" as "same_staff" | "any",
   requestedDate: "",
@@ -942,6 +944,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <label className="field"><span>ชื่อ <b>*</b></span><input value={form.firstName} onChange={(e) => updateField("firstName", e.target.value)} placeholder="ชื่อผู้ป่วย" /></label>
               <label className="field"><span>สกุล <b>*</b></span><input value={form.lastName} onChange={(e) => updateField("lastName", e.target.value)} placeholder="นามสกุล" /></label>
               <label className="field full"><span>Operation <b>*</b></span><input value={form.operation} onChange={(e) => updateField("operation", e.target.value)} placeholder="ชื่อหัตถการ / การผ่าตัด" /></label>
+              <label className="field full note-field"><span>หมายเหตุ</span><textarea value={form.note} onChange={(e) => updateField("note", e.target.value)} placeholder="ระบุรายละเอียดเพิ่มเติม (ถ้ามี)" maxLength={1000} rows={3} /></label>
               <div className="field staff-field">
                 <span id="staff-label">Staff <b>*</b></span>
                 <select aria-labelledby="staff-label" value={form.staff} onChange={(e) => chooseStaff(e.target.value)}><option value="">เลือก Staff</option>{STAFF.map((staff) => <option key={staff}>{staff}</option>)}</select>

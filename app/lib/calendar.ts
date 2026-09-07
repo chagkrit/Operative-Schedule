@@ -17,6 +17,7 @@ export type CalendarBooking = {
   lastName: string;
   phone: string;
   operation: string;
+  note: string;
   staff: string;
   bookedByEmail: string;
   lastMoveFrom: string;
@@ -203,6 +204,7 @@ function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
     lastName: data.last_name || "",
     phone: data.phone || "",
     operation: data.operation || "",
+    note: data.note || "",
     staff: data.staff || "",
     bookedByEmail: data.booked_by || AUTHORIZED_EMAIL,
     lastMoveFrom: data.last_move_from || "",
@@ -295,6 +297,7 @@ export async function createBookingEvent(
           `ชื่อ-สกุล: ${booking.firstName} ${booking.lastName}`,
           `Tel: ${booking.phone}`,
           `Operation: ${booking.operation}`,
+          `หมายเหตุ: ${booking.note || "-"}`,
           `Staff: ${booking.staff}`,
           `ประเภทคิว: ${room}`,
           `ลงคิวโดย: ${booking.bookedByEmail}`,
@@ -314,6 +317,7 @@ export async function createBookingEvent(
           last_name: booking.lastName,
           phone: booking.phone,
           operation: booking.operation,
+          note: booking.note,
           staff: booking.staff,
           booked_by: booking.bookedByEmail,
           last_move_from: "",
@@ -388,6 +392,7 @@ function eventDescription(booking: CalendarBooking) {
     `ชื่อ-สกุล: ${booking.firstName} ${booking.lastName}`,
     `Tel: ${booking.phone}`,
     `Operation: ${booking.operation}`,
+    `หมายเหตุ: ${booking.note || "-"}`,
     `Staff: ${booking.staff}`,
     `ประเภทคิว: ${room}`,
     `ลงคิวโดย: ${booking.bookedByEmail}`,
@@ -424,6 +429,7 @@ export async function moveCalendarBooking(
     last_name: moved.lastName,
     phone: moved.phone,
     operation: moved.operation,
+    note: moved.note,
     staff: moved.staff,
     booked_by: moved.bookedByEmail,
     imported_from_calendar: String(Boolean(moved.importedFromCalendar)),

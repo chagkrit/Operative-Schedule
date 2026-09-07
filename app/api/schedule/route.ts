@@ -35,6 +35,7 @@ export async function GET(request: Request) {
           hn: booking.hn,
           patientName: `${booking.firstName} ${booking.lastName}`,
           operation: booking.operation,
+          note: booking.note,
           staff: booking.staff,
           calendarSyncStatus: "synced" as const,
         })),
@@ -66,6 +67,7 @@ export async function POST(request: Request) {
     const lastName = String(payload.lastName || "").trim();
     const phone = String(payload.phone || "").trim();
     const operation = String(payload.operation || "").trim();
+    const note = String(payload.note || "").trim();
     const staff = String(payload.staff || "").trim();
     const staffQueuePreference = String(payload.staffQueuePreference || "any").trim();
     const requestedDate = String(payload.requestedDate || "").trim();
@@ -75,6 +77,7 @@ export async function POST(request: Request) {
     const missing = [[diagnosis, "Diagnosis"], [hn, "HN"], [firstName, "ชื่อ"], [lastName, "สกุล"], [phone, "Tel"], [operation, "Operation"], [staff, "Staff"]]
       .filter(([value]) => !value).map(([, label]) => label);
     if (missing.length) return Response.json({ error: `กรุณากรอกข้อมูลให้ครบ: ${missing.join(", ")}` }, { status: 400 });
+    if (note.length > 1000) return Response.json({ error: "หมายเหตุต้องมีความยาวไม่เกิน 1,000 ตัวอักษร" }, { status: 400 });
     if (!STAFF_OPTIONS.includes(staff as (typeof STAFF_OPTIONS)[number])) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
     if (!["same_staff", "any"].includes(staffQueuePreference)) return Response.json({ error: "กรุณาเลือกเงื่อนไขห้องผ่าตัดตาม Staff" }, { status: 400 });
     if (!["list", "manual"].includes(dateEntryMode)) return Response.json({ error: "กรุณาเลือกวิธีระบุวันที่ผ่าตัด" }, { status: 400 });
@@ -184,6 +187,7 @@ export async function POST(request: Request) {
       lastName,
       phone,
       operation,
+      note,
       staff,
       bookedByEmail: AUTHORIZED_EMAIL,
     });
