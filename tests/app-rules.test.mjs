@@ -272,6 +272,8 @@ test("smart-searches the selected Staff team without patient identifiers", async
 test("keeps the active-device status static and supports desktop, tablet, and mobile layouts", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const styles = await read("app/globals.css");
+  const layout = await read("app/layout.tsx");
+  const staffStyles = await read("app/staff-selector-v2.css");
   assert.match(app, /className="presence-status"/);
   assert.match(app, /ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่/);
   assert.doesNotMatch(app, /presence-marquee-track/);
@@ -282,4 +284,9 @@ test("keeps the active-device status static and supports desktop, tablet, and mo
   assert.match(styles, /@media \(max-width: 650px\)/);
   assert.match(styles, /@media \(max-width: 480px\)/);
   assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) auto auto/);
+  assert.match(layout, /import "\.\/staff-selector-v2\.css"/);
+  assert.match(staffStyles, /grid-template-columns: 18px minmax\(0, 1fr\)/);
+  assert.match(staffStyles, /input\[type="checkbox"\]/);
+  assert.match(staffStyles, /width: 16px !important/);
+  assert.match(staffStyles, /@media \(max-width: 650px\)/);
 });

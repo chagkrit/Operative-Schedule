@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
+import "./staff-selector-v2.css";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
