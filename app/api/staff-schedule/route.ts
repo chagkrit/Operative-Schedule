@@ -1,18 +1,23 @@
 import { listUpcomingCalendarBookings } from "../../lib/calendar";
-import { dateOnly, STAFF_OPTIONS } from "../../lib/schedule";
+import { dateOnly, isStaffOption, orderedStaffMembers } from "../../lib/schedule";
 
 export async function GET(request: Request) {
   try {
-    const staff = new URL(request.url).searchParams.get("staff")?.trim() || "";
-    if (!STAFF_OPTIONS.includes(staff as (typeof STAFF_OPTIONS)[number])) {
+    const requestedStaffMembers = new URL(request.url).searchParams.getAll("staff").map((staff) => staff.trim());
+    if (!requestedStaffMembers.length || requestedStaffMembers.some((staff) => !isStaffOption(staff))) {
       return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
     }
+    if (new Set(requestedStaffMembers).size !== requestedStaffMembers.length) {
+      return Response.json({ error: "กรุณาเลือก Staff แต่ละคนเพียงครั้งเดียว" }, { status: 400 });
+    }
+    const staffMembers = orderedStaffMembers(requestedStaffMembers);
+    const staffMemberSet = new Set<string>(staffMembers);
 
     const bookings = await listUpcomingCalendarBookings(request, dateOnly());
     return Response.json({
-      staff,
+      staffMembers,
       cases: bookings
-        .filter((booking) => booking.staff === staff)
+        .filter((booking) => booking.staffMembers.some((member) => staffMemberSet.has(member)))
         .map((booking) => ({
           id: booking.id,
           scheduleDate: booking.scheduleDate,
@@ -20,6 +25,7 @@ export async function GET(request: Request) {
           slotNo: booking.slotNo,
           diagnosis: booking.diagnosis,
           operation: booking.operation,
+          staffMembers: booking.staffMembers,
         })),
     });
   } catch (error) {

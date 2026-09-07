@@ -1,7 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot } from "../../lib/queue";
-import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay, STAFF_OPTIONS } from "../../lib/schedule";
+import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay, isStaffOption, orderedStaffMembers } from "../../lib/schedule";
 
 function statusFor(error: unknown) {
   const message = error instanceof Error ? error.message : "เกิดข้อผิดพลาด";
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
           patientName: `${booking.firstName} ${booking.lastName}`,
           operation: booking.operation,
           note: booking.note,
-          staff: booking.staff,
+          staffMembers: booking.staffMembers,
           calendarSyncStatus: "synced" as const,
         })),
       recentMoves: recentMoves.map((booking) => ({
@@ -68,17 +68,24 @@ export async function POST(request: Request) {
     const phone = String(payload.phone || "").trim();
     const operation = String(payload.operation || "").trim();
     const note = String(payload.note || "").trim();
-    const staff = String(payload.staff || "").trim();
+    const rawStaffMembers = payload.staffMembers;
+    const submittedStaffMembers = Array.isArray(rawStaffMembers)
+      ? rawStaffMembers.map((value) => typeof value === "string" ? value.trim() : "")
+      : [];
+    const staffMembers = orderedStaffMembers(submittedStaffMembers);
+    const staffMemberSet = new Set<string>(staffMembers);
     const staffQueuePreference = String(payload.staffQueuePreference || "any").trim();
     const requestedDate = String(payload.requestedDate || "").trim();
     const requestedQueueType = String(payload.requestedQueueType || "").trim();
     const cancerSchedulingMode = String(payload.cancerSchedulingMode || "earliest").trim();
     const dateEntryMode = String(payload.dateEntryMode || "list").trim();
-    const missing = [[diagnosis, "Diagnosis"], [hn, "HN"], [firstName, "ชื่อ"], [lastName, "สกุล"], [phone, "Tel"], [operation, "Operation"], [staff, "Staff"]]
+    const missing = [[diagnosis, "Diagnosis"], [hn, "HN"], [firstName, "ชื่อ"], [lastName, "สกุล"], [phone, "Tel"], [operation, "Operation"]]
       .filter(([value]) => !value).map(([, label]) => label);
+    if (submittedStaffMembers.length === 0) missing.push("Staff");
     if (missing.length) return Response.json({ error: `กรุณากรอกข้อมูลให้ครบ: ${missing.join(", ")}` }, { status: 400 });
     if (note.length > 1000) return Response.json({ error: "หมายเหตุต้องมีความยาวไม่เกิน 1,000 ตัวอักษร" }, { status: 400 });
-    if (!STAFF_OPTIONS.includes(staff as (typeof STAFF_OPTIONS)[number])) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
+    if (submittedStaffMembers.some((staff) => !isStaffOption(staff))) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
+    if (new Set(submittedStaffMembers).size !== submittedStaffMembers.length) return Response.json({ error: "กรุณาเลือก Staff แต่ละคนเพียงครั้งเดียว" }, { status: 400 });
     if (!["same_staff", "any"].includes(staffQueuePreference)) return Response.json({ error: "กรุณาเลือกเงื่อนไขห้องผ่าตัดตาม Staff" }, { status: 400 });
     if (!["list", "manual"].includes(dateEntryMode)) return Response.json({ error: "กรุณาเลือกวิธีระบุวันที่ผ่าตัด" }, { status: 400 });
 
@@ -109,7 +116,7 @@ export async function POST(request: Request) {
     const { days, bookings } = requestedSchedule;
     const staffDayKeys = new Set(
       bookings
-        .filter((booking) => booking.staff === staff)
+        .filter((booking) => booking.staffMembers.some((member) => staffMemberSet.has(member)))
         .map((booking) => `${booking.scheduleDate}:${booking.queueType}`),
     );
     const matchesStaffPreference = (day: (typeof days)[number]) =>
@@ -119,7 +126,7 @@ export async function POST(request: Request) {
     if (dropdownSchedule) {
       const dropdownStaffDayKeys = new Set(
         dropdownSchedule.bookings
-          .filter((booking) => booking.staff === staff)
+          .filter((booking) => booking.staffMembers.some((member) => staffMemberSet.has(member)))
           .map((booking) => `${booking.scheduleDate}:${booking.queueType}`),
       );
       const dropdownDays = dropdownSchedule.days.filter((day) => {
@@ -161,7 +168,7 @@ export async function POST(request: Request) {
       const selectedDay = days.find((day) => day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17"));
       const selectedDayError = hasSpecificDate ? destinationError({ isCancer }, selectedDay) : "";
       const error = staffQueuePreference === "same_staff" && selectedDay && !matchesStaffPreference(selectedDay)
-        ? `ไม่พบคิวว่างที่ ${staff} มีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
+        ? `ไม่พบคิวว่างที่ Staff ที่เลือกมีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
         : selectedDayError
           ? selectedDayError
         : isCancer && cancerSchedulingMode === "earliest"
@@ -188,7 +195,7 @@ export async function POST(request: Request) {
       phone,
       operation,
       note,
-      staff,
+      staffMembers,
       bookedByEmail: AUTHORIZED_EMAIL,
     });
     const verified = await getSchedule(request, selected.date, selected.date);

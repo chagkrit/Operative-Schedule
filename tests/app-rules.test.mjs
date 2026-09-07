@@ -61,6 +61,16 @@ test("imports legacy Calendar cases without duplicating tagged events", async ()
   assert.match(route, /importedCount/);
 });
 
+test("keeps single-Staff Calendar events compatible while storing new team memberships", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const legacy = await read("app/lib/legacy-calendar.ts");
+  assert.match(calendar, /JSON\.parse\(data\.staff_members \|\| "\[\]"\)/);
+  assert.match(calendar, /return legacyStaff \? \[legacyStaff\] : \[\]/);
+  assert.match(legacy, /staffMembers: staff === "ไม่ระบุ" \? \[\] : \[staff\]/);
+  assert.match(calendar, /staff_members: JSON\.stringify\(moved\.staffMembers\)/);
+  assert.match(calendar, /staff_members: JSON\.stringify\(booking\.staffMembers\)/);
+});
+
 test("maps legacy English Staff initials exactly as the OR team defines", async () => {
   const legacy = await read("app/lib/legacy-calendar.ts");
   assert.match(legacy, /A: "อ อารีวรรณ"/);
@@ -74,7 +84,7 @@ test("maps legacy English Staff initials exactly as the OR team defines", async 
   assert.match(legacy, /legacyStaffFromPrefix\(beforeHn\)/);
 });
 
-test("creates timed Calendar slots and assigns colors by Staff", async () => {
+test("creates timed Calendar slots and assigns colors by the primary Staff member", async () => {
   const calendar = await read("app/lib/calendar.ts");
   assert.match(calendar, /startHour = 7 \+ Math\.max\(1, slotNo\)/);
   assert.match(calendar, /timeZone: "Asia\/Bangkok"/);
@@ -84,8 +94,10 @@ test("creates timed Calendar slots and assigns colors by Staff", async () => {
   assert.match(calendar, /"อ จักรกริช": "9"/);
   assert.match(calendar, /"อ จุฬารัตน์": "3"/);
   assert.match(calendar, /"อ ณิชกานต์": "6"/);
-  assert.match(calendar, /colorId: staffEventColor\(booking\.staff\)/);
-  assert.match(calendar, /colorId: staffEventColor\(moved\.staff\)/);
+  assert.match(calendar, /staff_members: JSON\.stringify\(booking\.staffMembers\)/);
+  assert.match(calendar, /staff: booking\.staffMembers\[0\] \|\| ""/);
+  assert.match(calendar, /colorId: staffEventColor\(booking\.staffMembers\)/);
+  assert.match(calendar, /colorId: staffEventColor\(moved\.staffMembers\)/);
   const app = await read("app/SchedulerApp.tsx");
   assert.match(app, /displaySlotTime\(row\.slotNo\)/);
 });
@@ -151,17 +163,21 @@ test("keeps OR Extra at four cases and exposes a monthly count calendar", async 
   assert.doesNotMatch(app, /type="number" min="1" max="8"/);
 });
 
-test("filters available OR rooms by the selected Staff when requested", async () => {
+test("supports one or many Staff members and filters rooms when any selected Staff already has a case", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const route = await read("app/api/schedule/route.ts");
   assert.match(app, /staffQueuePreference: "any" as "same_staff" \| "any"/);
+  assert.match(app, /staffMembers: \[\] as string\[\]/);
+  assert.match(app, /type="checkbox"/);
+  assert.match(app, /toggleStaffMember/);
   assert.match(app, /ห้องที่ Staff มีเคสแล้ว/);
   assert.match(app, /ห้องไหนก็ได้ที่ยังว่าง/);
-  assert.match(app, /booking\.staff === form\.staff/);
+  assert.match(app, /booking\.staffMembers\.some\(\(member\) => form\.staffMembers\.includes\(member\)\)/);
   assert.match(app, /staffDayKeys\.has\(`\$\{day\.date\}:\$\{day\.queueType\}`\)/);
   assert.match(route, /staffQueuePreference === "any" \|\| staffDayKeys\.has/);
-  assert.match(route, /booking\.staff === staff/);
-  assert.match(route, /ไม่พบคิวว่างที่ \$\{staff\} มีเคสอยู่แล้ว/);
+  assert.match(route, /booking\.staffMembers\.some\(\(member\) => staffMemberSet\.has\(member\)\)/);
+  assert.match(route, /submittedStaffMembers\.length === 0/);
+  assert.match(route, /new Set\(submittedStaffMembers\)\.size !== submittedStaffMembers\.length/);
 });
 
 test("shows a conflict popup and suggests valid alternative OR dates", async () => {
@@ -232,17 +248,19 @@ test("exposes closure management and a rolling 12-month Buddhist calendar", asyn
   assert.match(styles, /\.closure-manager/);
 });
 
-test("smart-searches all upcoming cases for the selected Staff without patient identifiers", async () => {
+test("smart-searches the selected Staff team without patient identifiers", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const route = await read("app/api/staff-schedule/route.ts");
   const calendar = await read("app/lib/calendar.ts");
-  assert.match(app, /\/api\/staff-schedule\?staff=/);
+  assert.match(app, /params\.append\("staff", staff\)/);
   assert.match(app, /SMART SEARCH/);
-  assert.match(app, /คิวผ่าตัดของ \{form\.staff\}/);
+  assert.match(app, /คิวผ่าตัดของ \{staffLabel\(form\.staffMembers\)\}/);
   assert.match(app, /booking\.diagnosis/);
   assert.match(app, /booking\.operation/);
   assert.match(app, /ไม่แสดงชื่อ สกุล หรือ HN/);
-  assert.match(route, /booking\.staff === staff/);
+  assert.match(route, /getAll\("staff"\)/);
+  assert.match(route, /booking\.staffMembers\.some\(\(member\) => staffMemberSet\.has\(member\)\)/);
+  assert.match(route, /staffMembers: booking\.staffMembers/);
   assert.match(route, /diagnosis: booking\.diagnosis/);
   assert.match(route, /operation: booking\.operation/);
   assert.doesNotMatch(route, /hn: booking\.hn/);

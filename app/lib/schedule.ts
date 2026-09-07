@@ -7,6 +7,17 @@ export const STAFF_OPTIONS = [
   "อ ณิชกานต์",
 ] as const;
 
+export type StaffOption = (typeof STAFF_OPTIONS)[number];
+
+export function isStaffOption(value: string): value is StaffOption {
+  return STAFF_OPTIONS.includes(value as StaffOption);
+}
+
+export function orderedStaffMembers(values: readonly string[]) {
+  const selected = new Set(values);
+  return STAFF_OPTIONS.filter((staff) => selected.has(staff));
+}
+
 export function dateOnly(date = new Date()) {
   const inBangkok = new Date(date.getTime() + 7 * 60 * 60 * 1000);
   return inBangkok.toISOString().slice(0, 10);

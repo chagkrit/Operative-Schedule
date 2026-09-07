@@ -22,7 +22,7 @@ export async function GET(request: Request) {
         diagnosis: booking.diagnosis,
         isCancer: booking.isCancer,
         operation: booking.operation,
-        staff: booking.staff,
+        staffMembers: booking.staffMembers,
         scheduleDate: booking.scheduleDate,
         queueType: booking.queueType,
         slotNo: booking.slotNo,

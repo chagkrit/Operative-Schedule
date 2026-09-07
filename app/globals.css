@@ -121,6 +121,13 @@ button { cursor: pointer; }
 .field-help { margin-top: -2px; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .muted-field { opacity: .62; }
 .staff-field { align-content: start; }
+.staff-selector { display: grid; gap: 7px; margin: 0; padding: 0; border: 0; }
+.staff-selector legend { padding: 0; color: #57454d; font-size: 11px; font-weight: 800; letter-spacing: .02em; }
+.staff-selector > div { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.staff-selector label { display: flex; align-items: center; gap: 7px; min-height: 38px; padding: 7px 9px; border: 1px solid #dfd4d7; border-radius: 10px; color: #493940; background: #fff; font-size: 9px; font-weight: 700; cursor: pointer; }
+.staff-selector label:has(input:checked) { border-color: #d79aae; color: var(--rose-deep); background: var(--rose-soft); }
+.staff-selector input { width: 15px; height: 15px; padding: 0; accent-color: var(--rose); }
+.staff-selector small { color: var(--muted); font-size: 8px; line-height: 1.4; }
 .staff-queue-preference { display: grid; gap: 5px; margin: 3px 0 0; padding: 0; border: 0; }
 .staff-queue-preference legend { margin-bottom: 4px; color: #57454d; font-size: 9px; font-weight: 800; }
 .staff-queue-preference > div { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 11px; background: #f2edef; }
@@ -409,6 +416,7 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .diagnosis-badge { max-width: 135px; text-align: center; }
   .form-grid { grid-template-columns: 1fr; gap: 14px; }
   .staff-queue-preference button { min-height: 38px; font-size: 9px; }
+  .staff-selector > div { grid-template-columns: 1fr; }
   .staff-smart-list { max-height: 310px; }
   .staff-smart-list article { padding: 12px; }
   .mode-options { grid-template-columns: 1fr; }

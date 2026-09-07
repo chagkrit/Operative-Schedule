@@ -18,7 +18,7 @@ function affectedBooking(booking: Awaited<ReturnType<typeof listCalendarData>>["
     hn: booking.hn,
     patientName: `${booking.firstName} ${booking.lastName}`,
     operation: booking.operation,
-    staff: booking.staff,
+    staffMembers: booking.staffMembers,
     queueType: booking.queueType,
     slotNo: booking.slotNo,
   };

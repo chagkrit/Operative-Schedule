@@ -72,7 +72,7 @@ export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0)
     phone: "",
     operation,
     note: "",
-    staff,
+    staffMembers: staff === "ไม่ระบุ" ? [] : [staff],
     bookedByEmail: "hnbcmu@gmail.com",
     lastMoveFrom: "",
     lastMoveTo: "",

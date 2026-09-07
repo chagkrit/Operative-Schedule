@@ -1,6 +1,6 @@
 import { getToken } from "next-auth/jwt";
 import { AUTHORIZED_EMAIL } from "../../auth";
-import { addDays } from "./schedule";
+import { addDays, orderedStaffMembers } from "./schedule";
 import { calendarEventDate, parseLegacyCalendarEvent, type LegacyCalendarEvent } from "./legacy-calendar";
 
 export type QueueType = "OR17" | "EXTRA";
@@ -18,7 +18,7 @@ export type CalendarBooking = {
   phone: string;
   operation: string;
   note: string;
-  staff: string;
+  staffMembers: string[];
   bookedByEmail: string;
   lastMoveFrom: string;
   lastMoveTo: string;
@@ -76,8 +76,26 @@ export function bookingEventTiming(date: string, slotNo: number) {
   };
 }
 
-function staffEventColor(staff: string) {
-  return STAFF_EVENT_COLORS[staff] || "8";
+function staffEventColor(staffMembers: readonly string[]) {
+  return STAFF_EVENT_COLORS[staffMembers[0]] || "8";
+}
+
+function parseStaffMembers(data: Record<string, string>) {
+  const legacyStaff = data.staff?.trim();
+  try {
+    const parsed = JSON.parse(data.staff_members || "[]");
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+      const members = orderedStaffMembers(parsed.map((item) => item.trim()));
+      if (members.length) return members;
+    }
+  } catch {
+    // Keep reading pre-migration Calendar events through the legacy staff field.
+  }
+  return legacyStaff ? [legacyStaff] : [];
+}
+
+function staffLine(staffMembers: readonly string[]) {
+  return staffMembers.join(", ") || "ไม่ระบุ";
 }
 
 async function authorizedAccessToken(request: Request) {
@@ -205,7 +223,7 @@ function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
     phone: data.phone || "",
     operation: data.operation || "",
     note: data.note || "",
-    staff: data.staff || "",
+    staffMembers: parseStaffMembers(data),
     bookedByEmail: data.booked_by || AUTHORIZED_EMAIL,
     lastMoveFrom: data.last_move_from || "",
     lastMoveTo: data.last_move_to || "",
@@ -298,13 +316,13 @@ export async function createBookingEvent(
           `Tel: ${booking.phone}`,
           `Operation: ${booking.operation}`,
           `หมายเหตุ: ${booking.note || "-"}`,
-          `Staff: ${booking.staff}`,
+          `Staff: ${staffLine(booking.staffMembers)}`,
           `ประเภทคิว: ${room}`,
           `ลงคิวโดย: ${booking.bookedByEmail}`,
         ].join("\n"),
         location: room,
         ...timing,
-        colorId: staffEventColor(booking.staff),
+        colorId: staffEventColor(booking.staffMembers),
         reminders: { useDefault: false, overrides: [] },
         extendedProperties: { private: {
           or_queue: "booking",
@@ -318,7 +336,8 @@ export async function createBookingEvent(
           phone: booking.phone,
           operation: booking.operation,
           note: booking.note,
-          staff: booking.staff,
+          staff: booking.staffMembers[0] || "",
+          staff_members: JSON.stringify(booking.staffMembers),
           booked_by: booking.bookedByEmail,
           last_move_from: "",
           last_move_to: "",
@@ -393,7 +412,7 @@ function eventDescription(booking: CalendarBooking) {
     `Tel: ${booking.phone}`,
     `Operation: ${booking.operation}`,
     `หมายเหตุ: ${booking.note || "-"}`,
-    `Staff: ${booking.staff}`,
+    `Staff: ${staffLine(booking.staffMembers)}`,
     `ประเภทคิว: ${room}`,
     `ลงคิวโดย: ${booking.bookedByEmail}`,
   ].join("\n");
@@ -430,7 +449,8 @@ export async function moveCalendarBooking(
     phone: moved.phone,
     operation: moved.operation,
     note: moved.note,
-    staff: moved.staff,
+    staff: moved.staffMembers[0] || "",
+    staff_members: JSON.stringify(moved.staffMembers),
     booked_by: moved.bookedByEmail,
     imported_from_calendar: String(Boolean(moved.importedFromCalendar)),
     last_move_from: booking.scheduleDate,
@@ -449,7 +469,7 @@ export async function moveCalendarBooking(
         description: eventDescription(moved),
         location: room,
         ...timing,
-        colorId: staffEventColor(moved.staff),
+        colorId: staffEventColor(moved.staffMembers),
         reminders: { useDefault: false, overrides: [] },
         extendedProperties: { private: privateData },
       }),
@@ -476,10 +496,12 @@ export async function restoreCalendarBooking(
         description: eventDescription(booking),
         location: room,
         ...timing,
-        colorId: staffEventColor(booking.staff),
+        colorId: staffEventColor(booking.staffMembers),
         reminders: { useDefault: false, overrides: [] },
         extendedProperties: { private: {
           ...(event.extendedProperties?.private || {}),
+          staff: booking.staffMembers[0] || "",
+          staff_members: JSON.stringify(booking.staffMembers),
           queue_type: booking.queueType,
           slot_no: String(booking.slotNo),
           last_move_from: booking.lastMoveFrom,
