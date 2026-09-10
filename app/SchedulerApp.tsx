@@ -35,6 +35,7 @@ type Booking = {
   slotNo: number;
   diagnosis: string;
   isCancer: boolean;
+  neoadjuvantTreatment: boolean | null;
   hn: string;
   patientName: string;
   operation: string;
@@ -73,6 +74,7 @@ type SearchResult = {
   patientName: string;
   diagnosis: string;
   isCancer: boolean;
+  neoadjuvantTreatment: boolean | null;
   operation: string;
   staffMembers: string[];
   scheduleDate: string;
@@ -130,6 +132,7 @@ const EMPTY_FORM = {
   phone: "",
   operation: "",
   note: "",
+  neoadjuvantTreatment: false,
   staffMembers: [] as string[],
   staffQueuePreference: "any" as "same_staff" | "any",
   requestedDate: "",
@@ -341,6 +344,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [closureSearch, setClosureSearch] = useState("");
   const [closureSaving, setClosureSaving] = useState(false);
   const [pendingClosure, setPendingClosure] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
+  const [exportRange, setExportRange] = useState(() => {
+    const today = bangkokToday();
+    return { from: addCalendarDays(today, -1825), to: addCalendarDays(today, 730) };
+  });
+  const [exporting, setExporting] = useState(false);
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
@@ -503,7 +511,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const selectedQueueType = cancer && form.cancerSchedulingMode === "earliest"
     ? nextCancerDay?.queueType || ""
     : form.requestedQueueType || (!cancer ? "OR17" : "");
-  const waitingDays = selectedSurgeryDate ? daysBetween(bangkokToday(), selectedSurgeryDate) : null;
+  const queuedDate = bangkokToday();
+  const waitingDays = selectedSurgeryDate ? daysBetween(queuedDate, selectedSurgeryDate) : null;
   const bookingsByDay = useMemo(() => {
     const map = new Map<string, Booking[]>();
     for (const booking of data?.bookings || []) {
@@ -611,6 +620,37 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     if (synced) setShowSyncPrompt(false);
   }
 
+  async function exportWaitingTime() {
+    if (!exportRange.from || !exportRange.to || exportRange.from > exportRange.to) {
+      setNotice({ type: "error", text: "กรุณาระบุช่วงวันผ่าตัดสำหรับ Export ให้ถูกต้อง" });
+      return;
+    }
+    setExporting(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/wait-time-export?from=${encodeURIComponent(exportRange.from)}&to=${encodeURIComponent(exportRange.to)}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error || "Export ข้อมูลเวลารอผ่าตัดไม่สำเร็จ");
+      }
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `operative-waiting-time_${exportRange.from}_to_${exportRange.to}.xlsx`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+      setNotice({ type: "success", text: "ดาวน์โหลดไฟล์ Excel ข้อมูลระยะเวลารอผ่าตัดแล้ว" });
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "Export ข้อมูลเวลารอผ่าตัดไม่สำเร็จ" });
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function submitBooking(event: FormEvent) {
     event.preventDefault();
     const labels: Record<string, string> = {
@@ -625,7 +665,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     const missing = Object.entries(labels)
       .filter(([key]) => key === "staffMembers"
         ? form.staffMembers.length === 0
-        : !form[key as Exclude<keyof typeof form, "staffMembers">].trim())
+        : !String(form[key as keyof typeof form]).trim())
       .map(([, label]) => label);
     if ((!cancer || form.cancerSchedulingMode === "specific") && !form.requestedDate) {
       missing.push("วันที่ผ่าตัด");
@@ -840,6 +880,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
           </div>
           <button className="sync-button" type="button" onClick={syncCalendar} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
+          <button className="export-button" type="button" onClick={() => void exportWaitingTime()} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
         </div>
       </header>
@@ -959,6 +1000,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <label className="field"><span>ชื่อ <b>*</b></span><input value={form.firstName} onChange={(e) => updateField("firstName", e.target.value)} placeholder="ชื่อผู้ป่วย" /></label>
               <label className="field"><span>สกุล <b>*</b></span><input value={form.lastName} onChange={(e) => updateField("lastName", e.target.value)} placeholder="นามสกุล" /></label>
               <label className="field full"><span>Operation <b>*</b></span><input value={form.operation} onChange={(e) => updateField("operation", e.target.value)} placeholder="ชื่อหัตถการ / การผ่าตัด" /></label>
+              <label className="field full neoadjuvant-field"><span>Neoadjuvant treatment</span><span className="neoadjuvant-choice"><input type="checkbox" checked={form.neoadjuvantTreatment} onChange={(event) => setForm((current) => ({ ...current, neoadjuvantTreatment: event.target.checked }))} />เคยได้รับการรักษาแบบ neoadjuvant มาก่อน</span><small className="field-help">หากไม่เลือก ระบบจะบันทึกว่า “ไม่ได้รับ”</small></label>
               <label className="field full note-field"><span>หมายเหตุ</span><textarea value={form.note} onChange={(e) => updateField("note", e.target.value)} placeholder="ระบุรายละเอียดเพิ่มเติม (ถ้ามี)" maxLength={1000} rows={3} /></label>
               <div className="field staff-field">
                 <fieldset className="staff-selector" aria-describedby="staff-help">
@@ -1047,7 +1089,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             {selectedSurgeryDate && waitingDays !== null && (
               <div className="wait-time-card" role="status">
                 <div><span>ระยะเวลารอคิว</span><strong>{waitingDays} วัน</strong></div>
-                <p>{displayDate(selectedSurgeryDate)} · {selectedQueueType === "EXTRA" ? "OR Extra" : "OR 17"}</p>
+                <p>นับจากวันที่ลงคิว {displayDate(queuedDate, true)}<br />{displayDate(selectedSurgeryDate)} · {selectedQueueType === "EXTRA" ? "OR Extra" : "OR 17"}</p>
               </div>
             )}
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
@@ -1062,6 +1104,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <button type="button" role="tab" aria-selected={scheduleView === "month"} className={scheduleView === "month" ? "active" : ""} onClick={() => setScheduleView("month")}>ปฏิทินรายเดือน</button>
             <button type="button" role="tab" aria-selected={scheduleView === "closures"} className={scheduleView === "closures" ? "active" : ""} onClick={() => { setScheduleView("closures"); setShowExtra(false); }}>วันปิดรับคิว</button>
           </div>
+          <section className="wait-time-export" aria-label="Export ข้อมูลระยะเวลารอผ่าตัด">
+            <div><strong>Export Excel เวลารอผ่าตัด</strong><small>ไม่รวม HN ชื่อ และเบอร์โทร</small></div>
+            <label><span>วันผ่าตัดตั้งแต่</span><input type="date" value={exportRange.from} onChange={(event) => setExportRange((current) => ({ ...current, from: event.target.value }))} /></label>
+            <label><span>ถึง</span><input type="date" value={exportRange.to} onChange={(event) => setExportRange((current) => ({ ...current, to: event.target.value }))} /></label>
+            <button type="button" onClick={() => void exportWaitingTime()} disabled={exporting}>{exporting ? "กำลัง Export…" : "↓ Download Excel"}</button>
+          </section>
           {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
           {scheduleView === "list" ? (
             <div className="schedule-list" role="tabpanel" aria-label="รายการคิวที่กำลังจะมาถึง">

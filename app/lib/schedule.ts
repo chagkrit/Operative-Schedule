@@ -29,6 +29,12 @@ export function addDays(date: string, amount: number) {
   return value.toISOString().slice(0, 10);
 }
 
+export function daysBetween(from: string, to: string) {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  return Math.max(0, Math.round((end - start) / 86_400_000));
+}
+
 export function endOfRollingHorizon(date = dateOnly()) {
   const [year, month] = date.split("-").map(Number);
   return new Date(Date.UTC(year, month + 12, 0)).toISOString().slice(0, 10);

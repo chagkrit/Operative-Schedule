@@ -6,6 +6,7 @@ export type LegacyCalendarEvent = {
   description?: string;
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
+  created?: string;
   extendedProperties?: { private?: Record<string, string> };
 };
 
@@ -29,6 +30,13 @@ export function legacyStaffFromPrefix(value: string) {
 
 export function calendarEventDate(event: LegacyCalendarEvent) {
   return event.start?.date || event.start?.dateTime?.slice(0, 10) || "";
+}
+
+export function calendarTimestampDate(value?: string) {
+  if (!value) return "";
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "";
+  return new Date(timestamp.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0) {
@@ -62,10 +70,12 @@ export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0)
   return {
     id: event.id,
     scheduleDate,
+    queuedDate: calendarTimestampDate(event.created) || scheduleDate,
     queueType,
     slotNo,
     diagnosis,
     isCancer,
+    neoadjuvantTreatment: null,
     hn,
     firstName: patientName,
     lastName: "",

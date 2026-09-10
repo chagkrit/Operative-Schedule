@@ -21,6 +21,7 @@ export async function GET(request: Request) {
         patientName: `${booking.firstName} ${booking.lastName}`,
         diagnosis: booking.diagnosis,
         isCancer: booking.isCancer,
+        neoadjuvantTreatment: booking.neoadjuvantTreatment,
         operation: booking.operation,
         staffMembers: booking.staffMembers,
         scheduleDate: booking.scheduleDate,

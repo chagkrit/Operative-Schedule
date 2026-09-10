@@ -32,6 +32,7 @@ export async function GET(request: Request) {
           slotNo: booking.slotNo,
           diagnosis: booking.diagnosis,
           isCancer: booking.isCancer,
+          neoadjuvantTreatment: booking.neoadjuvantTreatment,
           hn: booking.hn,
           patientName: `${booking.firstName} ${booking.lastName}`,
           operation: booking.operation,
@@ -68,6 +69,7 @@ export async function POST(request: Request) {
     const phone = String(payload.phone || "").trim();
     const operation = String(payload.operation || "").trim();
     const note = String(payload.note || "").trim();
+    const neoadjuvantTreatment = payload.neoadjuvantTreatment === true;
     const rawStaffMembers = payload.staffMembers;
     const submittedStaffMembers = Array.isArray(rawStaffMembers)
       ? rawStaffMembers.map((value) => typeof value === "string" ? value.trim() : "")
@@ -185,10 +187,12 @@ export async function POST(request: Request) {
     const slotNo = nextAvailableSlot(bookings, selected.date, selected.queueType, selected.capacity);
     const id = await createBookingEvent(request, {
       scheduleDate: selected.date,
+      queuedDate: today,
       queueType: selected.queueType,
       slotNo,
       diagnosis,
       isCancer,
+      neoadjuvantTreatment,
       hn,
       firstName,
       lastName,

@@ -134,13 +134,58 @@ test("supports manual surgery dates and shows the calculated waiting time", asyn
   assert.match(app, /ระบุวันเอง/);
   assert.match(app, /type="date" min=\{manualDateStart\} max=\{data\?\.horizonEnd\}/);
   assert.doesNotMatch(app, /ไม่จำกัดช่วงเวลา/);
-  assert.match(app, /daysBetween\(bangkokToday\(\), selectedSurgeryDate\)/);
+  assert.match(app, /daysBetween\(queuedDate, selectedSurgeryDate\)/);
   assert.match(app, /ระยะเวลารอคิว/);
   assert.match(app, /OR 17/);
   assert.match(route, /const scheduleFrom = hasSpecificDate \? requestedDate : today/);
   assert.match(route, /const scheduleTo = horizonEnd/);
   assert.match(route, /requestedDate < today/);
   assert.match(route, /requestedDate > horizonEnd/);
+});
+
+test("persists queued dates and exports de-identified surgical waiting-time data", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const legacy = await read("app/lib/legacy-calendar.ts");
+  const scheduleRoute = await read("app/api/schedule/route.ts");
+  const exportRoute = await read("app/api/wait-time-export/route.ts");
+  const xlsx = await read("app/lib/xlsx.ts");
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(calendar, /queuedDate: data\.queued_date \|\| calendarTimestampDate\(event\.created\) \|\| date/);
+  assert.match(calendar, /queued_date: booking\.queuedDate/);
+  assert.match(calendar, /queued_date: moved\.queuedDate/);
+  assert.match(calendar, /วันที่ลงคิว: \$\{booking\.queuedDate\}/);
+  assert.match(calendar, /ระยะเวลารอผ่าตัด: \$\{daysBetween\(booking\.queuedDate, booking\.scheduleDate\)\} วัน/);
+  assert.match(legacy, /queuedDate: calendarTimestampDate\(event\.created\) \|\| scheduleDate/);
+  assert.match(scheduleRoute, /queuedDate: today/);
+  assert.match(exportRoute, /listCalendarData\(request, from, to\)/);
+  assert.match(exportRoute, /"ระยะเวลารอผ่าตัด \(วัน\)"/);
+  assert.match(exportRoute, /createWaitingTimeWorkbook\(rows\)/);
+  assert.match(exportRoute, /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/);
+  assert.match(xlsx, /\[Content_Types\]\.xml/);
+  assert.doesNotMatch(exportRoute, /booking\.hn|booking\.firstName|booking\.lastName|booking\.phone/);
+  assert.match(app, /Export Excel เวลารอผ่าตัด/);
+  assert.match(app, /\/api\/wait-time-export\?from=/);
+  assert.match(app, /นับจากวันที่ลงคิว/);
+});
+
+test("records neoadjuvant treatment through Calendar, moves, and Excel export", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const route = await read("app/api/schedule/route.ts");
+  const calendar = await read("app/lib/calendar.ts");
+  const legacy = await read("app/lib/legacy-calendar.ts");
+  const exportRoute = await read("app/api/wait-time-export/route.ts");
+  assert.match(app, /neoadjuvantTreatment: false/);
+  assert.match(app, /เคยได้รับการรักษาแบบ neoadjuvant มาก่อน/);
+  assert.match(app, /Export Excel/);
+  assert.match(route, /const neoadjuvantTreatment = payload\.neoadjuvantTreatment === true/);
+  assert.match(route, /neoadjuvantTreatment,/);
+  assert.match(calendar, /neoadjuvantTreatment: data\.neoadjuvant_treatment === "true"/);
+  assert.match(calendar, /neoadjuvant_treatment: booking\.neoadjuvantTreatment === null \? "" : String\(booking\.neoadjuvantTreatment\)/);
+  assert.match(calendar, /neoadjuvant_treatment: moved\.neoadjuvantTreatment === null \? "" : String\(moved\.neoadjuvantTreatment\)/);
+  assert.match(calendar, /Neoadjuvant treatment: \$\{neoadjuvantLabel\(booking\.neoadjuvantTreatment\)\}/);
+  assert.match(legacy, /neoadjuvantTreatment: null/);
+  assert.match(exportRoute, /ได้รับ neoadjuvant treatment มาก่อน/);
+  assert.match(exportRoute, /booking\.neoadjuvantTreatment === true \? "ได้รับ"/);
 });
 
 test("keeps OR Extra at four cases and exposes a monthly count calendar", async () => {
