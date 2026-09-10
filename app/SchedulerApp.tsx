@@ -1010,43 +1010,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   </div>
                   <small id="staff-help">เลือกได้มากกว่า 1 คน โดย Staff คนแรกตามลำดับรายชื่อจะเป็นผู้กำหนดสีใน Google Calendar</small>
                 </fieldset>
-                {form.staffMembers.length > 0 && (
-                  <>
-                    <fieldset className="staff-queue-preference">
-                      <legend>เลือกห้องตามคิวของ Staff</legend>
-                      <div role="group" aria-label="เงื่อนไขเลือกห้องผ่าตัดตาม Staff">
-                        <button type="button" aria-pressed={form.staffQueuePreference === "same_staff"} className={form.staffQueuePreference === "same_staff" ? "active" : ""} onClick={() => chooseStaffQueuePreference("same_staff")}>ห้องที่ Staff มีเคสแล้ว</button>
-                        <button type="button" aria-pressed={form.staffQueuePreference === "any"} className={form.staffQueuePreference === "any" ? "active" : ""} onClick={() => chooseStaffQueuePreference("any")}>ห้องไหนก็ได้ที่ยังว่าง</button>
-                      </div>
-                      <small>{form.staffQueuePreference === "same_staff" ? `พบคิวว่างที่ Staff ที่เลือกอย่างน้อย 1 คนมีเคสแล้ว ${availableDays.length} คิว` : "แสดงทุกห้องผ่าตัดที่ยังว่างตามกติกา"}</small>
-                    </fieldset>
-                    <section className="staff-smart-search" aria-label={`Smart search คิวผ่าตัดของ ${staffLabel(form.staffMembers)}`} aria-live="polite">
-                      <div className="staff-smart-heading">
-                        <div><span>SMART SEARCH</span><strong>คิวผ่าตัดของ {staffLabel(form.staffMembers)}</strong></div>
-                        {!staffScheduleLoading && !staffScheduleError && <b>{staffUpcomingCases.length} เคส</b>}
-                      </div>
-                      {staffScheduleLoading ? <p className="staff-smart-state">กำลังค้นหาคิวผ่าตัด…</p>
-                        : staffScheduleError ? <p className="staff-smart-state error">{staffScheduleError}</p>
-                          : staffUpcomingCases.length === 0 ? <p className="staff-smart-state">ยังไม่มีคิวผ่าตัดที่กำลังจะมาถึง</p>
-                            : <div className="staff-smart-list">
-                              {staffUpcomingCases.map((booking) => (
-                                <article key={booking.id}>
-                                  <div className="staff-smart-date">
-                                    <strong>{displayDate(booking.scheduleDate, true)}</strong>
-                                    <small>{booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · {displaySlotTime(booking.slotNo)}</small>
-                                  </div>
-                                  <dl>
-                                    <div><dt>Diagnosis</dt><dd>{booking.diagnosis || "ไม่ระบุ"}</dd></div>
-                                    <div><dt>Operation</dt><dd>{booking.operation || "ไม่ระบุ"}</dd></div>
-                                    <div><dt>Staff</dt><dd>{staffLabel(booking.staffMembers)}</dd></div>
-                                  </dl>
-                                </article>
-                              ))}
-                            </div>}
-                      <small className="staff-smart-privacy">แสดงเฉพาะ Diagnosis และ Operation · ไม่แสดงชื่อ สกุล หรือ HN</small>
-                    </section>
-                  </>
-                )}
               </div>
               <div className={`field date-choice-field ${cancer && form.cancerSchedulingMode === "earliest" ? "muted-field" : ""}`}>
                 <span>วันที่ผ่าตัด {(!cancer || form.cancerSchedulingMode === "specific") && <b>*</b>}</span>
@@ -1085,6 +1048,43 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   </>
                 )}
               </div>
+              {form.staffMembers.length > 0 && (
+                <div className="field full staff-queue-tools">
+                  <fieldset className="staff-queue-preference">
+                    <legend>เลือกห้องตามคิวของ Staff</legend>
+                    <div role="group" aria-label="เงื่อนไขเลือกห้องผ่าตัดตาม Staff">
+                      <button type="button" aria-pressed={form.staffQueuePreference === "same_staff"} className={form.staffQueuePreference === "same_staff" ? "active" : ""} onClick={() => chooseStaffQueuePreference("same_staff")}>ห้องที่ Staff มีเคสแล้ว</button>
+                      <button type="button" aria-pressed={form.staffQueuePreference === "any"} className={form.staffQueuePreference === "any" ? "active" : ""} onClick={() => chooseStaffQueuePreference("any")}>ห้องไหนก็ได้ที่ยังว่าง</button>
+                    </div>
+                    <small>{form.staffQueuePreference === "same_staff" ? `พบคิวว่างที่ Staff ที่เลือกอย่างน้อย 1 คนมีเคสแล้ว ${availableDays.length} คิว` : "แสดงทุกห้องผ่าตัดที่ยังว่างตามกติกา"}</small>
+                  </fieldset>
+                  <section className="staff-smart-search" aria-label={`Smart search คิวผ่าตัดของ ${staffLabel(form.staffMembers)}`} aria-live="polite">
+                    <div className="staff-smart-heading">
+                      <div><span>SMART SEARCH</span><strong>คิวผ่าตัดของ {staffLabel(form.staffMembers)}</strong></div>
+                      {!staffScheduleLoading && !staffScheduleError && <b>{staffUpcomingCases.length} เคส</b>}
+                    </div>
+                    {staffScheduleLoading ? <p className="staff-smart-state">กำลังค้นหาคิวผ่าตัด…</p>
+                      : staffScheduleError ? <p className="staff-smart-state error">{staffScheduleError}</p>
+                        : staffUpcomingCases.length === 0 ? <p className="staff-smart-state">ยังไม่มีคิวผ่าตัดที่กำลังจะมาถึง</p>
+                          : <div className="staff-smart-list">
+                            {staffUpcomingCases.map((booking) => (
+                              <article key={booking.id}>
+                                <div className="staff-smart-date">
+                                  <strong>{displayDate(booking.scheduleDate, true)}</strong>
+                                  <small>{booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · {displaySlotTime(booking.slotNo)}</small>
+                                </div>
+                                <dl>
+                                  <div><dt>Diagnosis</dt><dd>{booking.diagnosis || "ไม่ระบุ"}</dd></div>
+                                  <div><dt>Operation</dt><dd>{booking.operation || "ไม่ระบุ"}</dd></div>
+                                  <div><dt>Staff</dt><dd>{staffLabel(booking.staffMembers)}</dd></div>
+                                </dl>
+                              </article>
+                            ))}
+                          </div>}
+                    <small className="staff-smart-privacy">แสดงเฉพาะ Diagnosis และ Operation · ไม่แสดงชื่อ สกุล หรือ HN</small>
+                  </section>
+                </div>
+              )}
             </div>
             {selectedSurgeryDate && waitingDays !== null && (
               <div className="wait-time-card" role="status">

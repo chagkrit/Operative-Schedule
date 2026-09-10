@@ -297,9 +297,11 @@ test("smart-searches the selected Staff team without patient identifiers", async
   const app = await read("app/SchedulerApp.tsx");
   const route = await read("app/api/staff-schedule/route.ts");
   const calendar = await read("app/lib/calendar.ts");
+  const styles = await read("app/globals.css");
   assert.match(app, /params\.append\("staff", staff\)/);
   assert.match(app, /SMART SEARCH/);
   assert.match(app, /คิวผ่าตัดของ \{staffLabel\(form\.staffMembers\)\}/);
+  assert.match(app, /className="field full staff-queue-tools"/);
   assert.match(app, /booking\.diagnosis/);
   assert.match(app, /booking\.operation/);
   assert.match(app, /ไม่แสดงชื่อ สกุล หรือ HN/);
@@ -312,6 +314,10 @@ test("smart-searches the selected Staff team without patient identifiers", async
   assert.doesNotMatch(route, /patientName/);
   assert.match(calendar, /listUpcomingCalendarBookings/);
   assert.match(calendar, /listAllEvents\(request, from\)/);
+  assert.match(styles, /\.staff-queue-tools \{ width: 100%;/);
+  assert.match(styles, /\.staff-smart-heading strong[^}]*font-size: 14px/);
+  assert.match(styles, /\.staff-smart-heading strong[^}]*overflow-wrap: anywhere/);
+  assert.match(styles, /\.staff-smart-list dd[^}]*font-size: 12px/);
 });
 
 test("keeps the active-device status static and supports desktop, tablet, and mobile layouts", async () => {
