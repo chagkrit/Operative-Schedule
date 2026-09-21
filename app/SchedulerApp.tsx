@@ -356,6 +356,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
   const deleteHnRef = useRef<HTMLInputElement>(null);
   const deleteConfirmRef = useRef<HTMLButtonElement>(null);
+  const deleteDialogRef = useRef<HTMLElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async (showSuccess = false) => {
     try {
@@ -393,6 +395,21 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         setShowSyncPrompt(false);
         setPendingClosure(null);
         setDeleteDialog(null);
+        if (deleteDialog) requestAnimationFrame(() => deleteTriggerRef.current?.focus());
+      }
+      if (event.key === "Tab" && deleteDialog) {
+        const controls = Array.from(deleteDialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ) || []).filter((control) => control.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
       }
     };
     document.body.style.overflow = "hidden";
@@ -872,19 +889,23 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
   }
 
-  const deleteHnMatches = Boolean(deleteDialog && deleteDialog.typedHn.trim() === deleteDialog.booking.hn);
+  const deleteHnMatches = Boolean(deleteDialog && deleteDialog.typedHn.trim() === deleteDialog.booking.hn.trim());
 
-  function openDeleteDialog(booking: SearchResult) {
+  function openDeleteDialog(booking: SearchResult, trigger: HTMLButtonElement) {
     if (!booking.hn.trim()) {
       setNotice({ type: "error", text: "ลบเคสนี้ไม่ได้ เพราะไม่พบ HN สำหรับยืนยันตัวตน" });
       return;
     }
     setNotice(null);
+    deleteTriggerRef.current = trigger;
     setDeleteDialog({ booking, typedHn: "", step: "verify" });
   }
 
   function closeDeleteDialog() {
-    if (!deleting) setDeleteDialog(null);
+    if (!deleting) {
+      setDeleteDialog(null);
+      requestAnimationFrame(() => deleteTriggerRef.current?.focus());
+    }
   }
 
   function continueDeleteConfirmation(event: FormEvent) {
@@ -909,6 +930,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setSelectedCase(null);
       setMoveTarget("");
       setNotice({ type: "success", text: payload.message || "ลบเคสออกจาก Google Calendar แล้ว" });
+      requestAnimationFrame(() => document.getElementById("case-search")?.focus());
       await loadSchedule();
       await searchCases();
     } catch (error) {
@@ -1039,7 +1061,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       {deleteDialog && (
         <div className="queue-conflict-backdrop delete-case-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDeleteDialog()}>
           {deleteDialog.step === "verify" ? (
-            <section className="queue-conflict-dialog delete-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-verify-title" aria-describedby="delete-verify-message">
+            <section ref={deleteDialogRef} className="queue-conflict-dialog delete-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-verify-title" aria-describedby="delete-verify-message">
               <button className="queue-conflict-close" type="button" aria-label="ปิดหน้าต่างยืนยันการลบ" onClick={closeDeleteDialog} disabled={deleting}>×</button>
               <span className="queue-conflict-icon delete-icon" aria-hidden="true">×</span>
               <div className="queue-conflict-heading">
@@ -1063,7 +1085,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               </form>
             </section>
           ) : (
-            <section className="queue-conflict-dialog delete-confirm-dialog delete-final-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-final-title" aria-describedby="delete-final-message">
+            <section ref={deleteDialogRef} className="queue-conflict-dialog delete-confirm-dialog delete-final-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-final-title" aria-describedby="delete-final-message">
               <span className="queue-conflict-icon delete-icon" aria-hidden="true">×</span>
               <div className="queue-conflict-heading">
                 <span>ยืนยันครั้งสุดท้าย</span>
@@ -1301,7 +1323,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                       {moveDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}
                     </select>
                     <button type="submit" disabled={moving || !moveTarget}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
-                    <button className="delete-case-button" type="button" onClick={() => openDeleteDialog(result)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
+                    <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
                   </form>
                 )}
