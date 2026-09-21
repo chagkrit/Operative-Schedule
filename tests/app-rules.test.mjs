@@ -127,6 +127,22 @@ test("searches cases and records verified calendar moves", async () => {
   assert.match(moveRoute, /verifiedDay\.closed \|\| verifiedDay\.count > verifiedDay\.capacity/);
 });
 
+test("deletes only an active queued case after an exact HN confirmation", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const deleteRoute = await read("app/api/cases/[id]/route.ts");
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(deleteRoute, /export async function DELETE/);
+  assert.match(deleteRoute, /getCalendarBooking/);
+  assert.match(deleteRoute, /booking\.scheduleDate < dateOnly\(\)/);
+  assert.match(deleteRoute, /booking\.hn\.trim\(\) !== confirmationHn/);
+  assert.match(deleteRoute, /deleteBookingEvent\(request, id\)/);
+  assert.match(calendar, /deleteBookingEvent/);
+  assert.match(app, /กรอก HN เพื่อยืนยันการลบ/);
+  assert.match(app, /HN ตรงกันแล้ว/);
+  assert.match(app, /ยืนยันครั้งสุดท้าย/);
+  assert.match(app, /ยืนยันลบเคส/);
+});
+
 test("supports manual surgery dates and shows the calculated waiting time", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const route = await read("app/api/schedule/route.ts");

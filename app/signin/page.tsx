@@ -10,7 +10,7 @@ export default async function SignInPage() {
   return (
     <main className="signin-shell">
       <section className="signin-card">
-        <Image src="/unit-logo.jpg" alt="Breast & Endocrine Surgery CMU" width={104} height={104} priority />
+        <Image src="/unit-logo.jpg" alt="Breast & Endocrine Surgery CMU" className="signin-logo" width={104} height={104} priority />
         <p className="eyebrow pink">BREAST &amp; ENDOCRINE SURGERY CMU</p>
         <h1>OR Queue</h1>
         <p>ระบบลงคิวผ่าตัดของหน่วย เชื่อมต่อ Google Calendar แบบทันที</p>

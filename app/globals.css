@@ -487,3 +487,246 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/*
+ * Soft UI + Liquid Glass refresh
+ * Content stays as an opaque matte material. Only controls float as glass.
+ */
+:root {
+  --soft-base: #e0e5ec;
+  --soft-light: rgba(255, 255, 255, .88);
+  --soft-shadow: rgba(135, 151, 173, .62);
+  --soft-shadow-strong: rgba(123, 141, 166, .76);
+  --ink: #243140;
+  --muted: #596879;
+  --rose: #a71955;
+  --rose-deep: #78113d;
+  --rose-soft: #e8dce5;
+  --green: #197a60;
+  --danger: #a71955;
+  --cream: var(--soft-base);
+  --line: transparent;
+  --raised: -6px -6px 12px var(--soft-light), 6px 6px 12px var(--soft-shadow);
+  --raised-large: -10px -10px 24px var(--soft-light), 10px 10px 24px var(--soft-shadow);
+  --pressed: inset -5px -5px 10px rgba(255, 255, 255, .72), inset 5px 5px 10px rgba(135, 151, 173, .55);
+  --glass: rgba(230, 237, 246, .60);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, .92), inset 0 -1px 0 rgba(118, 138, 165, .14), -4px -4px 10px rgba(255, 255, 255, .48), 5px 5px 13px rgba(128, 147, 170, .32);
+}
+
+html, body { background: var(--soft-base); }
+body {
+  color: var(--ink);
+  background: var(--soft-base);
+  font-family: "Noto Sans Thai", "Leelawadee UI", Tahoma, Arial, sans-serif;
+}
+
+/* Borders are never the affordance in this interface. */
+*, *::before, *::after { border: 0 !important; }
+button, input, select, textarea { font: inherit; }
+button { transition: transform .18s ease, box-shadow .18s ease, background-color .18s ease, color .18s ease; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 3px solid #5635d4 !important;
+  outline-offset: 4px;
+}
+button:disabled { cursor: not-allowed; }
+
+.app-shell { max-width: 1540px; padding-bottom: 22px; }
+.topbar { min-height: 104px; height: auto; gap: 18px; }
+.brand-logo {
+  background: var(--soft-base);
+  box-shadow: var(--raised);
+}
+.brand h1, .hero h2, .panel-heading h3, .month-toolbar strong, .signin-card h1, .queue-conflict-heading h3, .sync-confirm-dialog h3 {
+  color: var(--ink);
+  font-family: "Noto Sans Thai", "Leelawadee UI", Tahoma, Arial, sans-serif;
+  font-weight: 800;
+  letter-spacing: -.035em;
+}
+.eyebrow, .hero-copy, .rule-card p, .field-help, .privacy-note, footer, .last-sync { color: var(--muted); }
+.eyebrow.pink, .hero h2 span, footer span { color: var(--rose); font-style: normal; }
+
+/* Floating Liquid Glass control layer. */
+.calendar-pill, .sync-button, .export-button, .signout-button,
+.schedule-tabs, .schedule-tabs button, .text-button,
+.month-toolbar button, .closure-row-actions button,
+.closure-form-actions button, .delete-confirm-actions button,
+.queue-conflict-close, .case-search-form button, .move-form button,
+.extra-form button, .wait-time-export button, .save-button, .google-button {
+  background: var(--glass) !important;
+  backdrop-filter: blur(18px) saturate(165%);
+  -webkit-backdrop-filter: blur(18px) saturate(165%);
+  box-shadow: var(--glass-highlight) !important;
+}
+.calendar-pill, .sync-button, .export-button, .signout-button { border-radius: 999px; }
+.sync-button, .signout-button, .text-button, .month-toolbar button, .closure-row-actions button, .closure-form-actions button, .queue-conflict-close { color: var(--ink) !important; }
+.export-button, .save-button, .google-button, .case-search-form button, .move-form button, .extra-form button, .wait-time-export button, .delete-confirm-actions button:last-child, .delete-final-button {
+  color: #fff !important;
+  background: rgba(167, 25, 85, .90) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.34), -4px -4px 10px rgba(255,255,255,.34), 5px 5px 13px rgba(120, 38, 76, .31) !important;
+}
+.calendar-pill.connected { color: var(--ink); background: var(--glass); }
+.calendar-pill.disconnected { color: var(--rose-deep); background: rgba(248, 222, 233, .66); }
+.sync-button:hover, .signout-button:hover, .text-button:hover, .month-toolbar button:hover, .closure-row-actions button:hover, .closure-form-actions button:hover, .queue-conflict-close:hover,
+.calendar-pill:hover { transform: translateY(-1px); box-shadow: var(--glass-highlight), inset 0 0 0 1px rgba(86, 53, 212, .16) !important; }
+.export-button:hover, .save-button:hover, .google-button:hover, .case-search-form button:hover, .move-form button:hover, .extra-form button:hover, .wait-time-export button:hover, .delete-confirm-actions button:last-child:hover, .delete-final-button:hover { transform: translateY(-1px); filter: brightness(1.06); }
+.sync-button:active, .export-button:active, .signout-button:active, .save-button:active, .google-button:active, .case-search-form button:active, .move-form button:active, .extra-form button:active, .wait-time-export button:active, .delete-confirm-actions button:active { transform: translateY(0); box-shadow: var(--pressed) !important; }
+
+/* Opaque matte content surfaces. */
+.panel, .rule-card, .setup-banner, .notice, .signin-card,
+.day-card, .month-day-summary, .month-bookings, .month-bookings-heading,
+.case-result, .move-history-list article, .closure-list article,
+.closure-form, .extra-form, .wait-time-export, .wait-time-card,
+.cancer-suggestion, .staff-queue-empty, .queue-suggestion-empty,
+.delete-case-summary, .closure-affected-list article {
+  background: var(--soft-base) !important;
+  box-shadow: var(--raised) !important;
+}
+.panel, .rule-card, .signin-card { box-shadow: var(--raised-large) !important; }
+.panel { overflow: visible; }
+.rule-card, .signin-card, .panel { border-radius: 28px; }
+.step, .diagnosis-badge, .search-scope, .history-count, .date-block, .month-booking-slot, .closure-date, .rule-number, .queue-conflict-icon, .sync-confirm-icon {
+  background: var(--soft-base) !important;
+  color: var(--rose) !important;
+  box-shadow: var(--pressed);
+}
+.rule-number { border-radius: 18px; padding: 10px 18px; }
+.diagnosis-badge.cancer, .month-booking-slot.cancer, .mini-bookings .cancer-mark { color: #fff !important; background: var(--rose) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 3px 3px 8px rgba(120,38,76,.35); }
+.status-dot, .presence-status-dot { box-shadow: 0 0 0 4px rgba(25, 122, 96, .16); }
+.status-dot.synced, .presence-status-dot { background: var(--green); }
+.presence-status, .fixed-room, .extra-fixed-capacity, .full-label {
+  color: var(--ink);
+  background: var(--soft-base);
+  box-shadow: var(--pressed);
+}
+.setup-banner, .notice { color: var(--ink); }
+.notice.success { color: #17634e; }
+.notice.error { color: var(--rose-deep); }
+.banner-icon { background: var(--rose); }
+
+/* Form controls are matte and press inward; no frosted data surfaces. */
+.field input, .field select, .field textarea, .extra-form input,
+.case-search-form input, .move-form select, .wait-time-export input,
+.closure-form input, .closure-form textarea, .closure-list-toolbar input,
+.delete-hn-form input {
+  color: var(--ink) !important;
+  background: var(--soft-base) !important;
+  box-shadow: var(--pressed) !important;
+  outline: none;
+}
+.field input:focus, .field select:focus, .field textarea:focus, .extra-form input:focus,
+.case-search-form input:focus, .move-form select:focus, .wait-time-export input:focus,
+.closure-form input:focus, .closure-form textarea:focus, .closure-list-toolbar input:focus,
+.delete-hn-form input:focus { box-shadow: var(--pressed), 0 0 0 3px rgba(86, 53, 212, .24) !important; }
+.field input::placeholder, .case-search-form input::placeholder, .delete-hn-form input::placeholder { color: #788798; }
+.field textarea, .closure-form textarea { min-height: 96px; }
+.mode-options label, .staff-selector label, .staff-queue-preference button, .month-day, .month-day-summary,
+.queue-suggestion-list > button, .case-result > button, .mini-bookings > div {
+  color: var(--ink) !important;
+  background: var(--soft-base) !important;
+  box-shadow: var(--raised) !important;
+}
+.mode-options label.selected, .staff-queue-preference button.active, .schedule-tabs button.active, .month-day.selected, .case-result.selected {
+  color: var(--rose-deep) !important;
+  background: var(--soft-base) !important;
+  box-shadow: var(--pressed) !important;
+}
+.mode-options label:hover, .staff-selector label:hover, .staff-queue-preference button:hover, .month-day:hover, .case-result > button:hover, .queue-suggestion-list > button:hover { box-shadow: var(--pressed) !important; }
+.mode-options input, .staff-selector input { accent-color: var(--rose); }
+
+.workspace-grid, .case-tools-grid { gap: 28px; }
+.booking-panel, .schedule-panel, .case-search-panel, .move-history-panel { padding: 32px; }
+.hero { padding-top: 48px; }
+.hero h2 { font-size: clamp(38px, 4.5vw, 64px); line-height: 1.04; }
+.rule-card strong, .panel-heading h3 { color: var(--ink); }
+.schedule-list, .month-booking-list, .closure-list, .closure-affected-list { scrollbar-color: rgba(89,104,121,.52) transparent; }
+.day-card.extra, .day-card.closed, .month-day.closed, .month-closure-summary { color: var(--ink) !important; background: var(--soft-base) !important; box-shadow: var(--pressed) !important; }
+.day-card.closed .closure-line, .month-day.closed, .month-day.closed em { color: var(--rose-deep) !important; }
+.capacity-bar { background: rgba(111, 130, 151, .18); box-shadow: var(--pressed); }
+.capacity-bar i { background: var(--rose); }
+.mini-bookings > div { padding: 9px 0 0; }
+.month-day.has-extra::after { background: var(--rose); box-shadow: 0 0 0 3px var(--soft-base); }
+.month-legend em, .month-closure-summary { color: var(--rose-deep) !important; }
+.closure-list article, .move-history-list article { border-radius: 18px; }
+.move-history-list p span:last-child, .case-current strong, .select-case, .closure-row-actions button:last-child { color: var(--rose-deep); }
+.case-empty, .empty-state { color: var(--muted); background: var(--soft-base); box-shadow: var(--pressed); }
+
+/* Deletion workflow: opaque content dialog, glass only for controls. */
+.queue-conflict-backdrop {
+  background: rgba(43, 57, 73, .34);
+  backdrop-filter: blur(7px) saturate(115%);
+  -webkit-backdrop-filter: blur(7px) saturate(115%);
+}
+.queue-conflict-dialog {
+  color: var(--ink);
+  background: var(--soft-base) !important;
+  box-shadow: var(--raised-large), 0 30px 80px rgba(53, 67, 84, .24) !important;
+}
+.queue-conflict-heading > span { color: var(--rose); }
+.queue-conflict-heading p, .queue-conflict-footnote { color: var(--muted); }
+.queue-conflict-icon { width: 50px; height: 50px; color: var(--rose) !important; font-size: 27px; }
+.delete-icon { color: #fff !important; background: var(--rose) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.27), 4px 4px 10px rgba(120,38,76,.34) !important; }
+.delete-case-summary { display: grid; gap: 4px; margin: 0 0 18px; padding: 15px 16px; border-radius: 16px; }
+.delete-case-summary strong { font-size: 13px; }
+.delete-case-summary span { color: var(--ink); font-size: 11px; font-weight: 700; }
+.delete-case-summary small { color: var(--muted); font-size: 9px; }
+.delete-hn-form { display: grid; gap: 8px; }
+.delete-hn-form label { color: var(--ink); font-size: 11px; font-weight: 800; }
+.delete-hn-form input { width: 100%; height: 48px; padding: 0 14px; border-radius: 14px; }
+.delete-hn-form p { min-height: 18px; margin: 0; font-size: 10px; font-weight: 800; }
+.hn-match { color: #17634e; }
+.hn-mismatch { color: var(--muted); }
+.delete-confirm-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; margin-top: 10px; }
+.delete-confirm-actions button { min-height: 44px; border-radius: 999px; font-size: 10px; font-weight: 900; }
+.delete-confirm-actions button:disabled { color: #7f8d9c !important; background: rgba(224, 229, 236, .68) !important; box-shadow: var(--pressed) !important; filter: none; }
+.delete-final-dialog { max-width: 520px; }
+.delete-case-button { color: #fff !important; background: rgba(167,25,85,.90) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 4px 4px 10px rgba(120,38,76,.29) !important; }
+.delete-case-button:hover { filter: brightness(1.06); }
+.delete-case-button:disabled { color: #7f8d9c !important; background: var(--soft-base) !important; box-shadow: var(--pressed) !important; }
+.move-form { grid-template-columns: auto minmax(180px, 1fr) 145px 88px; background: var(--soft-base); box-shadow: var(--pressed); }
+.move-form > small { grid-column: 2 / -1; }
+
+.signin-shell { background: var(--soft-base); }
+.signin-card { background: var(--soft-base) !important; }
+.signin-card .signin-logo { width: 104px; height: 104px; box-shadow: var(--raised); }
+
+@media (max-width: 1000px) {
+  .workspace-grid, .case-tools-grid { gap: 22px; }
+}
+
+@media (max-width: 650px) {
+  .booking-panel, .schedule-panel, .case-search-panel, .move-history-panel { padding: 22px 18px; border-radius: 24px; }
+  .topbar-actions { gap: 8px; }
+  .hero { padding-top: 34px; }
+  .queue-conflict-dialog { background: var(--soft-base) !important; }
+  .delete-confirm-actions { grid-template-columns: 1fr; }
+  .move-form { grid-template-columns: 1fr; }
+  .move-form > small { grid-column: 1; }
+  .delete-case-button { min-height: 42px; border-radius: 999px; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .calendar-pill, .sync-button, .export-button, .signout-button,
+  .schedule-tabs, .schedule-tabs button, .text-button,
+  .month-toolbar button, .closure-row-actions button,
+  .closure-form-actions button, .delete-confirm-actions button,
+  .queue-conflict-close, .case-search-form button, .move-form button,
+  .extra-form button, .wait-time-export button, .save-button, .google-button {
+    background: var(--soft-base) !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .export-button, .save-button, .google-button, .case-search-form button, .move-form button, .extra-form button, .wait-time-export button, .delete-confirm-actions button:last-child, .delete-final-button { background: var(--rose) !important; }
+  .queue-conflict-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .calendar-pill, .sync-button, .export-button, .signout-button,
+  .schedule-tabs, .schedule-tabs button, .text-button,
+  .month-toolbar button, .closure-row-actions button,
+  .closure-form-actions button, .delete-confirm-actions button,
+  .queue-conflict-close, .case-search-form button, .move-form button,
+  .extra-form button, .wait-time-export button, .save-button, .google-button {
+    background: var(--soft-base) !important;
+  }
+  .export-button, .save-button, .google-button, .case-search-form button, .move-form button, .extra-form button, .wait-time-export button, .delete-confirm-actions button:last-child, .delete-final-button { background: var(--rose) !important; }
+}

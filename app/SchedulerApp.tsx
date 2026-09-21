@@ -336,6 +336,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [selectedCase, setSelectedCase] = useState<SearchResult | null>(null);
   const [moveTarget, setMoveTarget] = useState("");
   const [moving, setMoving] = useState(false);
+  const [deleteDialog, setDeleteDialog] = useState<{ booking: SearchResult; typedHn: string; step: "verify" | "confirm" } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
   const [showSyncPrompt, setShowSyncPrompt] = useState(false);
   const [activeDeviceCount, setActiveDeviceCount] = useState(1);
@@ -352,6 +354,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
+  const deleteHnRef = useRef<HTMLInputElement>(null);
+  const deleteConfirmRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async (showSuccess = false) => {
     try {
@@ -381,23 +385,26 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure) return;
+    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !deleteDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !deleting) {
         setBookingConflict(null);
         setShowSyncPrompt(false);
         setPendingClosure(null);
+        setDeleteDialog(null);
       }
     };
     document.body.style.overflow = "hidden";
-    (bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : syncPromptButtonRef.current)?.focus();
+    (deleteDialog
+      ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
+      : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, pendingClosure, showSyncPrompt]);
+  }, [bookingConflict, deleteDialog, deleting, pendingClosure, showSyncPrompt]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -819,6 +826,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setSearched(true);
     setSelectedCase(null);
     setMoveTarget("");
+    setDeleteDialog(null);
     try {
       const response = await fetch(`/api/cases/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
       const payload = (await response.json()) as { results?: SearchResult[]; error?: string };
@@ -861,6 +869,52 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setNotice({ type: "error", text: error instanceof Error ? error.message : "สลับวันผ่าตัดไม่สำเร็จ" });
     } finally {
       setMoving(false);
+    }
+  }
+
+  const deleteHnMatches = Boolean(deleteDialog && deleteDialog.typedHn.trim() === deleteDialog.booking.hn);
+
+  function openDeleteDialog(booking: SearchResult) {
+    if (!booking.hn.trim()) {
+      setNotice({ type: "error", text: "ลบเคสนี้ไม่ได้ เพราะไม่พบ HN สำหรับยืนยันตัวตน" });
+      return;
+    }
+    setNotice(null);
+    setDeleteDialog({ booking, typedHn: "", step: "verify" });
+  }
+
+  function closeDeleteDialog() {
+    if (!deleting) setDeleteDialog(null);
+  }
+
+  function continueDeleteConfirmation(event: FormEvent) {
+    event.preventDefault();
+    if (!deleteDialog || !deleteHnMatches) return;
+    setDeleteDialog((current) => current ? { ...current, step: "confirm" } : null);
+  }
+
+  async function deleteCase() {
+    if (!deleteDialog || deleteDialog.step !== "confirm" || !deleteHnMatches) return;
+    setDeleting(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(deleteDialog.booking.id)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hn: deleteDialog.typedHn.trim() }),
+      });
+      const payload = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "ลบเคสไม่สำเร็จ");
+      setDeleteDialog(null);
+      setSelectedCase(null);
+      setMoveTarget("");
+      setNotice({ type: "success", text: payload.message || "ลบเคสออกจาก Google Calendar แล้ว" });
+      await loadSchedule();
+      await searchCases();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "ลบเคสไม่สำเร็จ" });
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -979,6 +1033,54 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
             </div>
           </section>
+        </div>
+      )}
+
+      {deleteDialog && (
+        <div className="queue-conflict-backdrop delete-case-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDeleteDialog()}>
+          {deleteDialog.step === "verify" ? (
+            <section className="queue-conflict-dialog delete-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-verify-title" aria-describedby="delete-verify-message">
+              <button className="queue-conflict-close" type="button" aria-label="ปิดหน้าต่างยืนยันการลบ" onClick={closeDeleteDialog} disabled={deleting}>×</button>
+              <span className="queue-conflict-icon delete-icon" aria-hidden="true">×</span>
+              <div className="queue-conflict-heading">
+                <span>ตรวจสอบก่อนลบ</span>
+                <h3 id="delete-verify-title">กรอก HN เพื่อยืนยันการลบ</h3>
+                <p id="delete-verify-message">คิวที่ลบจะหายจาก Google Calendar และไม่สามารถเรียกคืนจากหน้า OR Queue ได้</p>
+              </div>
+              <div className="delete-case-summary" aria-label="รายละเอียดเคสที่ต้องการลบ">
+                <strong>{deleteDialog.booking.patientName}</strong>
+                <span>{deleteDialog.booking.operation}</span>
+                <small>{displayDate(deleteDialog.booking.scheduleDate, true)} · {deleteDialog.booking.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${deleteDialog.booking.slotNo}`} · HN ••••{deleteDialog.booking.hn.slice(-4)}</small>
+              </div>
+              <form className="delete-hn-form" onSubmit={continueDeleteConfirmation}>
+                <label htmlFor="delete-case-hn">HN ของเคสที่เลือก</label>
+                <input ref={deleteHnRef} id="delete-case-hn" value={deleteDialog.typedHn} onChange={(event) => setDeleteDialog((current) => current ? { ...current, typedHn: event.target.value } : null)} inputMode="numeric" autoComplete="off" aria-describedby="delete-hn-status" />
+                <p id="delete-hn-status" className={deleteHnMatches ? "hn-match" : "hn-mismatch"} role="status">{deleteHnMatches ? "HN ตรงกันแล้ว — ดำเนินการต่อเพื่อยืนยันลบอีกครั้ง" : "กรอก HN ให้ตรงกับเคสที่เลือกเพื่อดำเนินการต่อ"}</p>
+                <div className="delete-confirm-actions">
+                  <button type="button" onClick={closeDeleteDialog}>ยกเลิก</button>
+                  <button type="submit" disabled={!deleteHnMatches}>ตรวจสอบ HN และดำเนินการต่อ</button>
+                </div>
+              </form>
+            </section>
+          ) : (
+            <section className="queue-conflict-dialog delete-confirm-dialog delete-final-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-final-title" aria-describedby="delete-final-message">
+              <span className="queue-conflict-icon delete-icon" aria-hidden="true">×</span>
+              <div className="queue-conflict-heading">
+                <span>ยืนยันครั้งสุดท้าย</span>
+                <h3 id="delete-final-title">ต้องการลบคิวนี้ใช่หรือไม่</h3>
+                <p id="delete-final-message">HN ได้รับการตรวจสอบแล้ว การยืนยันนี้จะลบคิวออกจาก Google Calendar ทันที</p>
+              </div>
+              <div className="delete-case-summary" aria-label="คิวที่จะถูกลบ">
+                <strong>{deleteDialog.booking.operation}</strong>
+                <span>{displayDate(deleteDialog.booking.scheduleDate, true)} · {deleteDialog.booking.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${deleteDialog.booking.slotNo}`}</span>
+                <small>HN ••••{deleteDialog.booking.hn.slice(-4)}</small>
+              </div>
+              <div className="delete-confirm-actions">
+                <button type="button" onClick={() => setDeleteDialog((current) => current ? { ...current, step: "verify" } : null)} disabled={deleting}>กลับไปตรวจสอบ</button>
+                <button ref={deleteConfirmRef} className="delete-final-button" type="button" onClick={() => void deleteCase()} disabled={deleting}>{deleting ? "กำลังลบจาก Calendar…" : "ยืนยันลบเคส"}</button>
+              </div>
+            </section>
+          )}
         </div>
       )}
 
@@ -1185,7 +1287,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             {searched && !searching && searchResults.length === 0 && <div className="case-empty">ไม่พบเคสที่ตรงกับคำค้น</div>}
             {searchResults.map((result) => (
               <article className={`case-result ${selectedCase?.id === result.id ? "selected" : ""}`} key={result.id}>
-                <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); }}>
+                <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); setDeleteDialog(null); }}>
                   <span className="case-identity"><strong>{result.patientName}</strong><small>HN {result.hn} · {result.diagnosis}</small></span>
                   <span className="case-current"><strong>{displayDate(result.scheduleDate, true)}</strong><small>{result.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${result.slotNo}`}</small></span>
                   <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}</small></span>
@@ -1199,6 +1301,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                       {moveDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}
                     </select>
                     <button type="submit" disabled={moving || !moveTarget}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    <button className="delete-case-button" type="button" onClick={() => openDeleteDialog(result)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
                   </form>
                 )}
