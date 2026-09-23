@@ -311,6 +311,131 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
   );
 }
 
+type ManualDateCalendarProps = {
+  days: Day[];
+  cancer: boolean;
+  queueType: "OR17" | "EXTRA";
+  staffQueuePreference: "same_staff" | "any";
+  staffDayKeys: ReadonlySet<string>;
+  manualDateStart: string;
+  horizonEnd: string;
+  month: string;
+  selectedDate: string;
+  onMonthChange: (value: string) => void;
+  onSelectDate: (value: string) => void;
+};
+
+type ManualDateAvailability = {
+  available: boolean;
+  label: string;
+  detail: string;
+  day?: Day;
+};
+
+function ManualDateCalendar({
+  days,
+  cancer,
+  queueType,
+  staffQueuePreference,
+  staffDayKeys,
+  manualDateStart,
+  horizonEnd,
+  month,
+  selectedDate,
+  onMonthChange,
+  onSelectDate,
+}: ManualDateCalendarProps) {
+  const firstMonth = manualDateStart.slice(0, 7);
+  const lastMonth = horizonEnd.slice(0, 7);
+  const [year, monthNumber] = month.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const dayByKey = new Map(days.map((day) => [`${day.date}:${day.queueType}`, day]));
+  const cells = [
+    ...Array.from({ length: firstWeekday }, () => ""),
+    ...Array.from({ length: daysInMonth }, (_, index) => `${month}-${String(index + 1).padStart(2, "0")}`),
+  ];
+  while (cells.length % 7 !== 0) cells.push("");
+
+  function availabilityFor(date: string): ManualDateAvailability {
+    if (date < manualDateStart) {
+      return { available: false, label: "คิวเดิม", detail: "โปรดเลือกจากคิวว่าง" };
+    }
+    if (date > horizonEnd) {
+      return { available: false, label: "นอกช่วง", detail: "เกินช่วงเวลาที่เปิดให้ลงคิว" };
+    }
+    const day = dayByKey.get(`${date}:${queueType}`);
+    if (!day) {
+      return { available: false, label: "ไม่เปิด", detail: `ไม่มี ${queueType === "EXTRA" ? "OR Extra" : "OR 17"} เปิดรับคิว` };
+    }
+    if (day.closed) {
+      return { available: false, label: "ปิด", detail: `ปิดรับคิว${day.closureName ? `: ${day.closureName}` : ""}`, day };
+    }
+    if (day.count >= day.capacity) {
+      return { available: false, label: "เต็ม", detail: "คิวเต็มแล้ว", day };
+    }
+    if (!cancer && day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0) {
+      return { available: false, label: "Cancer", detail: "ช่องสุดท้ายรับเฉพาะเคส Cancer", day };
+    }
+    if (staffQueuePreference === "same_staff" && !staffDayKeys.has(`${day.date}:${day.queueType}`)) {
+      return { available: false, label: "Staff", detail: "ไม่พบเคสของ Staff ที่เลือกในวันนี้", day };
+    }
+    return { available: true, label: "ว่าง", detail: `ว่าง ${day.capacity - day.count} เคส`, day };
+  }
+
+  const selectedAvailability = selectedDate ? availabilityFor(selectedDate) : null;
+
+  function changeMonth(direction: -1 | 1) {
+    const target = addCalendarMonths(month, direction);
+    if (target < firstMonth || target > lastMonth) return;
+    onMonthChange(target);
+  }
+
+  return (
+    <section className="manual-date-calendar" aria-labelledby="manual-date-calendar-title">
+      <div className="manual-date-calendar-heading">
+        <div>
+          <span id="manual-date-calendar-title">เลือกวันผ่าตัดจากปฏิทิน</span>
+          <small>{queueType === "EXTRA" ? "OR Extra" : "OR 17"} · เลือกได้เฉพาะวันที่ยังว่าง</small>
+        </div>
+        <div className="manual-date-toolbar" aria-label="เปลี่ยนเดือนปฏิทิน">
+          <button type="button" onClick={() => changeMonth(-1)} disabled={month <= firstMonth} aria-label="เดือนก่อนหน้า">‹</button>
+          <strong>{displayMonth(month)}</strong>
+          <button type="button" onClick={() => changeMonth(1)} disabled={month >= lastMonth} aria-label="เดือนถัดไป">›</button>
+        </div>
+      </div>
+      <div className="manual-date-calendar-grid" role="grid" aria-label={`ปฏิทินเลือกวันผ่าตัด ${displayMonth(month)}`}>
+        {['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'].map((label) => <span className="manual-date-weekday" key={label}>{label}</span>)}
+        {cells.map((date, index) => {
+          if (!date) return <span className="manual-date-blank" key={`blank-${index}`} />;
+          const availability = availabilityFor(date);
+          return (
+            <button
+              type="button"
+              className={`manual-date-day ${availability.available ? "available" : "unavailable"} ${date === selectedDate ? "selected" : ""} ${date === bangkokToday() ? "today" : ""}`}
+              key={date}
+              onClick={() => availability.available && onSelectDate(date)}
+              disabled={!availability.available}
+              title={availability.detail}
+              aria-label={`${displayDate(date)} · ${availability.detail}`}
+              aria-pressed={availability.available && date === selectedDate}
+            >
+              <span>{Number(date.slice(-2))}</span>
+              <small>{availability.label}</small>
+            </button>
+          );
+        })}
+      </div>
+      <div className="manual-date-summary" aria-live="polite">
+        {selectedAvailability?.available ? (
+          <><strong>เลือกแล้ว: {displayDate(selectedDate)}</strong><span>{queueType === "EXTRA" ? "OR Extra" : "OR 17"} · {selectedAvailability.detail}</span></>
+        ) : <span>เลือกวันที่สีเข้มที่ระบุว่า “ว่าง” เพื่อระบุคิวผ่าตัด</span>}
+      </div>
+      <p className="manual-date-legend"><b>ว่าง</b> เลือกลงคิวได้ <em>เต็ม / ปิด / ไม่เปิด / Staff</em> เลือกไม่ได้</p>
+    </section>
+  );
+}
+
 function StatusDot({ synced }: { synced: boolean }) {
   return <span className={`status-dot ${synced ? "synced" : "pending"}`} aria-hidden="true" />;
 }
@@ -328,6 +453,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [extra, setExtra] = useState({ date: "", note: "" });
   const [scheduleView, setScheduleView] = useState<"list" | "month" | "closures">("list");
   const [calendarMonth, setCalendarMonth] = useState(() => bangkokToday().slice(0, 7));
+  const [manualCalendarMonth, setManualCalendarMonth] = useState(() => bangkokToday().slice(0, 7));
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => bangkokToday());
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -529,6 +655,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     const lastDropdownDate = dropdownDays.at(-1)?.date || data?.days.at(-1)?.date || bangkokToday();
     return addCalendarDays(lastDropdownDate, 1);
   }, [cancer, cancerDates, data, normalDates]);
+  const manualQueueType: "OR17" | "EXTRA" = cancer && form.requestedQueueType === "EXTRA" ? "EXTRA" : "OR17";
+  const manualCalendarFirstMonth = manualDateStart.slice(0, 7);
+  const manualCalendarLastMonth = data?.horizonEnd?.slice(0, 7) || manualCalendarFirstMonth;
+  const displayedManualCalendarMonth = manualCalendarMonth < manualCalendarFirstMonth || manualCalendarMonth > manualCalendarLastMonth
+    ? manualCalendarFirstMonth
+    : manualCalendarMonth;
   const selectedSurgeryDate = cancer && form.cancerSchedulingMode === "earliest"
     ? nextCancerDay?.date || ""
     : form.requestedDate;
@@ -605,6 +737,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       requestedDate: "",
       requestedQueueType: "OR17",
     }));
+    if (mode === "manual") setManualCalendarMonth(manualDateStart.slice(0, 7));
     setNotice(null);
   }
 
@@ -617,6 +750,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setNotice(null);
   }
 
+  function chooseManualQueueType(value: "OR17" | "EXTRA") {
+    setForm((current) => ({ ...current, requestedDate: "", requestedQueueType: value }));
+    setNotice(null);
+  }
+
   function chooseSuggestedQueue(suggestion: QueueSuggestion) {
     setForm((current) => ({
       ...current,
@@ -625,6 +763,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       requestedDate: suggestion.date,
       requestedQueueType: suggestion.queueType,
     }));
+    setManualCalendarMonth(suggestion.date.slice(0, 7));
     setBookingConflict(null);
     setNotice({ type: "success", text: "เลือกคิวใหม่แล้ว กรุณาตรวจสอบและกดบันทึกอีกครั้ง" });
   }
@@ -1135,7 +1274,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   <small id="staff-help">เลือกได้มากกว่า 1 คน โดย Staff คนแรกตามลำดับรายชื่อจะเป็นผู้กำหนดสีใน Google Calendar</small>
                 </fieldset>
               </div>
-              <div className={`field date-choice-field ${cancer && form.cancerSchedulingMode === "earliest" ? "muted-field" : ""}`}>
+              <div className={`field date-choice-field ${cancer && form.cancerSchedulingMode === "earliest" ? "muted-field" : ""} ${form.dateEntryMode === "manual" ? "full manual-date-choice-field" : ""}`}>
                 <span>วันที่ผ่าตัด {(!cancer || form.cancerSchedulingMode === "specific") && <b>*</b>}</span>
                 {cancer && form.cancerSchedulingMode === "earliest" ? (
                   <select value="" disabled aria-label="ระบบเลือกคิวเร็วที่สุด"><option>ระบบเลือกคิวเร็วที่สุด</option></select>
@@ -1158,15 +1297,29 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         </select>
                       )
                     ) : (
-                      <div className={`manual-date-grid ${cancer ? "" : "single"}`}>
-                        <input type="date" min={manualDateStart} max={data?.horizonEnd} value={form.requestedDate} onChange={(e) => chooseManualDate(e.target.value)} aria-label={`ระบุวันที่ผ่าตัดเอง เริ่มตั้งแต่ ${displayDate(manualDateStart)} ถึง ${data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วงที่เปิดให้ลงคิว"}`} />
-                        {cancer ? (
-                          <select value={form.requestedQueueType || "OR17"} onChange={(e) => updateField("requestedQueueType", e.target.value)} aria-label="เลือกห้องผ่าตัด">
-                            <option value="OR17">OR 17</option>
-                            <option value="EXTRA">OR Extra</option>
-                          </select>
-                        ) : <span className="fixed-room">OR 17</span>}
-                      </div>
+                      <>
+                        <div className="manual-room-choice">
+                          {cancer ? (
+                            <select value={manualQueueType} onChange={(e) => chooseManualQueueType(e.target.value as "OR17" | "EXTRA")} aria-label="เลือกห้องผ่าตัดก่อนเลือกวัน">
+                              <option value="OR17">OR 17</option>
+                              <option value="EXTRA">OR Extra</option>
+                            </select>
+                          ) : <span className="fixed-room">OR 17</span>}
+                        </div>
+                        {data ? <ManualDateCalendar
+                          days={data.days}
+                          cancer={cancer}
+                          queueType={manualQueueType}
+                          staffQueuePreference={form.staffQueuePreference}
+                          staffDayKeys={staffDayKeys}
+                          manualDateStart={manualDateStart}
+                          horizonEnd={data.horizonEnd}
+                          month={displayedManualCalendarMonth}
+                          selectedDate={form.requestedDate}
+                          onMonthChange={setManualCalendarMonth}
+                          onSelectDate={chooseManualDate}
+                        /> : <p className="manual-date-loading" role="status">กำลังโหลดปฏิทินคิวผ่าตัด…</p>}
+                      </>
                     )}
                     {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down ถึง {data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วง 12 เดือน"}</small>}
                   </>

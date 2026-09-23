@@ -166,9 +166,35 @@ button { cursor: pointer; }
 .date-entry-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 11px; background: #f2edef; }
 .date-entry-toggle button { min-height: 32px; padding: 4px 8px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 9px; font-weight: 800; }
 .date-entry-toggle button.active { color: var(--rose); background: #fff; box-shadow: 0 2px 8px rgba(65, 29, 42, .09); }
-.manual-date-grid { display: grid; grid-template-columns: minmax(0, 1fr) 102px; gap: 7px; }
-.manual-date-grid.single { grid-template-columns: minmax(0, 1fr) 72px; }
+.manual-room-choice { display: grid; grid-template-columns: minmax(0, 1fr); }
 .fixed-room { display: grid; place-items: center; min-height: 48px; border: 1px solid #dfd4d7; border-radius: 12px; color: var(--rose) !important; background: var(--rose-soft); }
+.manual-date-choice-field { gap: 10px; }
+.manual-date-calendar { display: grid; gap: 11px; padding: 14px; border-radius: 18px; background: var(--soft-base); box-shadow: var(--pressed); }
+.manual-date-calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.manual-date-calendar-heading > div:first-child { display: grid; gap: 2px; }
+.manual-date-calendar-heading span { color: var(--ink); font-size: 11px; font-weight: 900; }
+.manual-date-calendar-heading small { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.manual-date-toolbar { display: grid; grid-template-columns: 30px minmax(105px, auto) 30px; align-items: center; gap: 5px; }
+.manual-date-toolbar strong { color: var(--ink); font-size: 11px; text-align: center; white-space: nowrap; }
+.manual-date-toolbar button { width: 30px; height: 30px; padding: 0; border-radius: 10px; color: var(--ink); background: var(--soft-base); box-shadow: var(--raised); font-size: 21px; line-height: 1; }
+.manual-date-toolbar button:disabled { opacity: .42; box-shadow: var(--pressed); }
+.manual-date-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.manual-date-weekday { display: grid; place-items: center; min-height: 20px; color: var(--muted); font-size: 9px; font-weight: 900; }
+.manual-date-blank { min-height: 60px; }
+.manual-date-day { min-height: 60px; display: grid; align-content: space-between; justify-items: center; gap: 2px; padding: 7px 3px 6px; border-radius: 12px; color: var(--ink); background: var(--soft-base); font-size: 11px; font-weight: 900; }
+.manual-date-day.available { color: var(--rose-deep); box-shadow: var(--raised); }
+.manual-date-day.available:hover { transform: translateY(-1px); box-shadow: var(--raised-large); }
+.manual-date-day.selected { color: var(--rose-deep); background: var(--soft-base); box-shadow: var(--pressed); }
+.manual-date-day.today > span { text-decoration: underline; text-underline-offset: 3px; }
+.manual-date-day.unavailable { color: var(--muted); box-shadow: var(--pressed); opacity: .55; }
+.manual-date-day small { max-width: 100%; overflow: hidden; color: inherit; font-size: 7px; font-weight: 800; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.manual-date-summary { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; border-radius: 12px; color: var(--muted); background: var(--soft-base); box-shadow: var(--pressed); font-size: 9px; line-height: 1.4; }
+.manual-date-summary strong { color: var(--rose-deep); }
+.manual-date-summary span:last-child { text-align: right; }
+.manual-date-legend { margin: 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
+.manual-date-legend b { color: var(--rose-deep); }
+.manual-date-legend em { color: var(--muted); font-style: normal; }
+.manual-date-loading { margin: 0; padding: 16px; color: var(--muted); text-align: center; font-size: 10px; }
 .wait-time-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 18px; padding: 13px 16px; border: 1px solid #d9e9e2; border-radius: 14px; background: #f2f9f6; }
 .wait-time-card > div { display: flex; align-items: baseline; gap: 10px; }
 .wait-time-card span { color: #52685f; font-size: 10px; font-weight: 800; }
@@ -443,7 +469,13 @@ footer span { color: var(--rose); font-weight: 800; letter-spacing: .05em; }
   .extra-form { grid-template-columns: 1fr 105px; }
   .wait-time-export { grid-template-columns: 1fr 1fr; }
   .wait-time-export > div, .wait-time-export button { grid-column: 1 / -1; }
-  .manual-date-grid { grid-template-columns: minmax(0, 1fr) 94px; }
+  .manual-date-calendar-heading { align-items: flex-start; flex-direction: column; }
+  .manual-date-toolbar { width: 100%; grid-template-columns: 30px 1fr 30px; }
+  .manual-date-day, .manual-date-blank { min-height: 52px; }
+  .manual-date-day { padding: 6px 1px 5px; font-size: 10px; }
+  .manual-date-day small { font-size: 6px; }
+  .manual-date-summary { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .manual-date-summary span:last-child { text-align: left; }
   .wait-time-card { align-items: flex-start; flex-direction: column; gap: 5px; }
   .wait-time-card p { text-align: left; }
   .month-blank, .month-day { min-height: 43px; }

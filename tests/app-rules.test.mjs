@@ -143,12 +143,18 @@ test("deletes only an active queued case after an exact HN confirmation", async 
   assert.match(app, /ยืนยันลบเคส/);
 });
 
-test("supports manual surgery dates and shows the calculated waiting time", async () => {
+test("shows an inline manual surgery calendar and calculated waiting time", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const route = await read("app/api/schedule/route.ts");
   assert.match(app, /dateEntryMode: "list" as "list" \| "manual"/);
   assert.match(app, /ระบุวันเอง/);
-  assert.match(app, /type="date" min=\{manualDateStart\} max=\{data\?\.horizonEnd\}/);
+  assert.match(app, /function ManualDateCalendar/);
+  assert.match(app, /manual-date-calendar/);
+  assert.match(app, /manualDateStart/);
+  assert.match(app, /day\.closed/);
+  assert.match(app, /day\.count >= day\.capacity/);
+  assert.match(app, /staffQueuePreference === "same_staff"/);
+  assert.match(app, /disabled=\{!availability\.available\}/);
   assert.doesNotMatch(app, /ไม่จำกัดช่วงเวลา/);
   assert.match(app, /daysBetween\(queuedDate, selectedSurgeryDate\)/);
   assert.match(app, /ระยะเวลารอคิว/);
@@ -261,7 +267,9 @@ test("starts manual dates after the last dropdown option and prompts Calendar sy
   const presenceRoute = await read("app/api/presence/route.ts");
   assert.match(app, /const manualDateStart = useMemo/);
   assert.match(app, /dropdownDays\.at\(-1\)\?\.date/);
-  assert.match(app, /min=\{manualDateStart\}/);
+  assert.match(app, /manualDateStart=\{manualDateStart\}/);
+  assert.match(app, /horizonEnd=\{data\.horizonEnd\}/);
+  assert.match(app, /manualCalendarMonth/);
   assert.match(app, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);
   assert.match(app, /กด Sync ทันที เพื่อบันทึกลงใน Calendar/);
   assert.match(app, /ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่/);
