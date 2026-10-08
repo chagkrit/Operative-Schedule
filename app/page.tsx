@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { auth, AUTHORIZED_EMAIL } from "../auth";
 import SchedulerApp from "./SchedulerApp";
@@ -11,5 +12,9 @@ export const metadata: Metadata = {
 export default async function Home() {
   const session = await auth();
   if (session?.user?.email?.toLowerCase() !== AUTHORIZED_EMAIL) redirect("/signin");
-  return <SchedulerApp authorizedEmail={AUTHORIZED_EMAIL} />;
+  return (
+    <Suspense fallback={null}>
+      <SchedulerApp authorizedEmail={AUTHORIZED_EMAIL} />
+    </Suspense>
+  );
 }

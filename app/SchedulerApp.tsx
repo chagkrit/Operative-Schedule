@@ -2,8 +2,12 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import { useSearchParams } from "next/navigation";
 import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
+import BottomNav from "./BottomNav";
+import { parseTab, tabHref, type TabId } from "./lib/nav";
+import { useUnseenMoves } from "./useUnseenMoves";
 
 type Day = {
   date: string;
@@ -477,6 +481,47 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     return { from: addCalendarDays(today, -1825), to: addCalendarDays(today, 730) };
   });
   const [exporting, setExporting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+  const activeTab = parseTab(searchParams.get("tab"));
+  const focusScreenRef = useRef(false);
+  const { unseen, markOwnMove } = useUnseenMoves(data?.recentMoves, activeTab === "alerts");
+
+  const selectTab = useCallback((tab: TabId, options: { focus?: boolean } = {}) => {
+    setMenuOpen(false);
+    window.scrollTo({ top: 0, left: 0 });
+    if (parseTab(new URLSearchParams(window.location.search).get("tab")) === tab) return;
+    focusScreenRef.current = options.focus !== false;
+    window.history.replaceState(null, "", tabHref(tab));
+  }, []);
+
+  useEffect(() => {
+    if (!focusScreenRef.current) return;
+    focusScreenRef.current = false;
+    document.getElementById(`screen-${activeTab}`)?.focus({ preventScroll: true });
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      menuButtonRef.current?.focus();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || menuButtonRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [menuOpen]);
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
@@ -878,6 +923,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setShowSyncPrompt(true);
       setForm(EMPTY_FORM);
       await loadSchedule();
+      if (window.matchMedia("(max-width: 1000px)").matches) selectTab("schedule", { focus: false });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" });
     } finally {
@@ -1011,7 +1057,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ date, queueType }),
       });
-      const payload = (await response.json()) as { error?: string; message?: string; move?: { fromDate: string; toDate: string } };
+      const payload = (await response.json()) as { error?: string; message?: string; move?: { id: string; fromDate: string; toDate: string; movedAt: string } };
       if (!response.ok) throw new Error(payload.error || "สลับวันผ่าตัดไม่สำเร็จ");
       setNotice({
         type: "success",
@@ -1019,6 +1065,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       });
       setSelectedCase(null);
       setMoveTarget("");
+      markOwnMove(payload.move!.id, payload.move!.movedAt);
       await loadSchedule();
       await searchCases();
     } catch (error) {
@@ -1080,7 +1127,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-screen={activeTab}>
       <header className="topbar">
         <div className="brand">
           <Image src="/unit-logo.jpg" alt="Breast & Endocrine Surgery CMU" className="brand-logo" width={58} height={58} priority />
@@ -1089,18 +1136,19 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <h1>OR Queue</h1>
           </div>
         </div>
-        <div className="topbar-actions">
+        <button ref={menuButtonRef} className="menu-button" type="button" aria-expanded={menuOpen} aria-controls="topbar-menu" onClick={() => setMenuOpen((open) => !open)}>เมนู</button>
+        <div ref={menuRef} id="topbar-menu" className="topbar-actions" data-open={menuOpen}>
           <div className={`calendar-pill ${data?.calendarConnected ? "connected" : "disconnected"}`} title={calendarError || undefined}>
             <StatusDot synced={Boolean(data?.calendarConnected)} />
             <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
           </div>
-          <button className="sync-button" type="button" onClick={syncCalendar} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
-          <button className="export-button" type="button" onClick={() => void exportWaitingTime()} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
+          <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
+          <button className="export-button" type="button" onClick={() => { setMenuOpen(false); void exportWaitingTime(); }} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
         </div>
       </header>
 
-      <section className="hero">
+      <section className="hero" data-screens="schedule">
         <div>
           <p className="eyebrow pink">SURGICAL SCHEDULING</p>
           <h2>ลงคิวผ่าตัด<br /><span>ชัดเจน ปลอดภัย ไม่ชนกัน</span></h2>
@@ -1245,8 +1293,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       )}
 
-      <div className="workspace-grid">
-        <section className="panel booking-panel">
+      <div className="workspace-grid" data-screens="book schedule">
+        <section className="panel booking-panel" id="screen-book" tabIndex={-1} data-screens="book">
           <div className="panel-heading">
             <div><span className="step">01</span><h3>ข้อมูลผู้ป่วยและการผ่าตัด</h3></div>
             <span className={`diagnosis-badge ${cancer ? "cancer" : "general"}`}>{cancer ? `Cancer · ${form.cancerSchedulingMode === "specific" ? "ระบุวันเอง" : "คิวเร็วที่สุด"}` : "OR 17 · เลือกวัน"}</span>
@@ -1374,7 +1422,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           </form>
         </section>
 
-        <aside className="panel schedule-panel">
+        <aside className="panel schedule-panel" id="screen-schedule" tabIndex={-1} data-screens="schedule">
           <div className="panel-heading compact"><div><span className="step">02</span><h3>{scheduleView === "closures" ? "ตั้งค่าวันปิดรับคิว" : "คิวที่กำลังจะมาถึง"}</h3></div>{scheduleView !== "closures" && <button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button>}</div>
           <div className="schedule-tabs" role="tablist" aria-label="รูปแบบแสดงตารางผ่าตัด">
             <button type="button" role="tab" aria-selected={scheduleView === "list"} className={scheduleView === "list" ? "active" : ""} onClick={() => setScheduleView("list")}>รายการคิว</button>
@@ -1444,8 +1492,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </aside>
       </div>
 
-      <section className="case-tools-grid" aria-label="ค้นหาและประวัติการสลับวันผ่าตัด">
-        <div className="panel case-search-panel">
+      <section className="case-tools-grid" data-screens="search alerts" aria-label="ค้นหาและประวัติการสลับวันผ่าตัด">
+        <div className="panel case-search-panel" id="screen-search" tabIndex={-1} data-screens="search">
           <div className="panel-heading compact">
             <div><span className="step">03</span><h3>ค้นหาเคสและสลับวันผ่าตัด</h3></div>
             <span className="search-scope">HN · ชื่อ · สกุล</span>
@@ -1485,7 +1533,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           </div>
         </div>
 
-        <aside className="panel move-history-panel">
+        <aside className="panel move-history-panel" id="screen-alerts" tabIndex={-1} data-screens="alerts">
           <div className="panel-heading compact"><div><span className="step">04</span><h3>แจ้งเตือนการสลับวันล่าสุด</h3></div><span className="history-count">{data?.recentMoves.length || 0}/10</span></div>
           <div className="move-history-list">
             {(data?.recentMoves || []).length === 0 && <div className="case-empty">ยังไม่มีการสลับวันผ่าตัด</div>}
@@ -1501,6 +1549,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       </section>
 
       <footer><span>Breast &amp; Endocrine Surgery CMU</span><p>ข้อมูลผู้ป่วยเป็นความลับ · กรุณาใช้งานผ่านบัญชีที่ได้รับอนุญาตเท่านั้น</p></footer>
+      <BottomNav active={activeTab} unseenAlerts={unseen} onSelect={selectTab} />
     </main>
   );
 }
