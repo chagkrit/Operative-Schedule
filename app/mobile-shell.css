@@ -1,0 +1,206 @@
+/* Mobile shell (≤ 1000px): bottom navigation bar, one-screen-at-a-time, top menu, phone polish.
+   Imported after globals.css and staff-selector-v2.css so equal-specificity rules here win. */
+
+:root {
+  --bottom-nav-height: 64px;
+  --bottom-nav-muted: #4b5a6b;
+  --bottom-nav-active: #a71955;
+}
+
+.bottom-nav { display: none; }
+
+@media (max-width: 1000px) {
+  .app-shell { padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom) + 22px); }
+
+  .bottom-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--soft-base);
+    box-shadow: 0 -8px 20px rgba(135, 151, 173, .38);
+  }
+
+  .bottom-nav-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: var(--bottom-nav-height);
+    padding: 6px 4px;
+    color: var(--bottom-nav-muted);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .bottom-nav-link[aria-current="page"] { color: var(--bottom-nav-active); font-weight: 900; }
+  .bottom-nav-link:focus-visible { outline: 3px solid #5635d4; outline-offset: -4px; border-radius: 16px; }
+
+  .bottom-nav-icon {
+    position: relative;
+    display: inline-flex;
+    padding: 4px 18px;
+    border-radius: 999px;
+  }
+  .bottom-nav-link[aria-current="page"] .bottom-nav-icon { box-shadow: var(--pressed); }
+  .bottom-nav-icon svg {
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .bottom-nav-badge {
+    position: absolute;
+    top: -4px;
+    left: calc(50% + 4px);
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    color: #fff;
+    background: var(--rose);
+    font: 800 12px/18px "Noto Sans Thai", Tahoma, Arial, sans-serif;
+    text-align: center;
+  }
+}
+
+@media (max-width: 1000px) {
+  .app-shell[data-screen="schedule"] [data-screens]:not([data-screens~="schedule"]),
+  .app-shell[data-screen="book"] [data-screens]:not([data-screens~="book"]),
+  .app-shell[data-screen="search"] [data-screens]:not([data-screens~="search"]),
+  .app-shell[data-screen="alerts"] [data-screens]:not([data-screens~="alerts"]) {
+    display: none;
+  }
+}
+
+.menu-button { display: none; }
+
+@media (max-width: 1000px) {
+  .topbar { position: relative; min-height: 76px; padding: 12px 0; flex-wrap: nowrap; align-items: center; }
+  .topbar .brand { width: auto; min-width: 0; }
+  .menu-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 20px;
+    border-radius: 999px;
+    color: var(--ink);
+    background: var(--glass);
+    box-shadow: var(--glass-highlight);
+    font-size: 14px;
+    font-weight: 800;
+  }
+  .menu-button[aria-expanded="true"] { box-shadow: var(--pressed); }
+  .topbar .topbar-actions { display: none; }
+  .topbar .topbar-actions[data-open="true"] {
+    position: absolute;
+    top: calc(100% - 6px);
+    right: 0;
+    z-index: 60;
+    width: min(320px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 14px;
+    border-radius: 22px;
+    background: var(--soft-base);
+    box-shadow: var(--raised-large);
+  }
+  .topbar .topbar-actions .calendar-pill { max-width: none; font-size: 12px; }
+  .topbar .topbar-actions .sync-button,
+  .topbar .topbar-actions .export-button,
+  .topbar .topbar-actions .signout-button { min-height: 44px; height: auto; font-size: 14px; }
+  .topbar .topbar-actions form { display: flex; }
+  .topbar .topbar-actions form .signout-button { flex: 1; }
+}
+/* Phone polish (≤ 650px): readable text, comfortable targets, no iOS focus-zoom. */
+@media (max-width: 650px) {
+  /* Text floor: 12px */
+  .eyebrow, .presence-status, .setup-banner p, .last-sync, .queue-conflict-heading > span, .queue-conflict-heading p,
+  .queue-suggestion-list > strong, .queue-suggestion-list > button > span:last-child, .queue-suggestion-list b,
+  .queue-suggestion-list small, .queue-suggestion-empty, .queue-conflict-footnote,
+  .sync-confirm-dialog > span:not(.sync-confirm-icon), .sync-confirm-dialog p, .step, .diagnosis-badge,
+  .field span, .extra-form label span, .neoadjuvant-choice, .field-help, .staff-selector legend,
+  .staff-selector label, .staff-selector small, .staff-queue-preference small, .staff-smart-heading span,
+  .staff-smart-heading > b, .staff-smart-date small, .staff-smart-list dt, .staff-smart-privacy,
+  .staff-queue-empty, .manual-date-calendar-heading span, .manual-date-calendar-heading small,
+  .manual-date-toolbar strong, .manual-date-summary, .manual-date-legend, .manual-date-loading,
+  .wait-time-card span, .wait-time-card p, .cancer-mode legend, .mode-options small, .cancer-suggestion span,
+  .cancer-suggestion small, .privacy-note, .wait-time-export strong, .wait-time-export small,
+  .wait-time-export label span, .extra-fixed-capacity span, .extra-fixed-capacity small, .date-block span,
+  .day-title span, .warning-line, .extra-line, .closure-line, .mini-bookings > div > span:first-child,
+  .mini-bookings strong, .mini-bookings small, .full-label, .month-day > span, .month-day-summary > div span,
+  .month-day-summary p, .month-day-summary > small, .month-closure-summary b, .month-closure-summary span,
+  .month-bookings-heading strong, .month-bookings-heading span, .month-booking-slot strong,
+  .month-booking-slot small, .month-booking-detail strong, .month-booking-detail span,
+  .month-booking-detail small, .month-bookings-empty, .month-legend, .closure-form-heading small,
+  .closure-form label span, .closure-list-toolbar strong, .closure-list > p, .closure-date span,
+  .closure-detail strong, .closure-detail span, .closure-detail small, .closure-affected-list b,
+  .closure-affected-list span, .closure-affected-list small, .search-scope, .history-count,
+  .case-search-form > label, .case-identity strong, .case-current strong, .case-identity small,
+  .case-current small, .case-operation small, .case-operation, .select-case, .move-form label,
+  .move-form > small, .case-empty, .move-history-list strong, .move-history-list small,
+  .move-history-list p, .move-history-list time, footer, .calendar-pill, .delete-case-summary span,
+  .delete-case-summary small, .delete-hn-form label, .delete-hn-form p {
+    font-size: 12px;
+  }
+
+  /* Calendar cells are ~44px wide: micro-labels keep a 10px floor. */
+  .manual-date-weekday, .manual-date-day, .manual-date-day small, .month-weekday, .month-day b,
+  .month-day.closed em, .month-legend em {
+    font-size: 10px;
+  }
+
+  /* Touch targets: 44px */
+  .sync-button, .export-button, .signout-button, .setup-banner > button, .text-button,
+  .schedule-tabs button, .staff-queue-preference button, .date-entry-toggle button, .extra-form button,
+  .wait-time-export button, .month-toolbar button, .closure-form-actions button,
+  .closure-row-actions button, .closure-confirm-actions button, .case-search-form button,
+  .move-form button, .delete-confirm-actions button, .queue-suggestion-list > button {
+    min-height: 44px;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+  .schedule-tabs button { padding: 6px 4px; }
+  .manual-date-toolbar { grid-template-columns: 44px 1fr 44px; }
+  .manual-date-toolbar button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+
+  /* Inputs: 44px tall and 16px so iOS Safari does not zoom on focus */
+  .field input, .field textarea, .field select, .extra-form input, .wait-time-export input,
+  .closure-form input, .closure-form textarea, .closure-list-toolbar input, .case-search-form input,
+  .move-form select, .delete-hn-form input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+}
+
+/* globals.css sets these with !important, so the phone floor must match it. */
+@media (max-width: 650px) {
+  .neoadjuvant-choice { font-size: 12px !important; }
+  .month-closure-summary span { font-size: 12px !important; }
+}
+
+/* viewport-fit=cover lets content run under the notch and home indicator: give it back as padding. */
+@media (max-width: 1000px) {
+  .bottom-nav { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  .app-shell { padding-left: max(22px, env(safe-area-inset-left)); padding-right: max(22px, env(safe-area-inset-right)); }
+}
+
+@media (max-width: 650px) {
+  .app-shell { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+  .queue-conflict-backdrop { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+}
