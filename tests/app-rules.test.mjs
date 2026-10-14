@@ -365,3 +365,33 @@ test("keeps the active-device status static and supports desktop, tablet, and mo
   assert.match(staffStyles, /width: 16px !important/);
   assert.match(staffStyles, /@media \(max-width: 650px\)/);
 });
+
+test("uses one server-held Calendar refresh token when GOOGLE_REFRESH_TOKEN is set", async () => {
+  const auth = await read("auth.ts");
+  const calendar = await read("app/lib/calendar.ts");
+  const route = await read("app/api/schedule/route.ts");
+  // Sign-in must stop minting per-device Calendar refresh tokens in server mode.
+  assert.match(auth, /SERVER_CALENDAR_TOKEN = Boolean\(process\.env\.GOOGLE_REFRESH_TOKEN\)/);
+  assert.match(auth, /SERVER_CALENDAR_TOKEN\s*\?\s*\{\}/);
+  assert.match(auth, /account && !SERVER_CALENDAR_TOKEN/);
+  // The session identity check stays in front of every Calendar call.
+  assert.match(calendar, /token\?\.email\?\.toLowerCase\(\) !== AUTHORIZED_EMAIL/);
+  assert.ok(calendar.indexOf("AUTHORIZED_EMAIL) {") < calendar.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
+  assert.match(calendar, /cachedServerToken/);
+  // A dead server token is an admin problem (503), not a "sign in again" 401 that would loop.
+  assert.match(calendar, /ผู้ดูแลระบบต้องต่ออายุ[\s\S]{0,200}503/);
+  assert.match(route, /typeof status === "number" && status >= 400/);
+});
+
+test("serves public privacy and terms pages that Google's consent screen can link to", async () => {
+  const privacy = await read("app/privacy/page.tsx");
+  const terms = await read("app/terms/page.tsx");
+  const signIn = await read("app/signin/page.tsx");
+  // Legal pages must stay reachable without signing in (Google reviewers and users see them first).
+  for (const page of [privacy, terms]) assert.doesNotMatch(page, /auth\(|redirect\(/);
+  assert.match(privacy, /calendar\.events/);
+  assert.match(privacy, /Google API Services User Data Policy/);
+  assert.match(privacy, /Limited Use/);
+  assert.match(signIn, /href="\/privacy"/);
+  assert.match(signIn, /href="\/terms"/);
+});
