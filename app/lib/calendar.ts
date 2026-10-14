@@ -104,6 +104,54 @@ function neoadjuvantLabel(value: boolean | null) {
   return value === true ? "ได้รับ" : value === false ? "ไม่ได้รับ" : "ไม่ระบุ";
 }
 
+function withStatus(message: string, status: number) {
+  return Object.assign(new Error(message), { status });
+}
+
+type GoogleTokenResponse = { access_token?: string; expires_in?: number; error?: string; error_description?: string };
+
+// With GOOGLE_REFRESH_TOKEN set, the server owns one long-lived Calendar grant for hnbcmu@gmail.com
+// instead of each device's session cookie carrying its own (which silently expires per device).
+let cachedServerToken: { token: string; expiresAt: number } | null = null;
+let inflightServerToken: Promise<string> | null = null;
+
+async function requestAccessToken(refreshToken: string) {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: process.env.AUTH_GOOGLE_ID || "",
+      client_secret: process.env.AUTH_GOOGLE_SECRET || "",
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
+    cache: "no-store",
+  });
+  const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
+  return { ok: response.ok && Boolean(payload.access_token), payload };
+}
+
+async function serverAccessToken(refreshToken: string) {
+  if (cachedServerToken && cachedServerToken.expiresAt > Date.now() + 60_000) return cachedServerToken.token;
+  inflightServerToken ??= (async () => {
+    const { ok, payload } = await requestAccessToken(refreshToken);
+    if (!ok || !payload.access_token) {
+      cachedServerToken = null;
+      throw withStatus(
+        payload.error === "invalid_grant"
+          ? "การเชื่อม Google Calendar ของระบบหมดอายุหรือถูกเพิกถอน ผู้ดูแลระบบต้องต่ออายุ ดูวิธีใน README"
+          : "ต่ออายุการเชื่อม Google Calendar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+        503,
+      );
+    }
+    cachedServerToken = { token: payload.access_token, expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000 };
+    return payload.access_token;
+  })().finally(() => {
+    inflightServerToken = null;
+  });
+  return inflightServerToken;
+}
+
 async function authorizedAccessToken(request: Request) {
   const token = await getToken({
     req: request,
@@ -113,27 +161,28 @@ async function authorizedAccessToken(request: Request) {
   if (token?.email?.toLowerCase() !== AUTHORIZED_EMAIL) {
     throw new Error("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail.com");
   }
+  if (process.env.GOOGLE_REFRESH_TOKEN) {
+    if (!process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
+      throw withStatus("ระบบยังตั้งค่า Google OAuth ไม่ครบ ผู้ดูแลระบบต้องตรวจสอบ", 503);
+    }
+    return serverAccessToken(process.env.GOOGLE_REFRESH_TOKEN);
+  }
+
+  // Fallback while GOOGLE_REFRESH_TOKEN is not configured: per-device token from the session cookie.
   if (token.accessToken && Number(token.expiresAt || 0) * 1000 > Date.now() + 30_000) {
     return String(token.accessToken);
   }
   if (!token.refreshToken || !process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
     throw new Error("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่");
   }
-
-  const response = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: process.env.AUTH_GOOGLE_ID,
-      client_secret: process.env.AUTH_GOOGLE_SECRET,
-      refresh_token: String(token.refreshToken),
-      grant_type: "refresh_token",
-    }),
-    cache: "no-store",
-  });
-  const payload = (await response.json()) as { access_token?: string; error_description?: string };
-  if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || "ต่ออายุสิทธิ์ Google Calendar ไม่สำเร็จ");
+  const { ok, payload } = await requestAccessToken(String(token.refreshToken));
+  if (!ok || !payload.access_token) {
+    throw withStatus(
+      payload.error === "invalid_grant"
+        ? "สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่"
+        : "ต่ออายุสิทธิ์ Google Calendar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+      payload.error === "invalid_grant" ? 401 : 502,
+    );
   }
   return payload.access_token;
 }

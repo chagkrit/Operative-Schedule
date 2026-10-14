@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { auth, AUTHORIZED_EMAIL } from "../../auth";
 import { redirect } from "next/navigation";
 import { signInWithGoogle } from "./actions";
@@ -17,6 +18,10 @@ export default async function SignInPage() {
         <form action={signInWithGoogle}>
           <button className="google-button" type="submit">เข้าสู่ระบบด้วย Google</button>
         </form>
+        <nav className="signin-legal" aria-label="เอกสารของระบบ">
+          <Link href="/privacy">นโยบายความเป็นส่วนตัว</Link>
+          <Link href="/terms">ข้อกำหนดการใช้งาน</Link>
+        </nav>
       </section>
     </main>
   );

@@ -5,6 +5,8 @@ import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay,
 
 function statusFor(error: unknown) {
   const message = error instanceof Error ? error.message : "เกิดข้อผิดพลาด";
+  const status = (error as { status?: number }).status;
+  if (typeof status === "number" && status >= 400) return status;
   if (message.includes("เข้าสู่ระบบ") || message.includes("สิทธิ์ Google")) return 401;
   if (message.includes("พร้อมกัน")) return 409;
   return 500;
