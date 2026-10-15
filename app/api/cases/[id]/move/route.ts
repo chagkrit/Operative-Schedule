@@ -5,6 +5,7 @@ import {
   type QueueType,
 } from "../../../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot } from "../../../../lib/queue";
+import { patientDisplayName } from "../../../../lib/privacy";
 import { dateOnly, endOfRollingHorizon, isNormalDay } from "../../../../lib/schedule";
 
 export async function PATCH(
@@ -58,7 +59,7 @@ export async function PATCH(
       move: {
         id,
         hn: move.after.hn,
-        patientName: `${move.after.firstName} ${move.after.lastName}`,
+        patientName: patientDisplayName(move.after.firstName, move.after.lastName),
         fromDate: move.before.scheduleDate,
         toDate: move.after.scheduleDate,
         movedAt: move.after.lastMoveAt,

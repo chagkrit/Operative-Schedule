@@ -395,3 +395,16 @@ test("serves public privacy and terms pages that Google's consent screen can lin
   assert.match(signIn, /href="\/privacy"/);
   assert.match(signIn, /href="\/terms"/);
 });
+
+test("shows the full first name but only the surname initial on screen", async () => {
+  const { patientDisplayName } = await import("../app/lib/privacy.ts");
+  assert.equal(patientDisplayName("แสงหล้า", "เมืองใจ"), "แสงหล้า เมื.");
+  assert.equal(patientDisplayName("อรกาณจน์", "วงษ์คำหาญ"), "อรกาณจน์ ว.");
+  assert.equal(patientDisplayName("ภควรรณ", "เกยงค์"), "ภควรรณ เก.");
+  assert.equal(patientDisplayName("Somchai", "smith"), "Somchai S.");
+  assert.equal(patientDisplayName(" Anna ", ""), "Anna");
+  for (const file of ["app/api/schedule/route.ts", "app/api/cases/[id]/move/route.ts", "app/api/schedule-closures/route.ts"]) {
+    const source = await read(file);
+    assert.doesNotMatch(source, /\$\{[^}]*lastName\}/, `${file} must not expose the full surname`);
+  }
+});

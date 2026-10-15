@@ -1,6 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot } from "../../lib/queue";
+import { patientDisplayName } from "../../lib/privacy";
 import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay, isStaffOption, orderedStaffMembers } from "../../lib/schedule";
 
 function statusFor(error: unknown) {
@@ -36,7 +37,7 @@ export async function GET(request: Request) {
           isCancer: booking.isCancer,
           neoadjuvantTreatment: booking.neoadjuvantTreatment,
           hn: booking.hn,
-          patientName: `${booking.firstName} ${booking.lastName}`,
+          patientName: patientDisplayName(booking.firstName, booking.lastName),
           operation: booking.operation,
           note: booking.note,
           staffMembers: booking.staffMembers,
@@ -45,7 +46,7 @@ export async function GET(request: Request) {
       recentMoves: recentMoves.map((booking) => ({
         id: booking.id,
         hn: booking.hn,
-        patientName: `${booking.firstName} ${booking.lastName}`,
+        patientName: patientDisplayName(booking.firstName, booking.lastName),
         operation: booking.operation,
         fromDate: booking.lastMoveFrom,
         toDate: booking.lastMoveTo,

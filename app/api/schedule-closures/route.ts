@@ -5,6 +5,7 @@ import {
   saveScheduleClosureEvent,
 } from "../../lib/calendar";
 import { dateOnly, endOfRollingHorizon } from "../../lib/schedule";
+import { patientDisplayName } from "../../lib/privacy";
 
 function validIsoDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -16,7 +17,7 @@ function affectedBooking(booking: Awaited<ReturnType<typeof listCalendarData>>["
   return {
     id: booking.id,
     hn: booking.hn,
-    patientName: `${booking.firstName} ${booking.lastName}`,
+    patientName: patientDisplayName(booking.firstName, booking.lastName),
     operation: booking.operation,
     staffMembers: booking.staffMembers,
     queueType: booking.queueType,
