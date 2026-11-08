@@ -330,3 +330,12 @@ test("creating a closure never overwrites a moved closure that still holds the p
   assert.ok(guard !== -1 && guard < put, "check the id holder before PUT");
   assert.match(save, /body: JSON\.stringify\(fields\)/);
 });
+
+test("a closure create on the shared per-date event is never deleted by an undo", async () => {
+  const post = functionBody(await read("app/api/schedule-closures/route.ts"), "POST");
+  assert.match(post, /writtenIds: !existing && saved\.sharedId \? \[\] : \[closureId\]/);
+  assert.match(post, /ระบบคงวันปิดรับคิวนี้ไว้/);
+  const save = functionBody(await read("app/lib/calendar.ts"), "saveScheduleClosureEvent");
+  assert.match(save, /sharedId: true/);
+  assert.equal((save.match(/sharedId: false/g) || []).length, 2);
+});

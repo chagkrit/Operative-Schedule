@@ -70,9 +70,12 @@ export async function POST(request: Request) {
     // The duplicate check above and the write are not atomic. New closures share a per-date event id,
     // so two creates for one date land on the same event; the remaining race is a closure moved onto
     // this date (edit) at the same time as another save. Re-read and undo, as for staff unavailability.
+    // A create on the shared per-date event is never deleted: a concurrent create for the same date
+    // may already have reported success on it, and deleting would silently reopen the day. Closing a
+    // day twice is harmless, so that case keeps the closure and asks a person to check instead.
     const undoWrite = () => undoCalendarWrite({
       editing: Boolean(existing),
-      writtenIds: [closureId],
+      writtenIds: !existing && saved.sharedId ? [] : [closureId],
       restore: async () => saveScheduleClosureEvent(request, {
         id: existing!.id,
         date: existing!.date,
@@ -84,7 +87,9 @@ export async function POST(request: Request) {
       }, { ifMatch: await ifMatchForRestore(request, existing!.id, saved.etag, { startDate: date, endDate: date }) }),
       remove: (eventId) => deleteScheduleClosureEvent(request, eventId),
     });
+    const keptShared = !existing && saved.sharedId;
     const undoMessage = (lead: string, outcome: UndoOutcome) => {
+      if (keptShared) return `${lead} ระบบคงวันปิดรับคิวนี้ไว้ (วันนี้ยังปิดรับคิวอยู่) กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบว่ามีรายการซ้ำหรือไม่`;
       if (outcome === "undone") return `${lead} ระบบ${existing ? "คืนค่าการแก้ไขนี้" : "ยกเลิกการบันทึกนี้"}แล้ว กรุณาโหลดข้อมูลใหม่แล้วลองอีกครั้ง`;
       if (outcome === "changed") return `${lead} และรายการนี้ถูกแก้ไขโดยผู้อื่นระหว่างนั้น ระบบจึงไม่คืนค่า กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
       if (outcome === "uncertain") return `${lead} และระบบไม่แน่ใจว่าคืนค่าสำเร็จหรือไม่ กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;

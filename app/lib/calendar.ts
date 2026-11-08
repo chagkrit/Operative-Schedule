@@ -651,7 +651,7 @@ export async function saveScheduleClosureEvent(
   request: Request,
   closure: { id?: string; date: string; name: string; note: string; updatedBy: string; createdAt?: string; createdBy?: string },
   options: { ifMatch?: string } = {},
-): Promise<{ id: string; etag: string }> {
+): Promise<{ id: string; etag: string; sharedId: boolean }> {
   const id = closure.id || await deterministicId("oc", closure.date);
   const now = new Date().toISOString();
   const fields = {
@@ -679,7 +679,7 @@ export async function saveScheduleClosureEvent(
       ...(options.ifMatch ? { headers: { "if-match": options.ifMatch } } : {}),
     });
     const patched = (await response.json().catch(() => ({}))) as { etag?: string };
-    return { id, etag: patched.etag || "" };
+    return { id, etag: patched.etag || "", sharedId: false };
   }
   // The per-date id may still belong to a live closure that was later moved to another date by an
   // edit. Writing to that id would drag it back here and overwrite it, so use a Google-assigned id.
@@ -687,7 +687,7 @@ export async function saveScheduleClosureEvent(
     const created = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body: JSON.stringify(fields) });
     const event = (await created.json()) as { id?: string; etag?: string };
     if (!event.id) throw new Error("Google Calendar ไม่ส่งรหัสรายการกลับมา");
-    return { id: event.id, etag: event.etag || "" };
+    return { id: event.id, etag: event.etag || "", sharedId: false };
   }
   let response: Response;
   try {
@@ -697,7 +697,8 @@ export async function saveScheduleClosureEvent(
     response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
   }
   const saved = (await response.json().catch(() => ({}))) as { etag?: string };
-  return { id, etag: saved.etag || "" };
+  // sharedId: every create for this date writes this same event, so a concurrent create may rely on it.
+  return { id, etag: saved.etag || "", sharedId: true };
 }
 
 /**
