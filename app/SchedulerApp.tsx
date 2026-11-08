@@ -131,6 +131,7 @@ type StaffScheduleState = {
 type AffectedBooking = Pick<Booking, "id" | "hn" | "patientName" | "operation" | "staffMembers" | "queueType" | "slotNo">;
 
 const EMPTY_CLOSURE_FORM = { id: "", date: "", name: "", note: "" };
+const EMPTY_UNAVAILABILITY_FORM = { id: "", staff: [] as string[], startDate: "", endDate: "", note: "" };
 
 const STAFF = [
   "อ อารีวรรณ",
@@ -501,6 +502,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [closureSearch, setClosureSearch] = useState("");
   const [closureSaving, setClosureSaving] = useState(false);
   const [pendingClosure, setPendingClosure] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
+  const [unavailabilityForm, setUnavailabilityForm] = useState(EMPTY_UNAVAILABILITY_FORM);
+  const [unavailabilitySaving, setUnavailabilitySaving] = useState(false);
+  const [pendingUnavailability, setPendingUnavailability] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
   const [exportRange, setExportRange] = useState(() => {
     const today = bangkokToday();
     return { from: addCalendarDays(today, -1825), to: addCalendarDays(today, 730) };
@@ -550,6 +554,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
+  const unavailabilityConfirmRef = useRef<HTMLButtonElement>(null);
   const deleteHnRef = useRef<HTMLInputElement>(null);
   const deleteConfirmRef = useRef<HTMLButtonElement>(null);
   const deleteDialogRef = useRef<HTMLElement>(null);
@@ -583,13 +588,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !deleteDialog) return;
+    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !deleting) {
         setBookingConflict(null);
         setShowSyncPrompt(false);
         setPendingClosure(null);
+        setPendingUnavailability(null);
         setDeleteDialog(null);
         if (deleteDialog) requestAnimationFrame(() => deleteTriggerRef.current?.focus());
       }
@@ -611,13 +617,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     document.body.style.overflow = "hidden";
     (deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
-      : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : syncPromptButtonRef.current)?.focus();
+      : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, deleteDialog, deleting, pendingClosure, showSyncPrompt]);
+  }, [bookingConflict, deleteDialog, deleting, pendingClosure, pendingUnavailability, showSyncPrompt]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -1067,6 +1073,97 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
   }
 
+  const sortedUnavailability = useMemo(
+    () => [...(data?.staffUnavailability || [])].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.staff.localeCompare(b.staff, "th-TH")),
+    [data],
+  );
+
+  function toggleUnavailabilityStaff(staff: string) {
+    setUnavailabilityForm((current) => ({
+      ...current,
+      staff: current.staff.includes(staff) ? current.staff.filter((name) => name !== staff) : [...current.staff, staff],
+    }));
+  }
+
+  async function saveUnavailability(confirmExistingBookings = false) {
+    const editing = Boolean(unavailabilityForm.id);
+    if ((!editing && unavailabilityForm.staff.length === 0) || !unavailabilityForm.startDate || !unavailabilityForm.endDate) {
+      setNotice({ type: "error", text: "กรุณาเลือก Staff และระบุวันเริ่มต้น-วันสิ้นสุด" });
+      return;
+    }
+    if (unavailabilityForm.startDate > unavailabilityForm.endDate) {
+      setNotice({ type: "error", text: "วันเริ่มต้องไม่เกินวันสิ้นสุด" });
+      return;
+    }
+    setUnavailabilitySaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/staff-unavailability", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: unavailabilityForm.id || undefined,
+          staff: editing ? undefined : unavailabilityForm.staff,
+          startDate: unavailabilityForm.startDate,
+          endDate: unavailabilityForm.endDate,
+          note: unavailabilityForm.note,
+          confirmExistingBookings,
+        }),
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+        requiresConfirmation?: boolean;
+        affectedBookings?: AffectedBooking[];
+        overlappingStaff?: string[];
+      };
+      if (response.status === 409 && payload.requiresConfirmation) {
+        setPendingUnavailability({ bookings: payload.affectedBookings || [], message: payload.message || "ช่วงวันที่เลือกมีคิวเดิม" });
+        return;
+      }
+      if (!response.ok) {
+        setPendingUnavailability(null);
+        throw new Error(payload.error || "บันทึกวันที่ staff ไม่ว่างไม่สำเร็จ");
+      }
+      setPendingUnavailability(null);
+      setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM);
+      setNotice({ type: "success", text: payload.message || "บันทึกวันที่ staff ไม่ว่างแล้ว" });
+      await loadSchedule();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "บันทึกวันที่ staff ไม่ว่างไม่สำเร็จ" });
+    } finally {
+      setUnavailabilitySaving(false);
+    }
+  }
+
+  function submitUnavailability(event: FormEvent) {
+    event.preventDefault();
+    void saveUnavailability(false);
+  }
+
+  function editUnavailability(entry: StaffUnavailability) {
+    setUnavailabilityForm({ id: entry.id, staff: [entry.staff], startDate: entry.startDate, endDate: entry.endDate, note: entry.note });
+    setNotice(null);
+  }
+
+  async function deleteUnavailability(entry: StaffUnavailability) {
+    if (!window.confirm(`ลบวันที่ staff ไม่ว่าง ${entry.staff} ${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)} ใช่หรือไม่`)) return;
+    setUnavailabilitySaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/staff-unavailability?id=${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+      const payload = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "ลบวันที่ staff ไม่ว่างไม่สำเร็จ");
+      if (unavailabilityForm.id === entry.id) setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM);
+      setNotice({ type: "success", text: payload.message || "ลบวันที่ staff ไม่ว่างแล้ว" });
+      await loadSchedule();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "ลบวันที่ staff ไม่ว่างไม่สำเร็จ" });
+    } finally {
+      setUnavailabilitySaving(false);
+    }
+  }
+
   async function searchCases(event?: FormEvent) {
     event?.preventDefault();
     const query = searchQuery.trim();
@@ -1290,6 +1387,32 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <div className="closure-confirm-actions">
               <button type="button" onClick={() => setPendingClosure(null)}>กลับไปตรวจสอบ</button>
               <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {pendingUnavailability && (
+        <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setPendingUnavailability(null)}>
+          <section className="queue-conflict-dialog closure-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="unavailability-confirm-title" aria-describedby="unavailability-confirm-message">
+            <span className="queue-conflict-icon" aria-hidden="true">!</span>
+            <div className="queue-conflict-heading">
+              <span>พบคิวเดิมในช่วงที่ staff ไม่ว่าง</span>
+              <h3 id="unavailability-confirm-title">ยืนยันบันทึกและคงคิวเดิม</h3>
+              <p id="unavailability-confirm-message">{pendingUnavailability.message}</p>
+            </div>
+            <div className="closure-affected-list" aria-label="คิวเดิมที่จะคงไว้">
+              {pendingUnavailability.bookings.map((booking) => (
+                <article key={booking.id}>
+                  <b>{booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #{booking.slotNo}</b>
+                  <span>{booking.operation}</span>
+                  <small>{booking.patientName} · HN ••••{booking.hn.slice(-4)} · {staffLabel(booking.staffMembers)}</small>
+                </article>
+              ))}
+            </div>
+            <div className="closure-confirm-actions">
+              <button type="button" onClick={() => setPendingUnavailability(null)}>กลับไปตรวจสอบ</button>
+              <button ref={unavailabilityConfirmRef} type="button" onClick={() => void saveUnavailability(true)} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingUnavailability.bookings.length} เคส`}</button>
             </div>
           </section>
         </div>
@@ -1555,6 +1678,37 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   </article>;
                 })}
               </div>
+              <section className="unavailability-manager" aria-labelledby="unavailability-title">
+                <form className="unavailability-form" onSubmit={submitUnavailability}>
+                  <div className="unavailability-heading"><strong id="unavailability-title">วันที่ staff ไม่ว่าง</strong><small>{unavailabilityForm.id ? "แก้ไขรายการ (เปลี่ยน Staff ไม่ได้)" : "เลือกได้หลายคน ระบบจะสร้างรายการแยกต่อคน"}</small></div>
+                  <fieldset className="unavailability-staff" disabled={Boolean(unavailabilityForm.id)}>
+                    <legend>Staff <b>*</b></legend>
+                    {STAFF.map((staff) => <label key={staff}><input type="checkbox" checked={unavailabilityForm.staff.includes(staff)} onChange={() => toggleUnavailabilityStaff(staff)} /><span>{staff}</span></label>)}
+                    {unavailabilityForm.id && unavailabilityForm.staff.some((name) => !(STAFF as readonly string[]).includes(name)) && <p className="unavailability-orphan">{unavailabilityForm.staff.join(", ")} · ไม่พบ Staff ในรายชื่อ</p>}
+                  </fieldset>
+                  <label><span>วันเริ่มต้น <b>*</b></span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.startDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, startDate: event.target.value, endDate: current.endDate && current.endDate < event.target.value ? event.target.value : current.endDate }))} required /></label>
+                  <label><span>วันสิ้นสุด <b>*</b></span><input type="date" min={unavailabilityForm.startDate || data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.endDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, endDate: event.target.value }))} required /></label>
+                  <label className="wide"><span>หมายเหตุ</span><textarea value={unavailabilityForm.note} maxLength={500} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, note: event.target.value }))} placeholder="เช่น ประชุมวิชาการ ลาพักร้อน" /></label>
+                  <div className="unavailability-actions">
+                    {unavailabilityForm.id && <button type="button" onClick={() => setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM)}>ยกเลิกแก้ไข</button>}
+                    <button type="submit" disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
+                  </div>
+                </form>
+                <div className="unavailability-list" aria-live="polite" aria-label="รายการวันที่ staff ไม่ว่าง">
+                  <strong>รายการวันที่ staff ไม่ว่าง <span>{sortedUnavailability.length}</span></strong>
+                  {sortedUnavailability.length === 0 ? <p>ยังไม่มีวันที่ staff ไม่ว่าง</p> : sortedUnavailability.map((entry) => {
+                    const known = (STAFF as readonly string[]).includes(entry.staff);
+                    return <article key={entry.id}>
+                      <div className="unavailability-detail">
+                        <strong>{entry.staff}{!known && <em className="unavailability-orphan-tag"> · ไม่พบ Staff ในรายชื่อ</em>}</strong>
+                        <span>{entry.startDate === entry.endDate ? displayDate(entry.startDate, true) : `${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)}`}</span>
+                        <small>{entry.note || "ไม่มีหมายเหตุ"}</small>
+                      </div>
+                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={() => void deleteUnavailability(entry)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
+                    </article>;
+                  })}
+                </div>
+              </section>
             </div>
           )}
         </aside>

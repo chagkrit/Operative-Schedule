@@ -117,3 +117,16 @@ test("client date pickers show staff unavailability", async () => {
   assert.match(app, /<option[^>]*disabled/);
   assert.match(css, /\.staff-unavailable-notice/);
 });
+
+test("staff unavailability manager is wired into the closures tab", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const css = await read("app/globals.css");
+  assert.match(app, /\/api\/staff-unavailability/);
+  assert.match(app, /วันที่ staff ไม่ว่าง/);
+  assert.match(app, /ไม่พบ Staff ในรายชื่อ/);
+  assert.match(app, /confirmExistingBookings/);
+  assert.match(app, /confirm\([^)]*ลบวันที่ staff ไม่ว่าง/);
+  assert.match(app, /ยืนยันและคงคิวเดิม \$\{pendingUnavailability/);
+  assert.match(app, /overlappingStaff|payload\.error/);
+  assert.match(css, /\.unavailability-manager/);
+});

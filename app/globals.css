@@ -355,6 +355,42 @@ button { cursor: pointer; }
 .closure-row-actions { display: grid; gap: 4px; }
 .closure-row-actions button { padding: 5px 7px; border: 1px solid #e3d5d8; border-radius: 7px; color: var(--rose); background: #fff; font-size: 8px; font-weight: 800; }
 .closure-row-actions button:last-child { color: #98332f; }
+.unavailability-manager { display: grid; gap: 14px; margin-top: 4px; padding-top: 14px; border-top: 1px solid #eadfe1; }
+.unavailability-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; border: 1px solid #dfd4e0; border-radius: 16px; background: #f8f6fa; }
+.unavailability-heading, .unavailability-form .wide, .unavailability-staff, .unavailability-actions { grid-column: 1 / -1; }
+.unavailability-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.unavailability-heading strong { color: #3f3350; font-size: 12px; }
+.unavailability-heading small { color: var(--muted); font-size: 9px; }
+.unavailability-staff { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; margin: 0; padding: 0; border: 0; }
+.unavailability-staff legend { margin-bottom: 6px; padding: 0; color: #57454d; font-size: 9px; font-weight: 800; }
+.unavailability-staff legend b, .unavailability-form label b { color: var(--danger); }
+.unavailability-staff label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid #dfd4d7; border-radius: 10px; background: #fff; font-size: 10px; cursor: pointer; }
+.unavailability-staff label input { width: 18px; height: 18px; accent-color: var(--rose); }
+.unavailability-staff:disabled label { opacity: .6; cursor: default; }
+.unavailability-orphan, .unavailability-orphan-tag { color: #98332f; font-size: 9px; font-weight: 800; font-style: normal; }
+.unavailability-form > label { display: grid; gap: 5px; }
+.unavailability-form > label span { color: #57454d; font-size: 9px; font-weight: 800; }
+.unavailability-form input[type="date"], .unavailability-form textarea { width: 100%; border: 1px solid #dfd4d7; border-radius: 10px; color: var(--ink); background: #fff; outline: none; }
+.unavailability-form input[type="date"] { min-height: 44px; padding: 0 11px; font-size: 10px; }
+.unavailability-form textarea { min-height: 68px; resize: vertical; padding: 10px 11px; font: inherit; font-size: 10px; }
+.unavailability-form input:focus-visible, .unavailability-form textarea:focus-visible, .unavailability-staff label:focus-within { border-color: var(--rose); box-shadow: 0 0 0 3px rgba(167, 25, 85, .15); outline: 2px solid transparent; }
+.unavailability-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.unavailability-actions button { min-height: 44px; padding: 7px 14px; border: 1px solid #e3cdd0; border-radius: 9px; color: var(--rose); background: #fff; font-size: 10px; font-weight: 800; }
+.unavailability-actions button:last-child { border-color: var(--rose); color: #fff; background: var(--rose); }
+.unavailability-actions button:focus-visible, .unavailability-row-actions button:focus-visible { outline: 3px solid rgba(167, 25, 85, .35); outline-offset: 2px; }
+.unavailability-list { display: grid; gap: 8px; max-height: 375px; overflow-y: auto; }
+.unavailability-list > strong { color: #49373f; font-size: 10px; }
+.unavailability-list > strong span { color: var(--rose); }
+.unavailability-list > p { margin: 0; padding: 22px 12px; color: var(--muted); text-align: center; font-size: 10px; }
+.unavailability-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px; border: 1px solid #eadfe1; border-radius: 13px; background: #fff; }
+.unavailability-detail { min-width: 0; display: grid; gap: 2px; }
+.unavailability-detail strong { color: #49373f; font-size: 10px; }
+.unavailability-detail span { color: #715d65; font-size: 9px; }
+.unavailability-detail small { color: var(--muted); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
+.unavailability-row-actions { display: flex; gap: 6px; }
+.unavailability-row-actions button { min-width: 44px; min-height: 44px; padding: 5px 10px; border: 1px solid #e3d5d8; border-radius: 9px; color: var(--rose); background: #fff; font-size: 9px; font-weight: 800; }
+.unavailability-row-actions button:last-child { color: #98332f; }
+@media (max-width: 560px) { .unavailability-form { grid-template-columns: 1fr; } }
 .closure-confirm-dialog { max-width: 560px; }
 .closure-affected-list { display: grid; gap: 7px; max-height: 260px; overflow-y: auto; margin-top: 15px; }
 .closure-affected-list article { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 3px 10px; padding: 9px 10px; border: 1px solid #eee2e4; border-radius: 10px; text-align: left; background: #fff; }
