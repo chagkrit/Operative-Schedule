@@ -165,13 +165,14 @@ function staffLabel(staffMembers: readonly string[]) {
 
 // Live clash check (decision 17): any known staff on the case unavailable on its date. Nothing is stored on the case.
 function clashStaffFor(booking: { scheduleDate: string; staffMembers: string[] }, entries: StaffUnavailability[]): string[] {
+  if (booking.scheduleDate < bangkokToday()) return [];
   return caseStaffStatus(booking.staffMembers, unavailableStaffOn(entries, booking.scheduleDate, STAFF), STAFF).unavailableStaff;
 }
 
 function ClashBadge({ booking, entries }: { booking: { scheduleDate: string; staffMembers: string[] }; entries: StaffUnavailability[] }) {
   const names = clashStaffFor(booking, entries);
   if (!names.length) return null;
-  return <span className="clash-badge" role="status">{names.join(", ")} ไม่ว่าง ควรย้ายวัน</span>;
+  return <span className="clash-badge">{names.join(", ")} ไม่ว่าง ควรย้ายวัน</span>;
 }
 
 function partialStaffSuffix(unavailableStaff: readonly string[]) {
@@ -580,6 +581,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
   const unavailabilityConfirmRef = useRef<HTMLButtonElement>(null);
+  const unavailabilityFormRef = useRef<HTMLFormElement>(null);
+  const unavailabilityStartRef = useRef<HTMLInputElement>(null);
   const deleteHnRef = useRef<HTMLInputElement>(null);
   const deleteConfirmRef = useRef<HTMLButtonElement>(null);
   const deleteDialogRef = useRef<HTMLElement>(null);
@@ -796,11 +799,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
     return map;
   }, [data]);
-  const moveDates = useMemo(() => {
+  // Spec decisions 2 and 18: staff-blocked days stay in the list as disabled options; closed/full days stay hidden.
+  const moveOptionDays = useMemo(() => {
     if (!selectedCase) return [];
     return (data?.days || []).filter((day) => {
       if (day.closed) return false;
-      if (caseStaffStatus(selectedCase.staffMembers, day.unavailableStaff, STAFF).blocked) return false;
       if (day.count >= day.capacity) return false;
       if (day.date === selectedCase.scheduleDate && day.queueType === selectedCase.queueType) return false;
       if (!selectedCase.isCancer && day.queueType !== "OR17") return false;
@@ -808,6 +811,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       return true;
     });
   }, [data, selectedCase]);
+  const moveDates = useMemo(
+    () => (selectedCase ? moveOptionDays.filter((day) => !caseStaffStatus(selectedCase.staffMembers, day.unavailableStaff, STAFF).blocked) : []),
+    [moveOptionDays, selectedCase],
+  );
   const moveTargetDay = selectedCase && moveTarget
     ? moveDates.find((day) => `${day.date}|${day.queueType}` === moveTarget)
     : undefined;
@@ -1173,6 +1180,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   function editUnavailability(entry: StaffUnavailability) {
     setUnavailabilityForm({ id: entry.id, staff: [entry.staff], startDate: entry.startDate, endDate: entry.endDate, note: entry.note });
     setNotice(null);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    unavailabilityFormRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    unavailabilityStartRef.current?.focus({ preventScroll: true });
   }
 
   async function deleteUnavailability(entry: StaffUnavailability) {
@@ -1631,6 +1641,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <p>นับจากวันที่ลงคิว {displayDate(queuedDate, true)}<br />{displayDate(selectedSurgeryDate)} · {selectedQueueType === "EXTRA" ? "OR Extra" : "OR 17"}</p>
               </div>
             )}
+            {selectedStaffNotice?.blocked && (
+              <div className="staff-unavailable-notice" role="status">
+                <strong>วันที่เลือกไม่ว่าง</strong>
+                <span>{staffUnavailableMessage(selectedStaffNotice.unavailableStaff)} · เลือกวันอื่น</span>
+              </div>
+            )}
             {selectedStaffNotice && selectedStaffNotice.unavailableStaff.length > 0 && !selectedStaffNotice.blocked && (
               <div className="staff-unavailable-notice" role="status">
                 <strong>มี Staff ไม่ว่างในวันที่เลือก</strong>
@@ -1638,7 +1654,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               </div>
             )}
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
-            <button className="save-button" type="submit" disabled={saving}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
+            <button className="save-button" type="submit" disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
         </section>
 
@@ -1708,14 +1724,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 })}
               </div>
               <section className="unavailability-manager" aria-labelledby="unavailability-title">
-                <form className="unavailability-form" onSubmit={submitUnavailability}>
+                <form className="unavailability-form" ref={unavailabilityFormRef} onSubmit={submitUnavailability}>
                   <div className="unavailability-heading"><strong id="unavailability-title">วันที่ staff ไม่ว่าง</strong><small>{unavailabilityForm.id ? "แก้ไขรายการ (เปลี่ยน Staff ไม่ได้)" : "เลือกได้หลายคน ระบบจะสร้างรายการแยกต่อคน"}</small></div>
                   <fieldset className="unavailability-staff" disabled={Boolean(unavailabilityForm.id)}>
                     <legend>Staff <b>*</b></legend>
                     {STAFF.map((staff) => <label key={staff}><input type="checkbox" checked={unavailabilityForm.staff.includes(staff)} onChange={() => toggleUnavailabilityStaff(staff)} /><span>{staff}</span></label>)}
                     {unavailabilityForm.id && unavailabilityForm.staff.some((name) => !(STAFF as readonly string[]).includes(name)) && <p className="unavailability-orphan">{unavailabilityForm.staff.join(", ")} · ไม่พบ Staff ในรายชื่อ</p>}
                   </fieldset>
-                  <label><span>วันเริ่มต้น <b>*</b></span><input type="date" min={editingOriginalStart && editingOriginalStart < (data?.horizonStart || "") ? editingOriginalStart : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.startDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, startDate: event.target.value, endDate: current.endDate && current.endDate < event.target.value ? event.target.value : current.endDate }))} required /></label>
+                  <label><span>วันเริ่มต้น <b>*</b></span><input ref={unavailabilityStartRef} type="date" min={editingOriginalStart && editingOriginalStart < (data?.horizonStart || "") ? editingOriginalStart : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.startDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, startDate: event.target.value, endDate: current.endDate && current.endDate < event.target.value ? event.target.value : current.endDate }))} required /></label>
                   <label><span>วันสิ้นสุด <b>*</b></span><input type="date" min={unavailabilityForm.startDate > (data?.horizonStart || "") ? unavailabilityForm.startDate : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.endDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, endDate: event.target.value }))} required /></label>
                   <label className="wide"><span>หมายเหตุ</span><textarea value={unavailabilityForm.note} maxLength={500} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, note: event.target.value }))} placeholder="เช่น ประชุมวิชาการ ลาพักร้อน" /></label>
                   <div className="unavailability-actions">
@@ -1772,7 +1788,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     <label htmlFor={`move-${result.id}`}>วันผ่าตัดใหม่</label>
                     <select id={`move-${result.id}`} value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>
                       <option value="">เลือกคิวปลายทางที่ยังว่าง</option>
-                      {moveDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}{partialStaffSuffix(caseStaffStatus(result.staffMembers, day.unavailableStaff, STAFF).unavailableStaff)}</option>)}
+                      {moveOptionDays.map((day) => {
+                        const status = caseStaffStatus(result.staffMembers, day.unavailableStaff, STAFF);
+                        return status.blocked
+                          ? <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`} disabled>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
+                          : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                      })}
                     </select>
                     <button type="submit" disabled={moving || !moveTarget}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
                     <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>

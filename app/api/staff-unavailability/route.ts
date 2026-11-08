@@ -70,7 +70,7 @@ export async function POST(request: Request) {
     );
     if (overlappingStaff.length > 0) {
       return Response.json({
-        error: `${overlappingStaff.join(", ")} มีวันที่ไม่ว่างทับซ้อนกับช่วงวันที่เลือกแล้ว`,
+        error: `${overlappingStaff.join(", ")} มีวันที่ไม่ว่างทับซ้อนกับช่วงวันที่เลือกแล้ว กรุณาแก้ไขรายการเดิม`,
         overlappingStaff,
       }, { status: 409 });
     }

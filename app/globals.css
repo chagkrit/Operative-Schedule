@@ -360,35 +360,35 @@ button { cursor: pointer; }
 .unavailability-heading, .unavailability-form .wide, .unavailability-staff, .unavailability-actions { grid-column: 1 / -1; }
 .unavailability-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .unavailability-heading strong { color: #3f3350; font-size: 12px; }
-.unavailability-heading small { color: var(--muted); font-size: 9px; }
+.unavailability-heading small { color: var(--muted); font-size: 11px; }
 .unavailability-staff { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; margin: 0; padding: 0; border: 0; }
-.unavailability-staff legend { margin-bottom: 6px; padding: 0; color: #57454d; font-size: 9px; font-weight: 800; }
+.unavailability-staff legend { margin-bottom: 6px; padding: 0; color: #57454d; font-size: 11px; font-weight: 800; }
 .unavailability-staff legend b, .unavailability-form label b { color: var(--danger); }
-.unavailability-staff label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid #dfd4d7; border-radius: 10px; background: #fff; font-size: 10px; cursor: pointer; }
+.unavailability-staff label { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid #dfd4d7; border-radius: 10px; background: #fff; font-size: 11px; cursor: pointer; }
 .unavailability-staff label input { width: 18px; height: 18px; accent-color: var(--rose); }
 .unavailability-staff:disabled label { opacity: .6; cursor: default; }
-.unavailability-orphan, .unavailability-orphan-tag { color: #98332f; font-size: 9px; font-weight: 800; font-style: normal; }
+.unavailability-orphan, .unavailability-orphan-tag { color: #98332f; font-size: 11px; font-weight: 800; font-style: normal; }
 .unavailability-form > label { display: grid; gap: 5px; }
-.unavailability-form > label span { color: #57454d; font-size: 9px; font-weight: 800; }
+.unavailability-form > label span { color: #57454d; font-size: 11px; font-weight: 800; }
 .unavailability-form input[type="date"], .unavailability-form textarea { width: 100%; border: 1px solid #dfd4d7; border-radius: 10px; color: var(--ink); background: #fff; outline: none; }
-.unavailability-form input[type="date"] { min-height: 44px; padding: 0 11px; font-size: 10px; }
-.unavailability-form textarea { min-height: 68px; resize: vertical; padding: 10px 11px; font: inherit; font-size: 10px; }
+.unavailability-form input[type="date"] { min-height: 44px; padding: 0 11px; font-size: 11px; }
+.unavailability-form textarea { min-height: 68px; resize: vertical; padding: 10px 11px; font: inherit; font-size: 11px; }
 .unavailability-form input:focus-visible, .unavailability-form textarea:focus-visible, .unavailability-staff label:focus-within { border-color: var(--rose); box-shadow: 0 0 0 3px rgba(167, 25, 85, .15); outline: 2px solid transparent; }
 .unavailability-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.unavailability-actions button { min-height: 44px; padding: 7px 14px; border: 1px solid #e3cdd0; border-radius: 9px; color: var(--rose); background: #fff; font-size: 10px; font-weight: 800; }
+.unavailability-actions button { min-height: 44px; padding: 7px 14px; border: 1px solid #e3cdd0; border-radius: 9px; color: var(--rose); background: #fff; font-size: 11px; font-weight: 800; }
 .unavailability-actions button:last-child { border-color: var(--rose); color: #fff; background: var(--rose); }
 .unavailability-actions button:focus-visible, .unavailability-row-actions button:focus-visible { outline: 3px solid rgba(167, 25, 85, .35); outline-offset: 2px; }
 .unavailability-list { display: grid; gap: 8px; max-height: 375px; overflow-y: auto; }
-.unavailability-list > strong { color: #49373f; font-size: 10px; }
+.unavailability-list > strong { color: #49373f; font-size: 11px; }
 .unavailability-list > strong span { color: var(--rose); }
-.unavailability-list > p { margin: 0; padding: 22px 12px; color: var(--muted); text-align: center; font-size: 10px; }
+.unavailability-list > p { margin: 0; padding: 22px 12px; color: var(--muted); text-align: center; font-size: 11px; }
 .unavailability-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px; border: 1px solid #eadfe1; border-radius: 13px; background: #fff; }
 .unavailability-detail { min-width: 0; display: grid; gap: 2px; }
-.unavailability-detail strong { color: #49373f; font-size: 10px; }
-.unavailability-detail span { color: #715d65; font-size: 9px; }
-.unavailability-detail small { color: var(--muted); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
+.unavailability-detail strong { color: #49373f; font-size: 11px; }
+.unavailability-detail span { color: #715d65; font-size: 11px; }
+.unavailability-detail small { color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .unavailability-row-actions { display: flex; gap: 6px; }
-.unavailability-row-actions button { min-width: 44px; min-height: 44px; padding: 5px 10px; border: 1px solid #e3d5d8; border-radius: 9px; color: var(--rose); background: #fff; font-size: 9px; font-weight: 800; }
+.unavailability-row-actions button { min-width: 44px; min-height: 44px; padding: 5px 10px; border: 1px solid #e3d5d8; border-radius: 9px; color: var(--rose); background: #fff; font-size: 11px; font-weight: 800; }
 .unavailability-row-actions button:last-child { color: #98332f; }
 @media (max-width: 560px) { .unavailability-form { grid-template-columns: 1fr; } }
 .closure-confirm-dialog { max-width: 560px; }
@@ -428,8 +428,8 @@ button { cursor: pointer; }
 .move-form select { height: 40px; font-size: 10px; }
 .move-form button { height: 40px; border: 0; border-radius: 10px; color: #fff; background: var(--rose); font-size: 10px; font-weight: 800; }
 .move-form button:disabled { opacity: .55; cursor: not-allowed; }
-.staff-unavailable-notice { display: grid; gap: 2px; padding: 9px 12px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 10px; line-height: 1.45; }
-.staff-unavailable-notice strong { font-size: 10px; font-weight: 800; }
+.staff-unavailable-notice { display: grid; gap: 2px; padding: 9px 12px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 11px; line-height: 1.45; }
+.staff-unavailable-notice strong { font-size: 11px; font-weight: 800; }
 .move-form .staff-unavailable-notice { grid-column: 1 / -1; }
 .move-form > small { grid-column: 2 / -1; color: var(--muted); font-size: 8px; }
 .case-empty { padding: 30px 12px; text-align: center; color: var(--muted); font-size: 11px; border: 1px dashed #e5dadd; border-radius: 14px; }
@@ -820,7 +820,7 @@ button:disabled { cursor: not-allowed; }
 .signin-legal a { display: inline-flex; align-items: center; min-height: 44px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 650px) { .legal-card { padding: 26px 20px; border-radius: 22px; } }
 
-.clash-badge { display: inline-block; margin-top: 3px; padding: 2px 8px; border: 1px solid #e3c27a; border-radius: 999px; color: #5c4210; background: #fff6df; font-size: 9px; font-weight: 800; line-height: 1.4; }
+.clash-badge { display: inline-block; margin-top: 3px; padding: 2px 8px; border: 1px solid #e3c27a; border-radius: 999px; color: #5c4210; background: #fff6df; font-size: 11px; font-weight: 800; line-height: 1.4; }
 .month-day.has-clash { border-color: #e3c27a; box-shadow: inset 0 0 0 1px #e3c27a; }
-.month-day .clash-flag { color: #5c4210; font-size: 7px; font-style: normal; font-weight: 900; }
-.month-unavailable-summary { display: grid; gap: 2px; margin-top: 6px; padding: 8px 10px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 10px; line-height: 1.45; }
+.month-day .clash-flag { color: #5c4210; font-size: 9px; font-style: normal; font-weight: 900; }
+.month-unavailable-summary { display: grid; gap: 2px; margin-top: 6px; padding: 8px 10px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 11px; line-height: 1.45; }

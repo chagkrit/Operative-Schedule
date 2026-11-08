@@ -160,3 +160,65 @@ test("calendar selected-day booking cards carry the clash badge", async () => {
   const end = app.indexOf("</article>", start);
   assert.match(app.slice(start, end), /<ClashBadge booking=\{booking\} entries=\{staffUnavailability\} \/>/);
 });
+
+test("final wave: move picker lists staff-blocked days as disabled options", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /const moveOptionDays = useMemo/);
+  assert.match(app, /moveOptionDays\.map\(/);
+  assert.match(app, /disabled>\{displayDate\(day\.date, true\)\} · \{day\.queueType === "EXTRA" \? "OR Extra" : "OR 17"\} · ไม่ว่าง:/);
+  assert.match(app, /const moveDates = useMemo/);
+});
+
+test("final wave: phone floor covers the new unavailability UI", async () => {
+  const css = await read("app/mobile-shell.css");
+  const phone = css.slice(css.indexOf("max-width: 650px"));
+  for (const selector of [".clash-badge", ".month-unavailable-summary", ".staff-unavailable-notice", ".unavailability-detail small", ".unavailability-list > p", ".unavailability-staff label", ".unavailability-heading small"]) {
+    assert.ok(phone.includes(selector), `${selector} missing from 12px floor`);
+  }
+  assert.ok(phone.includes(".month-day .clash-flag"), "clash-flag missing from 10px floor");
+  assert.ok(phone.includes('.unavailability-form input[type="date"]'), "date input missing from 16px list");
+  assert.ok(phone.includes(".unavailability-form textarea"), "textarea missing from 16px list");
+  const globals = await read("app/globals.css");
+  assert.match(globals, /\.clash-badge \{[^}]*font-size: 11px/);
+  assert.match(globals, /\.month-day \.clash-flag \{[^}]*font-size: 9px/);
+});
+
+test("final wave: blocked selected date disables save", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /selectedStaffNotice\?\.blocked/);
+  assert.match(app, /เลือกวันอื่น/);
+  assert.match(app, /disabled=\{saving \|\| Boolean\(selectedStaffNotice\?\.blocked\)\}/);
+});
+
+test("final wave: ClashBadge has no status role and past cases never clash", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.doesNotMatch(app, /className="clash-badge" role="status"/);
+  assert.match(app, /if \(booking\.scheduleDate < bangkokToday\(\)\) return \[\];/);
+});
+
+test("final wave: editing an unavailability entry focuses the form", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /unavailabilityStartRef = useRef<HTMLInputElement>/);
+  assert.match(app, /ref=\{unavailabilityStartRef\}/);
+  assert.match(app, /ref=\{unavailabilityFormRef\}/);
+  assert.match(app, /prefers-reduced-motion: reduce/);
+  assert.match(app, /unavailabilityStartRef\.current\?\.focus\(/);
+});
+
+test("final wave: STAFF in the client equals STAFF_OPTIONS", async () => {
+  const names = (source, marker) => {
+    const start = source.indexOf(marker);
+    assert.notEqual(start, -1, `${marker} not found`);
+    const block = source.slice(start, source.indexOf("]", start));
+    return [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  };
+  const client = names(await read("app/SchedulerApp.tsx"), "const STAFF = [");
+  const lib = names(await read("app/lib/schedule.ts"), "export const STAFF_OPTIONS = [");
+  assert.ok(client.length > 0);
+  assert.deepEqual(client, lib);
+});
+
+test("final wave: overlap error tells the user to edit the existing entry", async () => {
+  const route = await read("app/api/staff-unavailability/route.ts");
+  assert.match(route, /มีวันที่ไม่ว่างทับซ้อนกับช่วงวันที่เลือกแล้ว กรุณาแก้ไขรายการเดิม/);
+});
