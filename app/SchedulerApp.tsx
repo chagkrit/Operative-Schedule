@@ -5,7 +5,7 @@ import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
-import { caseStaffStatus, staffUnavailableMessage } from "./lib/staff-unavailability";
+import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
 import { useUnseenMoves } from "./useUnseenMoves";
@@ -163,6 +163,17 @@ function staffLabel(staffMembers: readonly string[]) {
   return staffMembers.join(", ") || "ไม่ระบุ";
 }
 
+// Live clash check (decision 17): any known staff on the case unavailable on its date. Nothing is stored on the case.
+function clashStaffFor(booking: { scheduleDate: string; staffMembers: string[] }, entries: StaffUnavailability[]): string[] {
+  return caseStaffStatus(booking.staffMembers, unavailableStaffOn(entries, booking.scheduleDate, STAFF), STAFF).unavailableStaff;
+}
+
+function ClashBadge({ booking, entries }: { booking: { scheduleDate: string; staffMembers: string[] }; entries: StaffUnavailability[] }) {
+  const names = clashStaffFor(booking, entries);
+  if (!names.length) return null;
+  return <span className="clash-badge" role="status">{names.join(", ")} ไม่ว่าง ควรย้ายวัน</span>;
+}
+
 function partialStaffSuffix(unavailableStaff: readonly string[]) {
   return unavailableStaff.length ? ` (${unavailableStaff.join(", ")} ไม่ว่าง)` : "";
 }
@@ -220,6 +231,7 @@ type MonthlyCalendarProps = {
   days: Day[];
   bookings: Booking[];
   closures: ScheduleClosure[];
+  staffUnavailability: StaffUnavailability[];
   horizonStart: string;
   horizonEnd: string;
   month: string;
@@ -228,7 +240,7 @@ type MonthlyCalendarProps = {
   onSelectDate: (value: string) => void;
 };
 
-function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
+function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
   const firstMonth = horizonStart.slice(0, 7);
   const lastMonth = horizonEnd.slice(0, 7);
   const [year, monthNumber] = month.split("-").map(Number);
@@ -250,6 +262,9 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
   const selectedBookings = bookings
     .filter((booking) => booking.scheduleDate === selectedDate)
     .sort((a, b) => a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1);
+  const clashDates = new Set(bookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0).map((booking) => booking.scheduleDate));
+  const selectedUnavailableStaff = unavailableStaffOn(staffUnavailability, selectedDate, STAFF);
+  const selectedClashBookings = selectedBookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0);
   const today = bangkokToday();
 
   function changeMonth(direction: -1 | 1) {
@@ -278,17 +293,18 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
           return (
             <button
               type="button"
-              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""}`}
+              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""} ${clashDates.has(date) ? "has-clash" : ""}`}
               key={date}
               onClick={() => onSelectDate(date)}
               disabled={Boolean(closure) || outsideHorizon}
               title={closure ? `${closure.name}${closure.note ? ` — ${closure.note}` : ""}` : undefined}
-              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${count} เคส`}
+              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${count} เคส${clashDates.has(date) ? " มีเคสควรย้ายวัน" : ""}`}
               aria-pressed={date === selectedDate}
             >
               <span>{Number(date.slice(-2))}</span>
               {closure ? <em>ปิด</em> : null}
               {count > 0 ? <b>{count}</b> : summaries.length > 0 ? <i aria-label="เปิดรับคิว" /> : null}
+              {clashDates.has(date) ? <em className="clash-flag">ย้าย</em> : null}
             </button>
           );
         })}
@@ -305,6 +321,14 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
             <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}</span>
           </p>
         )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
+        {selectedUnavailableStaff.length > 0 && (
+          <div className="month-unavailable-summary">
+            <b>ไม่ว่างวันนี้ · {selectedUnavailableStaff.join(", ")}</b>
+            {selectedClashBookings.length > 0
+              ? <span>ควรย้ายวัน: {selectedClashBookings.map((booking) => `${booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #${booking.slotNo} ${booking.operation}`).join(" · ")}</span>
+              : <span>ยังไม่มีเคสที่ชนวันนี้</span>}
+          </div>
+        )}
       </div>
       <section className="month-bookings" aria-live="polite" aria-label={`เคสผ่าตัดวันที่ ${displayDate(selectedDate)}`}>
         <div className="month-bookings-heading">
@@ -1646,7 +1670,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     {day.closed && <p className="closure-line">ปิดรับคิว · {day.closureName}{day.closureNote ? ` — ${day.closureNote}` : ""}</p>}
                     {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                     {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
-                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
+                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
                     {remaining <= 0 && <span className="full-label">คิวเต็ม</span>}
                   </div>
                 </article>;
@@ -1654,7 +1678,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
           ) : scheduleView === "month" ? (
             <div role="tabpanel" aria-label="ปฏิทินผ่าตัดรายเดือน">
-              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} staffUnavailability={data?.staffUnavailability || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
             </div>
           ) : (
             <div className="closure-manager" role="tabpanel" aria-label="ตั้งค่าวันปิดรับคิว">
@@ -1739,7 +1763,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); setDeleteDialog(null); }}>
                   <span className="case-identity"><strong>{result.patientName}</strong><small>HN {result.hn} · {result.diagnosis}</small></span>
                   <span className="case-current"><strong>{displayDate(result.scheduleDate, true)}</strong><small>{result.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${result.slotNo}`}</small></span>
-                  <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}</small></span>
+                  <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}</small><ClashBadge booking={result} entries={data?.staffUnavailability || []} /></span>
                   <span className="select-case">{selectedCase?.id === result.id ? "เลือกแล้ว" : "เลือกสลับวัน"}</span>
                 </button>
                 {selectedCase?.id === result.id && (

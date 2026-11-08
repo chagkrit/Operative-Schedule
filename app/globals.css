@@ -819,3 +819,8 @@ button:disabled { cursor: not-allowed; }
 .signin-legal { display: flex; justify-content: center; gap: 4px 18px; flex-wrap: wrap; margin-top: 20px; font-size: 13px; }
 .signin-legal a { display: inline-flex; align-items: center; min-height: 44px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 650px) { .legal-card { padding: 26px 20px; border-radius: 22px; } }
+
+.clash-badge { display: inline-block; margin-top: 3px; padding: 2px 8px; border: 1px solid #e3c27a; border-radius: 999px; color: #5c4210; background: #fff6df; font-size: 9px; font-weight: 800; line-height: 1.4; }
+.month-day.has-clash { border-color: #e3c27a; box-shadow: inset 0 0 0 1px #e3c27a; }
+.month-day .clash-flag { color: #5c4210; font-size: 7px; font-style: normal; font-weight: 900; }
+.month-unavailable-summary { display: grid; gap: 2px; margin-top: 6px; padding: 8px 10px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 10px; line-height: 1.45; }

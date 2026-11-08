@@ -140,3 +140,15 @@ test("in-progress unavailability can be edited with its original past start", as
   assert.ok(route.indexOf("const existing") < route.indexOf("startDate < today &&"));
   assert.match(app, /editingOriginalStart/);
 });
+
+test("live clash badges are computed on render, not stored", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const css = await read("app/globals.css");
+  assert.match(app, /function clashStaffFor\(/);
+  assert.match(app, /ควรย้ายวัน/);
+  assert.match(app, /has-clash/);
+  assert.match(app, /<ClashBadge /);
+  assert.match(app, /staffUnavailability=\{data\?\.staffUnavailability \|\| \[\]\}/);
+  assert.match(css, /\.clash-badge/);
+  assert.match(css, /\.month-day\.has-clash/);
+});
