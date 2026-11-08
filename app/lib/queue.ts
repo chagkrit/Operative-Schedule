@@ -1,6 +1,6 @@
 import { listCalendarData, type CalendarBooking, type QueueType } from "./calendar";
 import { addDays, isNormalDay, STAFF_OPTIONS } from "./schedule";
-import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./staff-unavailability";
+import { unavailableStaffOn } from "./staff-unavailability";
 
 export type DaySummary = {
   date: string;
@@ -86,28 +86,7 @@ export async function getSchedule(request: Request, from: string, to: string) {
   };
 }
 
-export function staffBlockedOn(
-  staffMembers: readonly string[],
-  day: Pick<DaySummary, "unavailableStaff">,
-): boolean {
-  return caseStaffStatus(staffMembers, day.unavailableStaff, STAFF_OPTIONS).blocked;
-}
-
-export function destinationError(
-  booking: Pick<CalendarBooking, "isCancer"> & { staffMembers?: readonly string[] },
-  day?: DaySummary,
-) {
-  if (!day) return "วันที่หรือประเภทคิวที่เลือกไม่ได้เปิดรับคิว";
-  if (day.closed) return `วันที่เลือกปิดรับคิว${day.closureName ? `: ${day.closureName}` : ""}`;
-  const staffStatus = caseStaffStatus(booking.staffMembers ?? [], day.unavailableStaff, STAFF_OPTIONS);
-  if (staffStatus.blocked) return staffUnavailableMessage(staffStatus.unavailableStaff);
-  if (day.count >= day.capacity) return "วันที่เลือกคิวเต็มแล้ว";
-  if (!booking.isCancer && day.queueType === "EXTRA") return "OR Extra รับเฉพาะเคส Cancer";
-  if (!booking.isCancer && day.queueType === "OR17" && day.count === 3 && day.cancerCount === 0) {
-    return "ช่องสุดท้ายของวันนี้รับ Cancer เท่านั้น";
-  }
-  return "";
-}
+export { destinationError, staffBlockedOn } from "./destination";
 
 export function nextAvailableSlot(
   bookings: Pick<CalendarBooking, "scheduleDate" | "queueType" | "slotNo">[],

@@ -690,7 +690,8 @@ export async function deleteScheduleClosureEvent(request: Request, id: string) {
 export async function saveStaffUnavailabilityEvent(
   request: Request,
   entry: { id?: string; staff: string; startDate: string; endDate: string; note: string; updatedBy: string; createdAt?: string; createdBy?: string },
-): Promise<string> {
+  options: { ifMatch?: string } = {},
+): Promise<{ id: string; etag: string }> {
   const now = new Date().toISOString();
   const body = JSON.stringify({
     summary: `${entry.staff} ไม่ว่าง${entry.note ? ` • ${entry.note}` : ""}`,
@@ -715,13 +716,19 @@ export async function saveStaffUnavailabilityEvent(
     } },
   });
   if (entry.id) {
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(entry.id)}`, { method: "PATCH", body });
-    return entry.id;
+    // With ifMatch, Google answers 412 when the event changed since that etag (someone else edited it).
+    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(entry.id)}`, {
+      method: "PATCH",
+      body,
+      ...(options.ifMatch ? { headers: { "if-match": options.ifMatch } } : {}),
+    });
+    const patched = (await response.json().catch(() => ({}))) as { etag?: string };
+    return { id: entry.id, etag: patched.etag || "" };
   }
   const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
-  const created = (await response.json()) as { id?: string };
+  const created = (await response.json()) as { id?: string; etag?: string };
   if (!created.id) throw new Error("Google Calendar ไม่ส่งรหัสรายการกลับมา");
-  return created.id;
+  return { id: created.id, etag: created.etag || "" };
 }
 
 export async function deleteStaffUnavailabilityEvent(request: Request, id: string): Promise<void> {

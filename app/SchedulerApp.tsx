@@ -828,6 +828,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const moveTargetDay = selectedCase && moveTarget
     ? moveDates.find((day) => `${day.date}|${day.queueType}` === moveTarget)
     : undefined;
+  // After a Sync the chosen destination may have filled up, closed or become staff-blocked.
+  const moveTargetStale = Boolean(selectedCase && moveTarget && !moveTargetDay);
+  const moveTargetMissing = Boolean(moveTarget && !moveOptionDays.some((day) => `${day.date}|${day.queueType}` === moveTarget));
   const moveStaffNotice = selectedCase && moveTargetDay
     ? caseStaffStatus(selectedCase.staffMembers, moveTargetDay.unavailableStaff, STAFF)
     : null;
@@ -1240,8 +1243,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
 
   async function moveCase(event: FormEvent) {
     event.preventDefault();
-    if (!selectedCase || !moveTarget) {
-      setNotice({ type: "error", text: "กรุณาเลือกเคสและวันผ่าตัดปลายทาง" });
+    if (!selectedCase || !moveTarget || !moveTargetDay) {
+      setNotice({ type: "error", text: moveTargetStale ? "วันที่เลือกใช้ย้ายไม่ได้แล้ว กรุณาเลือกวันผ่าตัดใหม่" : "กรุณาเลือกเคสและวันผ่าตัดปลายทาง" });
       return;
     }
     const [date, queueType] = moveTarget.split("|");
@@ -1798,6 +1801,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     <label htmlFor={`move-${result.id}`}>วันผ่าตัดใหม่</label>
                     <select id={`move-${result.id}`} value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>
                       <option value="">เลือกคิวปลายทางที่ยังว่าง</option>
+                      {moveTargetMissing && <option value={moveTarget} disabled>{displayDate(moveTarget.split("|")[0], true)} · ใช้ไม่ได้แล้ว</option>}
                       {moveOptionDays.map((day) => {
                         const status = caseStaffStatus(result.staffMembers, day.unavailableStaff, STAFF);
                         return status.blocked
@@ -1805,9 +1809,15 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
                       })}
                     </select>
-                    <button type="submit" disabled={moving || !moveTarget}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    <button type="submit" disabled={moving || !moveTargetDay}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
                     <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
+                    {moveTargetStale && (
+                      <div className="staff-unavailable-notice" role="status">
+                        <strong>วันที่เลือกใช้ย้ายไม่ได้แล้ว</strong>
+                        <span>ข้อมูลล่าสุดแสดงว่าคิวนี้เต็ม ปิดรับคิว หรือ Staff ทุกคนในเคสไม่ว่าง · เลือกวันอื่น</span>
+                      </div>
+                    )}
                     {moveStaffNotice && moveStaffNotice.unavailableStaff.length > 0 && (
                       <div className="staff-unavailable-notice" role="status">
                         <strong>มี Staff ไม่ว่างในวันที่เลือก</strong>

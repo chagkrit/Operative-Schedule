@@ -38,20 +38,16 @@ test("legacy calendar parsing still skips tagged events", async () => {
 
 test("queue enforces staff unavailability in destinationError", async () => {
   const queue = await read("app/lib/queue.ts");
+  const rules = await read("app/lib/destination.ts");
   assert.match(queue, /unavailableStaff: string\[\]/);
   assert.match(queue, /staffUnavailability/);
   assert.match(queue, /unavailableStaffOn\(/);
-  assert.match(queue, /caseStaffStatus/);
-  assert.match(queue, /staffUnavailableMessage/);
-  assert.match(queue, /export function staffBlockedOn/);
-  assert.match(queue, /export function destinationError\([\s\S]*?staffMembers\?:/);
+  assert.match(queue, /export \{ destinationError, staffBlockedOn \} from "\.\/destination"/);
   assert.equal((queue.match(/unavailableStaff: unavailableStaffOn\(/g) || []).length, 3);
-  const start = queue.indexOf("export function destinationError");
-  const body = queue.slice(start);
-  const closed = body.indexOf("if (day.closed)");
-  const staff = body.indexOf("caseStaffStatus(");
-  const capacity = body.indexOf("day.count >= day.capacity");
-  assert.ok(closed !== -1 && closed < staff && staff < capacity, "staff check between closed and capacity");
+  assert.match(rules, /export function staffBlockedOn/);
+  assert.match(rules, /export function destinationError\([\s\S]*?staffMembers\?:/);
+  // destination.ts must stay free of Calendar/auth imports so tests can load it
+  assert.doesNotMatch(rules, /from "[^"]*(calendar|auth)"/);
 });
 
 test("booking route enforces staff unavailability", async () => {
@@ -260,8 +256,12 @@ test("staff-unavailability POST re-verifies after writing and undoes a raced sav
   assert.match(post, /conflictingEntries\([^)]*entry\.id\)\.length > 0/);
   assert.match(post, /ระบบไม่ได้บันทึกรายการใดในคำขอนี้/);
   assert.match(post, /ระบบคืนค่าการแก้ไขนี้แล้ว/);
-  // edit path restores the previous range instead of deleting the entry
-  assert.match(post, /startDate: existing\.startDate,\s+endDate: existing\.endDate/);
+  // edit path restores the previous range (guarded by our etag) instead of deleting the entry
+  assert.match(post, /startDate: existing!\.startDate,\s+endDate: existing!\.endDate/);
+  assert.match(post, /\{ ifMatch: entries\[0\]\?\.etag \|\| undefined \}/);
+  assert.match(post, /undoUnavailabilityWrite\(/);
+  // an unverifiable save is undone (fail closed), not kept with a 500
+  assert.match(post, /verified = await listCalendarData\(request, today, horizonEnd\);\s+\} catch \{\s+const outcome = await undoWrite\(\);/);
 });
 
 test("booking: a concrete refusal for the chosen day wins over the same_staff hint", async () => {
@@ -269,4 +269,21 @@ test("booking: a concrete refusal for the chosen day wins over the same_staff hi
   const selectedAt = route.indexOf("const error = selectedDayError");
   const sameStaffAt = route.indexOf("ไม่พบคิวว่างที่ Staff ที่เลือกมีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้");
   assert.ok(selectedAt !== -1 && sameStaffAt > selectedAt);
+});
+
+test("move button is disabled when the chosen destination went stale after a Sync", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /const moveTargetStale = Boolean\(selectedCase && moveTarget && !moveTargetDay\)/);
+  assert.match(app, /<button type="submit" disabled=\{moving \|\| !moveTargetDay\}>/);
+  assert.doesNotMatch(app, /disabled=\{moving \|\| !moveTarget\}/);
+  assert.match(app, /if \(!selectedCase \|\| !moveTarget \|\| !moveTargetDay\)/);
+  assert.match(app, /moveTargetMissing && <option value=\{moveTarget\} disabled>/);
+  assert.match(app, /วันที่เลือกใช้ย้ายไม่ได้แล้ว/);
+});
+
+test("calendar save supports an If-Match guard and returns the etag", async () => {
+  const save = functionBody(await read("app/lib/calendar.ts"), "saveStaffUnavailabilityEvent");
+  assert.match(save, /options: \{ ifMatch\?: string \} = \{\}/);
+  assert.match(save, /"if-match": options\.ifMatch/);
+  assert.match(save, /Promise<\{ id: string; etag: string \}>/);
 });
