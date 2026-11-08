@@ -47,15 +47,6 @@ export function conflictingEntries(
   );
 }
 
-// After a concurrent create, both writers see each other. The one with the larger id yields so that
-// exactly one survives (both yielding is also safe: nothing overlaps, the user just saves again).
-export function yieldsToConcurrentEntry(
-  myId: string,
-  others: readonly UnavailableEntry[],
-): boolean {
-  return others.some((e) => e.id !== undefined && e.id < myId);
-}
-
 export function unavailableStaffOn(
   entries: readonly UnavailableEntry[],
   date: string,

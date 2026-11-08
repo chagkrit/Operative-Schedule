@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   caseStaffStatus,
   conflictingEntries,
-  yieldsToConcurrentEntry,
   findOverlappingStaff,
   isIsoDate,
   rangesOverlap,
@@ -69,12 +68,4 @@ test("conflictingEntries returns only same-staff overlaps and ignores the given 
   assert.deepEqual(conflictingEntries(entries, "X", r("2027-03-05", "2027-03-07")).map((e) => e.id), ["a"]);
   assert.deepEqual(conflictingEntries(entries, "X", r("2027-03-05", "2027-03-07"), "a"), []);
   assert.deepEqual(conflictingEntries(entries, "X", r("2027-03-06", "2027-03-09")), []);
-});
-
-test("exactly one of two racing creates survives; no other entry means no yielding", () => {
-  const lo = { id: "aaa", staff: "X", ...r("2027-03-03", "2027-03-05") };
-  const hi = { id: "bbb", staff: "X", ...r("2027-03-04", "2027-03-06") };
-  assert.equal(yieldsToConcurrentEntry("bbb", [lo]), true);
-  assert.equal(yieldsToConcurrentEntry("aaa", [hi]), false);
-  assert.equal(yieldsToConcurrentEntry("aaa", []), false);
 });

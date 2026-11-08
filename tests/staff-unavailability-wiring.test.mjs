@@ -256,7 +256,8 @@ test("extra-days route uses the error status and rejects malformed bodies", asyn
 test("staff-unavailability POST re-verifies after writing and undoes a raced save", async () => {
   const post = functionBody(await read("app/api/staff-unavailability/route.ts"), "POST");
   assert.match(post, /conflictingEntries\(verified\.staffUnavailability/);
-  assert.match(post, /yieldsToConcurrentEntry\(entry\.id, others\)/);
+  assert.doesNotMatch(post, /yieldsToConcurrentEntry/);
+  assert.match(post, /conflictingEntries\([^)]*entry\.id\)\.length > 0/);
   assert.match(post, /ไม่ได้บันทึกรายการนี้/);
   // edit path restores the previous range instead of deleting the entry
   assert.match(post, /startDate: existing\.startDate,\s+endDate: existing\.endDate/);

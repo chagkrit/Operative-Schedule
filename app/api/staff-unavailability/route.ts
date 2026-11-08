@@ -17,7 +17,6 @@ import {
   conflictingEntries,
   findOverlappingStaff,
   isIsoDate,
-  yieldsToConcurrentEntry,
 } from "../../lib/staff-unavailability";
 
 export async function POST(request: Request) {
@@ -112,10 +111,10 @@ export async function POST(request: Request) {
       }
       // The overlap check above and the writes are not atomic: re-read and undo if another save raced us.
       const verified = await listCalendarData(request, today, horizonEnd);
-      const clashed = entries.filter((entry) => {
-        const others = conflictingEntries(verified.staffUnavailability, entry.staff, { startDate, endDate }, entry.id);
-        return existing ? others.length > 0 : yieldsToConcurrentEntry(entry.id, others);
-      });
+      // The earlier check rejected every entry that already existed, so any overlap found now is concurrent.
+      // Both racing writers may see each other and both yield: safe, the user simply saves again.
+      const clashed = entries.filter((entry) =>
+        conflictingEntries(verified.staffUnavailability, entry.staff, { startDate, endDate }, entry.id).length > 0);
       if (clashed.length > 0) {
         if (existing) {
           await saveStaffUnavailabilityEvent(request, {
