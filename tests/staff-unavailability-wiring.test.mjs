@@ -72,3 +72,33 @@ test("move route re-checks staff unavailability after the write", async () => {
   assert.match(route.slice(verify, verify + 200), /restoreCalendarBooking/);
   assert.match(route, /destinationError\(booking, destination\)/);
 });
+
+test("staff unavailability API route enforces validation, overlap and confirmation", async () => {
+  const route = await read("app/api/staff-unavailability/route.ts");
+  assert.match(route, /requiresConfirmation: true/);
+  assert.match(route, /confirmExistingBookings/);
+  assert.match(route, /overlappingStaff/);
+  assert.match(route, /findOverlappingStaff/);
+  assert.match(route, /isStaffOption/);
+  assert.match(route, /500/);
+  assert.match(route, /affectedBookingView/);
+  const exports = route.match(/^export .*$/gm) || [];
+  assert.deepEqual(
+    exports.map((line) => line.match(/export (?:async )?function (\w+)/)?.[1]),
+    ["POST", "DELETE"],
+  );
+});
+
+test("staff unavailability edit preserves created_by and created_at", async () => {
+  const route = await read("app/api/staff-unavailability/route.ts");
+  assert.match(route, /createdBy: existing\?\.createdBy/);
+  assert.match(route, /createdAt: existing\?\.createdAt/);
+});
+
+test("affected booking mapper is shared by both routes", async () => {
+  const mapper = await read("app/lib/affected-booking.ts");
+  assert.match(mapper, /export function affectedBookingView/);
+  const closures = await read("app/api/schedule-closures/route.ts");
+  assert.match(closures, /affectedBookingView/);
+  assert.doesNotMatch(closures, /function affectedBooking\(/);
+});
