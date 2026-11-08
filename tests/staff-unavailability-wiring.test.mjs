@@ -102,3 +102,18 @@ test("affected booking mapper is shared by both routes", async () => {
   assert.match(closures, /affectedBookingView/);
   assert.doesNotMatch(closures, /function affectedBooking\(/);
 });
+
+test("client date pickers show staff unavailability", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const css = await read("app/globals.css");
+  assert.match(app, /from "\.\/lib\/staff-unavailability"/);
+  assert.match(app, /unavailableStaff: string\[\]/);
+  assert.match(app, /staffUnavailability: StaffUnavailability\[\]/);
+  assert.match(app, /"ไม่ว่าง"/);
+  assert.match(app, /staff-unavailable-notice/);
+  const moveStart = app.indexOf("const moveDates");
+  assert.notEqual(moveStart, -1);
+  assert.match(app.slice(moveStart, moveStart + 1200), /caseStaffStatus/);
+  assert.match(app, /<option[^>]*disabled/);
+  assert.match(css, /\.staff-unavailable-notice/);
+});

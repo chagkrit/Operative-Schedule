@@ -392,6 +392,9 @@ button { cursor: pointer; }
 .move-form select { height: 40px; font-size: 10px; }
 .move-form button { height: 40px; border: 0; border-radius: 10px; color: #fff; background: var(--rose); font-size: 10px; font-weight: 800; }
 .move-form button:disabled { opacity: .55; cursor: not-allowed; }
+.staff-unavailable-notice { display: grid; gap: 2px; padding: 9px 12px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 10px; line-height: 1.45; }
+.staff-unavailable-notice strong { font-size: 10px; font-weight: 800; }
+.move-form .staff-unavailable-notice { grid-column: 1 / -1; }
 .move-form > small { grid-column: 2 / -1; color: var(--muted); font-size: 8px; }
 .case-empty { padding: 30px 12px; text-align: center; color: var(--muted); font-size: 11px; border: 1px dashed #e5dadd; border-radius: 14px; }
 .move-history-list { display: grid; gap: 9px; }
