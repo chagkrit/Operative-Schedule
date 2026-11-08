@@ -34,11 +34,9 @@ export async function POST(request: Request) {
     const note = payload.note?.trim() || "";
     const today = dateOnly();
     const horizonEnd = endOfRollingHorizon(today);
-    if (
-      !isIsoDate(startDate) || !isIsoDate(endDate) ||
-      startDate < today || endDate > horizonEnd || startDate > endDate
-    ) {
-      return Response.json({ error: `กรุณาเลือกวันที่ไม่ว่างตั้งแต่วันนี้ถึง ${horizonEnd} และวันเริ่มต้องไม่เกินวันสิ้นสุด` }, { status: 400 });
+    const dateError = () => Response.json({ error: `กรุณาเลือกวันที่ไม่ว่างตั้งแต่วันนี้ถึง ${horizonEnd} และวันเริ่มต้องไม่เกินวันสิ้นสุด` }, { status: 400 });
+    if (!isIsoDate(startDate) || !isIsoDate(endDate) || endDate < today || endDate > horizonEnd || startDate > endDate) {
+      return dateError();
     }
     if (note.length > 500) {
       return Response.json({ error: "หมายเหตุยาวเกินกำหนด" }, { status: 400 });
@@ -60,6 +58,8 @@ export async function POST(request: Request) {
     const current = await listCalendarData(request, today, horizonEnd);
     const existing = id ? current.staffUnavailability.find((entry) => entry.id === id) : undefined;
     if (id && !existing) return Response.json({ error: "ไม่พบรายการวันที่ไม่ว่างที่ต้องการแก้ไข" }, { status: 404 });
+    // Decision 12 (no past dates) applies to new start dates; an in-progress entry may keep its original start.
+    if (startDate < today && !(existing && startDate === existing.startDate)) return dateError();
     const selected = existing ? [existing.staff] : requested;
 
     const overlappingStaff = findOverlappingStaff(
@@ -77,7 +77,7 @@ export async function POST(request: Request) {
 
     const affectedBookings = current.bookings
       .filter((booking) =>
-        booking.scheduleDate >= startDate &&
+        booking.scheduleDate >= (startDate < today ? today : startDate) &&
         booking.scheduleDate <= endDate &&
         caseStaffStatus(booking.staffMembers, selected, STAFF_OPTIONS).unavailableStaff.length > 0)
       .sort((a, b) => a.scheduleDate.localeCompare(b.scheduleDate) || a.queueType.localeCompare(b.queueType) || a.slotNo - b.slotNo)

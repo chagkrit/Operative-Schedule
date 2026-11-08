@@ -130,3 +130,13 @@ test("staff unavailability manager is wired into the closures tab", async () => 
   assert.match(app, /overlappingStaff|payload\.error/);
   assert.match(css, /\.unavailability-manager/);
 });
+
+test("in-progress unavailability can be edited with its original past start", async () => {
+  const route = await read("app/api/staff-unavailability/route.ts");
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(route, /startDate < today && !\(existing && startDate === existing\.startDate\)/);
+  assert.match(route, /endDate < today/);
+  assert.match(route, /startDate < today \? today : startDate/);
+  assert.ok(route.indexOf("const existing") < route.indexOf("startDate < today &&"));
+  assert.match(app, /editingOriginalStart/);
+});

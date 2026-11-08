@@ -1078,6 +1078,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     [data],
   );
 
+  const editingOriginalStart = unavailabilityForm.id
+    ? (data?.staffUnavailability || []).find((entry) => entry.id === unavailabilityForm.id)?.startDate || ""
+    : "";
+
   function toggleUnavailabilityStaff(staff: string) {
     setUnavailabilityForm((current) => ({
       ...current,
@@ -1686,8 +1690,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     {STAFF.map((staff) => <label key={staff}><input type="checkbox" checked={unavailabilityForm.staff.includes(staff)} onChange={() => toggleUnavailabilityStaff(staff)} /><span>{staff}</span></label>)}
                     {unavailabilityForm.id && unavailabilityForm.staff.some((name) => !(STAFF as readonly string[]).includes(name)) && <p className="unavailability-orphan">{unavailabilityForm.staff.join(", ")} · ไม่พบ Staff ในรายชื่อ</p>}
                   </fieldset>
-                  <label><span>วันเริ่มต้น <b>*</b></span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.startDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, startDate: event.target.value, endDate: current.endDate && current.endDate < event.target.value ? event.target.value : current.endDate }))} required /></label>
-                  <label><span>วันสิ้นสุด <b>*</b></span><input type="date" min={unavailabilityForm.startDate || data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.endDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, endDate: event.target.value }))} required /></label>
+                  <label><span>วันเริ่มต้น <b>*</b></span><input type="date" min={editingOriginalStart && editingOriginalStart < (data?.horizonStart || "") ? editingOriginalStart : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.startDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, startDate: event.target.value, endDate: current.endDate && current.endDate < event.target.value ? event.target.value : current.endDate }))} required /></label>
+                  <label><span>วันสิ้นสุด <b>*</b></span><input type="date" min={unavailabilityForm.startDate > (data?.horizonStart || "") ? unavailabilityForm.startDate : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.endDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, endDate: event.target.value }))} required /></label>
                   <label className="wide"><span>หมายเหตุ</span><textarea value={unavailabilityForm.note} maxLength={500} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, note: event.target.value }))} placeholder="เช่น ประชุมวิชาการ ลาพักร้อน" /></label>
                   <div className="unavailability-actions">
                     {unavailabilityForm.id && <button type="button" onClick={() => setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM)}>ยกเลิกแก้ไข</button>}
