@@ -152,3 +152,11 @@ test("live clash badges are computed on render, not stored", async () => {
   assert.match(css, /\.clash-badge/);
   assert.match(css, /\.month-day\.has-clash/);
 });
+
+test("calendar selected-day booking cards carry the clash badge", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const start = app.indexOf("selectedBookings.map(");
+  assert.notEqual(start, -1);
+  const end = app.indexOf("</article>", start);
+  assert.match(app.slice(start, end), /<ClashBadge booking=\{booking\} entries=\{staffUnavailability\} \/>/);
+});

@@ -347,6 +347,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
                   <strong>{booking.operation}</strong>
                   <span>{booking.patientName} · HN ••••{booking.hn.slice(-4)}</span>
                   <small>{booking.diagnosis} · {staffLabel(booking.staffMembers)} · {booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</small>
+                  <ClashBadge booking={booking} entries={staffUnavailability} />
                 </div>
                 <StatusDot synced={booking.calendarSyncStatus === "synced"} />
               </article>
