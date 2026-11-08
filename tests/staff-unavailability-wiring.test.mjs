@@ -35,3 +35,21 @@ test("legacy calendar parsing still skips tagged events", async () => {
   const legacy = await read("app/lib/legacy-calendar.ts");
   assert.match(legacy, /extendedProperties\?\.private\?\.or_queue/);
 });
+
+test("queue enforces staff unavailability in destinationError", async () => {
+  const queue = await read("app/lib/queue.ts");
+  assert.match(queue, /unavailableStaff: string\[\]/);
+  assert.match(queue, /staffUnavailability/);
+  assert.match(queue, /unavailableStaffOn\(/);
+  assert.match(queue, /caseStaffStatus/);
+  assert.match(queue, /staffUnavailableMessage/);
+  assert.match(queue, /export function staffBlockedOn/);
+  assert.match(queue, /export function destinationError\([\s\S]*?staffMembers\?:/);
+  assert.equal((queue.match(/unavailableStaff: unavailableStaffOn\(/g) || []).length, 3);
+  const start = queue.indexOf("export function destinationError");
+  const body = queue.slice(start);
+  const closed = body.indexOf("if (day.closed)");
+  const staff = body.indexOf("caseStaffStatus(");
+  const capacity = body.indexOf("day.count >= day.capacity");
+  assert.ok(closed !== -1 && closed < staff && staff < capacity, "staff check between closed and capacity");
+});
