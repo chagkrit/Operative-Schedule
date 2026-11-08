@@ -258,7 +258,8 @@ test("staff-unavailability POST re-verifies after writing and undoes a raced sav
   assert.match(post, /conflictingEntries\(verified\.staffUnavailability/);
   assert.doesNotMatch(post, /yieldsToConcurrentEntry/);
   assert.match(post, /conflictingEntries\([^)]*entry\.id\)\.length > 0/);
-  assert.match(post, /ไม่ได้บันทึกรายการนี้/);
+  assert.match(post, /ระบบไม่ได้บันทึกรายการใดในคำขอนี้/);
+  assert.match(post, /ระบบคืนค่าการแก้ไขนี้แล้ว/);
   // edit path restores the previous range instead of deleting the entry
   assert.match(post, /startDate: existing\.startDate,\s+endDate: existing\.endDate/);
 });

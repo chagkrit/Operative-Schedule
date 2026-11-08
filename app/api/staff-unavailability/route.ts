@@ -93,8 +93,10 @@ export async function POST(request: Request) {
     }
 
     const entries: { id: string; staff: string; startDate: string; endDate: string; note: string }[] = [];
-    const concurrentMessage = (staff: string[]) =>
-      `${staff.join(", ")} มีผู้บันทึกวันที่ไม่ว่างทับซ้อนพร้อมกัน ระบบไม่ได้บันทึกรายการนี้ กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
+    const concurrentMessage = (clashedStaff: string[]) =>
+      existing
+        ? `${clashedStaff.join(", ")} มีผู้บันทึกวันที่ไม่ว่างทับซ้อนพร้อมกัน ระบบคืนค่าการแก้ไขนี้แล้ว กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`
+        : `${clashedStaff.join(", ")} มีผู้บันทึกวันที่ไม่ว่างทับซ้อนพร้อมกัน ระบบไม่ได้บันทึกรายการใดในคำขอนี้${selected.length > clashedStaff.length ? ` (รวมถึง ${selected.filter((name) => !clashedStaff.includes(name)).join(", ")})` : ""} กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
     try {
       for (const staff of selected) {
         const savedId = await saveStaffUnavailabilityEvent(request, {
