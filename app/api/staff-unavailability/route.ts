@@ -14,8 +14,10 @@ import {
 } from "../../lib/schedule";
 import {
   caseStaffStatus,
+  conflictingEntries,
   findOverlappingStaff,
   isIsoDate,
+  yieldsToConcurrentEntry,
 } from "../../lib/staff-unavailability";
 
 export async function POST(request: Request) {
@@ -92,6 +94,8 @@ export async function POST(request: Request) {
     }
 
     const entries: { id: string; staff: string; startDate: string; endDate: string; note: string }[] = [];
+    const concurrentMessage = (staff: string[]) =>
+      `${staff.join(", ")} มีผู้บันทึกวันที่ไม่ว่างทับซ้อนพร้อมกัน ระบบไม่ได้บันทึกรายการนี้ กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
     try {
       for (const staff of selected) {
         const savedId = await saveStaffUnavailabilityEvent(request, {
@@ -105,6 +109,29 @@ export async function POST(request: Request) {
           createdBy: existing?.createdBy,
         });
         entries.push({ id: savedId, staff, startDate, endDate, note });
+      }
+      // The overlap check above and the writes are not atomic: re-read and undo if another save raced us.
+      const verified = await listCalendarData(request, today, horizonEnd);
+      const clashed = entries.filter((entry) => {
+        const others = conflictingEntries(verified.staffUnavailability, entry.staff, { startDate, endDate }, entry.id);
+        return existing ? others.length > 0 : yieldsToConcurrentEntry(entry.id, others);
+      });
+      if (clashed.length > 0) {
+        if (existing) {
+          await saveStaffUnavailabilityEvent(request, {
+            id: existing.id,
+            staff: existing.staff,
+            startDate: existing.startDate,
+            endDate: existing.endDate,
+            note: existing.note,
+            updatedBy: AUTHORIZED_EMAIL,
+            createdAt: existing.createdAt,
+            createdBy: existing.createdBy,
+          });
+        } else {
+          await Promise.all(entries.map((entry) => deleteStaffUnavailabilityEvent(request, entry.id)));
+        }
+        return Response.json({ error: concurrentMessage(clashed.map((entry) => entry.staff)) }, { status: 409 });
       }
     } catch (error) {
       if (!existing) {
