@@ -20,18 +20,19 @@ import {
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as {
-      id?: string;
-      staff?: string[];
-      startDate?: string;
-      endDate?: string;
-      note?: string;
-      confirmExistingBookings?: boolean;
-    };
-    const id = payload.id?.trim() || "";
-    const startDate = payload.startDate?.trim() || "";
-    const endDate = payload.endDate?.trim() || "";
-    const note = payload.note?.trim() || "";
+    const body: unknown = await request.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง" }, { status: 400 });
+    }
+    const payload = body as Record<string, unknown>;
+    const text = (value: unknown) => (typeof value === "string" ? value.trim() : value === undefined || value === null ? "" : null);
+    const id = text(payload.id);
+    const startDate = text(payload.startDate);
+    const endDate = text(payload.endDate);
+    const note = text(payload.note);
+    if (id === null || startDate === null || endDate === null || note === null) {
+      return Response.json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง" }, { status: 400 });
+    }
     const today = dateOnly();
     const horizonEnd = endOfRollingHorizon(today);
     const dateError = () => Response.json({ error: `กรุณาเลือกวันที่ไม่ว่างตั้งแต่วันนี้ถึง ${horizonEnd} และวันเริ่มต้องไม่เกินวันสิ้นสุด` }, { status: 400 });
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
 
     let requested: string[] = [];
     if (!id) {
-      const raw = Array.isArray(payload.staff) ? payload.staff : [];
+      const raw: unknown[] = Array.isArray(payload.staff) ? payload.staff : [];
       if (
         raw.length === 0 ||
         raw.some((name) => typeof name !== "string" || !isStaffOption(name)) ||
@@ -52,7 +53,7 @@ export async function POST(request: Request) {
       ) {
         return Response.json({ error: "กรุณาเลือก staff อย่างน้อย 1 คน (เลือกซ้ำไม่ได้)" }, { status: 400 });
       }
-      requested = orderedStaffMembers(raw);
+      requested = orderedStaffMembers(raw as string[]);
     }
 
     const current = await listCalendarData(request, today, horizonEnd);

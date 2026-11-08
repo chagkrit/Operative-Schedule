@@ -627,18 +627,28 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         setDeleteDialog(null);
         if (deleteDialog) requestAnimationFrame(() => deleteTriggerRef.current?.focus());
       }
-      if (event.key === "Tab" && deleteDialog) {
-        const controls = Array.from(deleteDialogRef.current?.querySelectorAll<HTMLElement>(
+      if (event.key === "Tab") {
+        // Every dialog here is modal and only one is open at a time: keep Tab inside it.
+        const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]');
+        if (!dialog) return;
+        const controls = Array.from(dialog.querySelectorAll<HTMLElement>(
           'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-        ) || []).filter((control) => control.getClientRects().length > 0);
+        )).filter((control) => control.getClientRects().length > 0);
         const first = controls[0];
         const last = controls.at(-1);
-        if (event.shiftKey && document.activeElement === first) {
+        if (!first || !last) {
           event.preventDefault();
-          last?.focus();
+          return;
+        }
+        if (!dialog.contains(document.activeElement)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        } else if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
         } else if (!event.shiftKey && document.activeElement === last) {
           event.preventDefault();
-          first?.focus();
+          first.focus();
         }
       }
     };

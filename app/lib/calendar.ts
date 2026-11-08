@@ -171,7 +171,7 @@ async function authorizedAccessToken(request: Request) {
     secureCookie: new URL(request.url).protocol === "https:",
   });
   if (token?.email?.toLowerCase() !== AUTHORIZED_EMAIL) {
-    throw new Error("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail.com");
+    throw withStatus("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail.com", 401);
   }
   if (process.env.GOOGLE_REFRESH_TOKEN) {
     if (!process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
@@ -185,7 +185,7 @@ async function authorizedAccessToken(request: Request) {
     return String(token.accessToken);
   }
   if (!token.refreshToken || !process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
-    throw new Error("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่");
+    throw withStatus("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่", 401);
   }
   const { ok, payload } = await requestAccessToken(String(token.refreshToken));
   if (!ok || !payload.access_token) {

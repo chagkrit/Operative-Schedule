@@ -222,3 +222,26 @@ test("final wave: overlap error tells the user to edit the existing entry", asyn
   const route = await read("app/api/staff-unavailability/route.ts");
   assert.match(route, /มีวันที่ไม่ว่างทับซ้อนกับช่วงวันที่เลือกแล้ว กรุณาแก้ไขรายการเดิม/);
 });
+
+test("unauthenticated Calendar calls answer 401 instead of 500", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  assert.match(calendar, /withStatus\("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail\.com", 401\)/);
+  assert.match(calendar, /withStatus\("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่", 401\)/);
+  assert.doesNotMatch(calendar, /throw new Error\("กรุณาเข้าสู่ระบบด้วย/);
+});
+
+test("staff-unavailability POST rejects malformed bodies with 400", async () => {
+  const route = await read("app/api/staff-unavailability/route.ts");
+  const post = functionBody(route, "POST");
+  assert.match(post, /request\.json\(\)\.catch\(\(\) => null\)/);
+  assert.match(post, /typeof value === "string"/);
+  assert.match(post, /ข้อมูลที่ส่งมาไม่ถูกต้อง/);
+  assert.doesNotMatch(post, /payload\.\w+\?\.trim\(\)/);
+});
+
+test("every modal dialog traps Tab, not only the delete dialog", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /event\.key === "Tab"\) \{/);
+  assert.doesNotMatch(app, /event\.key === "Tab" && deleteDialog/);
+  assert.match(app, /querySelector<HTMLElement>\('\[role="dialog"\]\[aria-modal="true"\]/);
+});
