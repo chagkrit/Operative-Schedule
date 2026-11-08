@@ -245,3 +245,10 @@ test("every modal dialog traps Tab, not only the delete dialog", async () => {
   assert.doesNotMatch(app, /event\.key === "Tab" && deleteDialog/);
   assert.match(app, /querySelector<HTMLElement>\('\[role="dialog"\]\[aria-modal="true"\]/);
 });
+
+test("extra-days route uses the error status and rejects malformed bodies", async () => {
+  const route = await read("app/api/extra-days/route.ts");
+  assert.doesNotMatch(route, /\{ status: 500 \}/);
+  assert.equal((route.match(/\(error as \{ status\?: number \}\)\.status \|\| 500/g) || []).length, 2);
+  assert.match(functionBody(route, "POST"), /request\.json\(\)\.catch\(\(\) => null\)/);
+});
