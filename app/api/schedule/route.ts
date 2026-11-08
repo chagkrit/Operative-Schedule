@@ -1,6 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
-import { destinationError, getSchedule, nextAvailableSlot } from "../../lib/queue";
+import { destinationError, getSchedule, nextAvailableSlot, staffBlockedOn } from "../../lib/queue";
+import { staffUnavailableMessage } from "../../lib/staff-unavailability";
 import { patientDisplayName } from "../../lib/privacy";
 import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay, isStaffOption, orderedStaffMembers } from "../../lib/schedule";
 
@@ -17,13 +18,14 @@ export async function GET(request: Request) {
   try {
     const today = dateOnly();
     const horizonEnd = endOfRollingHorizon(today);
-    const [{ days, bookings, closures }, recentMoves] = await Promise.all([
+    const [{ days, bookings, closures, staffUnavailability }, recentMoves] = await Promise.all([
       getSchedule(request, today, horizonEnd),
       listRecentMoves(request, addDays(today, -730), horizonEnd),
     ]);
     return Response.json({
       days,
       closures,
+      staffUnavailability,
       horizonStart: today,
       horizonEnd,
       bookings: bookings
@@ -126,7 +128,7 @@ export async function POST(request: Request) {
     );
     const matchesStaffPreference = (day: (typeof days)[number]) =>
       staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`);
-    const matchesClinicalRules = (day: (typeof days)[number]) => !destinationError({ isCancer }, day);
+    const matchesClinicalRules = (day: (typeof days)[number]) => !destinationError({ isCancer, staffMembers }, day);
     let manualMinDate = "";
     if (dropdownSchedule) {
       const dropdownStaffDayKeys = new Set(
@@ -137,7 +139,7 @@ export async function POST(request: Request) {
       const dropdownDays = dropdownSchedule.days.filter((day) => {
         if (!isCancer && day.queueType !== "OR17") return false;
         if (staffQueuePreference === "same_staff" && !dropdownStaffDayKeys.has(`${day.date}:${day.queueType}`)) return false;
-        return !destinationError({ isCancer }, day);
+        return !destinationError({ isCancer, staffMembers }, day);
       });
       const lastDropdownDate = dropdownDays.at(-1)?.date || dropdownSchedule.days.at(-1)?.date || today;
       manualMinDate = addDays(lastDropdownDate, 1);
@@ -171,7 +173,7 @@ export async function POST(request: Request) {
       : days.filter((day) => day.date === requestedDate && day.queueType === "OR17" && matchesStaffPreference(day) && matchesClinicalRules(day));
     if (!candidates.length) {
       const selectedDay = days.find((day) => day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17"));
-      const selectedDayError = hasSpecificDate ? destinationError({ isCancer }, selectedDay) : "";
+      const selectedDayError = hasSpecificDate ? destinationError({ isCancer, staffMembers }, selectedDay) : "";
       const error = staffQueuePreference === "same_staff" && selectedDay && !matchesStaffPreference(selectedDay)
         ? `ไม่พบคิวว่างที่ Staff ที่เลือกมีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
         : selectedDayError
@@ -184,7 +186,7 @@ export async function POST(request: Request) {
       return Response.json({ error, suggestions: alternativeDays }, { status: 409 });
     }
     const selected = candidates[0];
-    const invalidDestination = destinationError({ isCancer }, selected);
+    const invalidDestination = destinationError({ isCancer, staffMembers }, selected);
     if (invalidDestination) return Response.json({ error: invalidDestination, suggestions: alternativeDays }, { status: 409 });
 
     const slotNo = nextAvailableSlot(bookings, selected.date, selected.queueType, selected.capacity);
@@ -207,6 +209,13 @@ export async function POST(request: Request) {
     });
     const verified = await getSchedule(request, selected.date, selected.date);
     const verifiedDay = verified.days.find((day) => day.date === selected.date && day.queueType === selected.queueType);
+    if (verifiedDay && staffBlockedOn(staffMembers, verifiedDay)) {
+      await deleteBookingEvent(request, id);
+      return Response.json(
+        { error: staffUnavailableMessage(verifiedDay.unavailableStaff), suggestions: alternativeDays },
+        { status: 409 },
+      );
+    }
     if (!verifiedDay || verifiedDay.closed || verifiedDay.count > verifiedDay.capacity) {
       await deleteBookingEvent(request, id);
       return Response.json(

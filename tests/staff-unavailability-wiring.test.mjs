@@ -53,3 +53,22 @@ test("queue enforces staff unavailability in destinationError", async () => {
   const capacity = body.indexOf("day.count >= day.capacity");
   assert.ok(closed !== -1 && closed < staff && staff < capacity, "staff check between closed and capacity");
 });
+
+test("booking route enforces staff unavailability", async () => {
+  const route = await read("app/api/schedule/route.ts");
+  assert.doesNotMatch(route, /destinationError\(\{ isCancer \}, /);
+  assert.equal((route.match(/destinationError\(\{ isCancer, staffMembers \}, /g) || []).length, 4);
+  assert.match(route, /staffBlockedOn\(staffMembers, verifiedDay\)/);
+  assert.match(route, /staffUnavailableMessage\(verifiedDay\.unavailableStaff\)/);
+  assert.match(route, /closures,\s*staffUnavailability,/);
+  const verify = route.indexOf("staffBlockedOn(staffMembers, verifiedDay)");
+  assert.match(route.slice(verify, verify + 200), /deleteBookingEvent/);
+});
+
+test("move route re-checks staff unavailability after the write", async () => {
+  const route = await read("app/api/cases/[id]/move/route.ts");
+  assert.match(route, /staffBlockedOn\(booking\.staffMembers, verifiedDay\)/);
+  const verify = route.indexOf("staffBlockedOn(booking.staffMembers, verifiedDay)");
+  assert.match(route.slice(verify, verify + 200), /restoreCalendarBooking/);
+  assert.match(route, /destinationError\(booking, destination\)/);
+});
