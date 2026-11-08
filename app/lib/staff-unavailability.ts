@@ -35,6 +35,18 @@ export function findOverlappingStaff(
   return [...new Set(staff)].filter((s) => hit.has(s));
 }
 
+// Entries of the same staff that overlap `range`, other than the entry with `ignoreId`.
+export function conflictingEntries(
+  entries: readonly UnavailableEntry[],
+  staff: string,
+  range: DateRange,
+  ignoreId?: string,
+): UnavailableEntry[] {
+  return entries.filter(
+    (e) => e.staff === staff && (ignoreId === undefined || e.id !== ignoreId) && rangesOverlap(e, range),
+  );
+}
+
 export function unavailableStaffOn(
   entries: readonly UnavailableEntry[],
   date: string,

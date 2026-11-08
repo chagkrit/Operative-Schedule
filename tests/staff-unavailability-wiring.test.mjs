@@ -252,3 +252,20 @@ test("extra-days route uses the error status and rejects malformed bodies", asyn
   assert.equal((route.match(/\(error as \{ status\?: number \}\)\.status \|\| 500/g) || []).length, 2);
   assert.match(functionBody(route, "POST"), /request\.json\(\)\.catch\(\(\) => null\)/);
 });
+
+test("staff-unavailability POST re-verifies after writing and undoes a raced save", async () => {
+  const post = functionBody(await read("app/api/staff-unavailability/route.ts"), "POST");
+  assert.match(post, /conflictingEntries\(verified\.staffUnavailability/);
+  assert.doesNotMatch(post, /yieldsToConcurrentEntry/);
+  assert.match(post, /conflictingEntries\([^)]*entry\.id\)\.length > 0/);
+  assert.match(post, /ไม่ได้บันทึกรายการนี้/);
+  // edit path restores the previous range instead of deleting the entry
+  assert.match(post, /startDate: existing\.startDate,\s+endDate: existing\.endDate/);
+});
+
+test("booking: a concrete refusal for the chosen day wins over the same_staff hint", async () => {
+  const route = await read("app/api/schedule/route.ts");
+  const selectedAt = route.indexOf("const error = selectedDayError");
+  const sameStaffAt = route.indexOf("ไม่พบคิวว่างที่ Staff ที่เลือกมีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้");
+  assert.ok(selectedAt !== -1 && sameStaffAt > selectedAt);
+});

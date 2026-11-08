@@ -14,6 +14,7 @@ import {
 } from "../../lib/schedule";
 import {
   caseStaffStatus,
+  conflictingEntries,
   findOverlappingStaff,
   isIsoDate,
 } from "../../lib/staff-unavailability";
@@ -92,6 +93,8 @@ export async function POST(request: Request) {
     }
 
     const entries: { id: string; staff: string; startDate: string; endDate: string; note: string }[] = [];
+    const concurrentMessage = (staff: string[]) =>
+      `${staff.join(", ")} มีผู้บันทึกวันที่ไม่ว่างทับซ้อนพร้อมกัน ระบบไม่ได้บันทึกรายการนี้ กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
     try {
       for (const staff of selected) {
         const savedId = await saveStaffUnavailabilityEvent(request, {
@@ -105,6 +108,29 @@ export async function POST(request: Request) {
           createdBy: existing?.createdBy,
         });
         entries.push({ id: savedId, staff, startDate, endDate, note });
+      }
+      // The overlap check above and the writes are not atomic: re-read and undo if another save raced us.
+      const verified = await listCalendarData(request, today, horizonEnd);
+      // The earlier check rejected every entry that already existed, so any overlap found now is concurrent.
+      // Both racing writers may see each other and both yield: safe, the user simply saves again.
+      const clashed = entries.filter((entry) =>
+        conflictingEntries(verified.staffUnavailability, entry.staff, { startDate, endDate }, entry.id).length > 0);
+      if (clashed.length > 0) {
+        if (existing) {
+          await saveStaffUnavailabilityEvent(request, {
+            id: existing.id,
+            staff: existing.staff,
+            startDate: existing.startDate,
+            endDate: existing.endDate,
+            note: existing.note,
+            updatedBy: AUTHORIZED_EMAIL,
+            createdAt: existing.createdAt,
+            createdBy: existing.createdBy,
+          });
+        } else {
+          await Promise.all(entries.map((entry) => deleteStaffUnavailabilityEvent(request, entry.id)));
+        }
+        return Response.json({ error: concurrentMessage(clashed.map((entry) => entry.staff)) }, { status: 409 });
       }
     } catch (error) {
       if (!existing) {

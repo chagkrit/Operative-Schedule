@@ -174,10 +174,11 @@ export async function POST(request: Request) {
     if (!candidates.length) {
       const selectedDay = days.find((day) => day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17"));
       const selectedDayError = hasSpecificDate ? destinationError({ isCancer, staffMembers }, selectedDay) : "";
-      const error = staffQueuePreference === "same_staff" && selectedDay && !matchesStaffPreference(selectedDay)
-        ? `ไม่พบคิวว่างที่ Staff ที่เลือกมีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
-        : selectedDayError
-          ? selectedDayError
+      // A concrete refusal for the chosen day (closed, staff unavailable, full…) is more useful than the same_staff hint.
+      const error = selectedDayError
+        ? selectedDayError
+        : staffQueuePreference === "same_staff" && selectedDay && !matchesStaffPreference(selectedDay)
+          ? `ไม่พบคิวว่างที่ Staff ที่เลือกมีเคสอยู่แล้ว กรุณาเลือกห้องไหนก็ได้ที่ยังว่าง`
         : isCancer && cancerSchedulingMode === "earliest"
           ? "ไม่พบคิวว่างในช่วง 12 เดือนข้างหน้า"
           : !isCancer && !isNormalDay(requestedDate)

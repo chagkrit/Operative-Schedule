@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   caseStaffStatus,
+  conflictingEntries,
   findOverlappingStaff,
   isIsoDate,
   rangesOverlap,
@@ -56,4 +57,15 @@ test("caseStaffStatus blocks only when every known case staff is unavailable", (
 test("staffUnavailableMessage joins names", () => {
   assert.equal(staffUnavailableMessage(["อ จักรกริช"]), "อ จักรกริช ไม่ว่างในวันที่เลือก");
   assert.equal(staffUnavailableMessage(["A", "B"]), "A, B ไม่ว่างในวันที่เลือก");
+});
+
+test("conflictingEntries returns only same-staff overlaps and ignores the given id", () => {
+  const entries = [
+    { id: "a", staff: "X", ...r("2027-03-03", "2027-03-05") },
+    { id: "b", staff: "Y", ...r("2027-03-03", "2027-03-05") },
+    { id: "c", staff: "X", ...r("2027-03-10", "2027-03-11") },
+  ];
+  assert.deepEqual(conflictingEntries(entries, "X", r("2027-03-05", "2027-03-07")).map((e) => e.id), ["a"]);
+  assert.deepEqual(conflictingEntries(entries, "X", r("2027-03-05", "2027-03-07"), "a"), []);
+  assert.deepEqual(conflictingEntries(entries, "X", r("2027-03-06", "2027-03-09")), []);
 });
