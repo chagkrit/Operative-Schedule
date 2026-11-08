@@ -1,9 +1,11 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import {
   deleteScheduleClosureEvent,
+  ifMatchForRestore,
   listCalendarData,
   saveScheduleClosureEvent,
 } from "../../lib/calendar";
+import { undoCalendarWrite, type UndoOutcome } from "../../lib/calendar-undo";
 import { dateOnly, endOfRollingHorizon } from "../../lib/schedule";
 import { affectedBookingView } from "../../lib/affected-booking";
 
@@ -54,7 +56,7 @@ export async function POST(request: Request) {
       }, { status: 409 });
     }
 
-    const closureId = await saveScheduleClosureEvent(request, {
+    const saved = await saveScheduleClosureEvent(request, {
       id: existing?.id,
       date,
       name,
@@ -63,6 +65,45 @@ export async function POST(request: Request) {
       createdAt: existing?.createdAt,
       createdBy: existing?.createdBy,
     });
+    const closureId = saved.id;
+
+    // The duplicate check above and the write are not atomic. New closures share a per-date event id,
+    // so two creates for one date land on the same event; the remaining race is a closure moved onto
+    // this date (edit) at the same time as another save. Re-read and undo, as for staff unavailability.
+    const undoWrite = () => undoCalendarWrite({
+      editing: Boolean(existing),
+      writtenIds: [closureId],
+      restore: async () => saveScheduleClosureEvent(request, {
+        id: existing!.id,
+        date: existing!.date,
+        name: existing!.name,
+        note: existing!.note,
+        updatedBy: AUTHORIZED_EMAIL,
+        createdAt: existing!.createdAt,
+        createdBy: existing!.createdBy,
+      }, { ifMatch: await ifMatchForRestore(request, existing!.id, saved.etag, { startDate: date, endDate: date }) }),
+      remove: (eventId) => deleteScheduleClosureEvent(request, eventId),
+    });
+    const undoMessage = (lead: string, outcome: UndoOutcome) => {
+      if (outcome === "undone") return `${lead} ระบบ${existing ? "คืนค่าการแก้ไขนี้" : "ยกเลิกการบันทึกนี้"}แล้ว กรุณาโหลดข้อมูลใหม่แล้วลองอีกครั้ง`;
+      if (outcome === "changed") return `${lead} และรายการนี้ถูกแก้ไขโดยผู้อื่นระหว่างนั้น ระบบจึงไม่คืนค่า กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
+      if (outcome === "uncertain") return `${lead} และระบบไม่แน่ใจว่าคืนค่าสำเร็จหรือไม่ กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
+      return `${lead} และ${existing ? "คืนค่า" : "ยกเลิกการบันทึก"}ไม่สำเร็จ อาจมีวันปิดรับคิวซ้ำในวันเดียวกัน กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
+    };
+    let verifiedClosures;
+    try {
+      verifiedClosures = (await listCalendarData(request, date, date)).closures;
+    } catch {
+      const outcome = await undoWrite();
+      return Response.json({ error: undoMessage("ตรวจสอบวันปิดรับคิวหลังบันทึกไม่สำเร็จ", outcome) }, { status: 503 });
+    }
+    if (verifiedClosures.some((closure) => closure.date === date && closure.id !== closureId)) {
+      const outcome = await undoWrite();
+      return Response.json(
+        { error: undoMessage("มีผู้บันทึกวันปิดรับคิวในวันที่นี้พร้อมกัน", outcome) },
+        { status: outcome === "failed" ? 500 : 409 },
+      );
+    }
     return Response.json({
       closure: { id: closureId, date, name, note },
       affectedBookings,

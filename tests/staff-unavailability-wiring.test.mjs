@@ -258,10 +258,10 @@ test("staff-unavailability POST re-verifies after writing and undoes a raced sav
   assert.match(post, /ระบบคืนค่าการแก้ไขนี้แล้ว/);
   // edit path restores the previous range (guarded by our etag) instead of deleting the entry
   assert.match(post, /startDate: existing!\.startDate,\s+endDate: existing!\.endDate/);
-  assert.match(post, /\{ ifMatch: entries\[0\]\?\.etag \|\| undefined \}/);
-  assert.match(post, /undoUnavailabilityWrite\(/);
+  assert.match(post, /ifMatch: await ifMatchForRestore\(request, existing!\.id, entries\[0\]\?\.etag \|\| ""/);
+  assert.match(post, /undoCalendarWrite\(/);
   // an unverifiable save is undone (fail closed), not kept with a 500
-  assert.match(post, /verified = await listCalendarData\(request, today, horizonEnd\);\s+\} catch \{\s+const outcome = await undoWrite\(\);/);
+  assert.match(post, /verified = await listCalendarData\(request, today, horizonEnd\);\s+\} catch \{\s+const \{ outcome, restoredClash \} = await undoAndCheck\(\);/);
 });
 
 test("booking: a concrete refusal for the chosen day wins over the same_staff hint", async () => {
@@ -286,4 +286,47 @@ test("calendar save supports an If-Match guard and returns the etag", async () =
   assert.match(save, /options: \{ ifMatch\?: string \} = \{\}/);
   assert.match(save, /"if-match": options\.ifMatch/);
   assert.match(save, /Promise<\{ id: string; etag: string \}>/);
+});
+
+test("low findings: restored range is re-checked and a failed create cleanup is reported", async () => {
+  const post = functionBody(await read("app/api/staff-unavailability/route.ts"), "POST");
+  assert.match(post, /const restoredRangeClash = async \(\) =>/);
+  assert.match(post, /conflictingEntries\(after\.staffUnavailability, existing\.staff, existing, existing\.id\)/);
+  assert.match(post, /\(await undoWrite\(\)\) === "failed"/);
+  assert.match(post, /ลบรายการที่บันทึกไปแล้วบางส่วนไม่สำเร็จ/);
+  assert.match(post, /outcome === "uncertain"/);
+});
+
+test("restore without our own etag only proceeds if the event still holds what we wrote", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const guard = functionBody(calendar, "ifMatchForRestore");
+  assert.match(guard, /if \(writtenEtag\) return writtenEtag;/);
+  assert.match(guard, /getEventVersion\(request, id\)/);
+  assert.match(guard, /withStatus\("รายการถูกแก้ไขโดยผู้อื่นระหว่างบันทึก", 412\)/);
+  assert.match(functionBody(calendar, "getEventVersion"), /status === 404 \|\| status === 410/);
+});
+
+test("schedule closure save re-verifies the date and undoes a raced save", async () => {
+  const route = await read("app/api/schedule-closures/route.ts");
+  const post = functionBody(route, "POST");
+  assert.match(post, /verifiedClosures = \(await listCalendarData\(request, date, date\)\)\.closures/);
+  assert.match(post, /closure\.date === date && closure\.id !== closureId/);
+  assert.match(post, /undoCalendarWrite\(/);
+  assert.match(post, /ifMatchForRestore\(request, existing!\.id, saved\.etag/);
+  assert.match(post, /มีผู้บันทึกวันปิดรับคิวในวันที่นี้พร้อมกัน/);
+  const save = functionBody(await read("app/lib/calendar.ts"), "saveScheduleClosureEvent");
+  assert.match(save, /"if-match": options\.ifMatch/);
+});
+
+test("engines require a Node that runs the test suite (registerHooks + type stripping)", async () => {
+  const pkg = JSON.parse(await read("package.json"));
+  assert.equal(pkg.engines.node, ">=22.18.0");
+});
+
+test("creating a closure never overwrites a moved closure that still holds the per-date id", async () => {
+  const save = functionBody(await read("app/lib/calendar.ts"), "saveScheduleClosureEvent");
+  const guard = save.indexOf("if (await getEventVersion(request, id))");
+  const put = save.indexOf('method: "PUT"');
+  assert.ok(guard !== -1 && guard < put, "check the id holder before PUT");
+  assert.match(save, /body: JSON\.stringify\(fields\)/);
 });

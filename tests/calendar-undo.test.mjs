@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { undoUnavailabilityWrite } from "../app/lib/unavailability-undo.ts";
+import { undoCalendarWrite } from "../app/lib/calendar-undo.ts";
 
 const failWith = (status) => Object.assign(new Error(`HTTP ${status}`), { status });
 
 test("nothing written means nothing to undo", async () => {
   let calls = 0;
-  const outcome = await undoUnavailabilityWrite({
+  const outcome = await undoCalendarWrite({
     editing: true, writtenIds: [], restore: async () => { calls += 1; }, remove: async () => { calls += 1; },
   });
   assert.equal(outcome, "undone");
@@ -15,7 +15,7 @@ test("nothing written means nothing to undo", async () => {
 
 test("edit: restore succeeds", async () => {
   let restores = 0;
-  const outcome = await undoUnavailabilityWrite({
+  const outcome = await undoCalendarWrite({
     editing: true, writtenIds: ["e1"], restore: async () => { restores += 1; }, remove: async () => assert.fail("edit never deletes"),
   });
   assert.equal(outcome, "undone");
@@ -24,7 +24,7 @@ test("edit: restore succeeds", async () => {
 
 test("edit: 412 means someone edited after us; we do not overwrite or retry", async () => {
   let restores = 0;
-  const outcome = await undoUnavailabilityWrite({
+  const outcome = await undoCalendarWrite({
     editing: true, writtenIds: ["e1"], restore: async () => { restores += 1; throw failWith(412); }, remove: async () => assert.fail("edit never deletes"),
   });
   assert.equal(outcome, "changed");
@@ -33,7 +33,7 @@ test("edit: 412 means someone edited after us; we do not overwrite or retry", as
 
 test("edit: a transient failure is retried once", async () => {
   let restores = 0;
-  const outcome = await undoUnavailabilityWrite({
+  const outcome = await undoCalendarWrite({
     editing: true, writtenIds: ["e1"], restore: async () => { restores += 1; if (restores === 1) throw failWith(503); }, remove: async () => {},
   });
   assert.equal(outcome, "undone");
@@ -42,7 +42,7 @@ test("edit: a transient failure is retried once", async () => {
 
 test("edit: two failures are reported, never hidden", async () => {
   let restores = 0;
-  const outcome = await undoUnavailabilityWrite({
+  const outcome = await undoCalendarWrite({
     editing: true, writtenIds: ["e1"], restore: async () => { restores += 1; throw failWith(500); }, remove: async () => {},
   });
   assert.equal(outcome, "failed");
@@ -51,7 +51,7 @@ test("edit: two failures are reported, never hidden", async () => {
 
 test("create: removes every new id; already-gone counts as removed", async () => {
   const removed = [];
-  const outcome = await undoUnavailabilityWrite({
+  const outcome = await undoCalendarWrite({
     editing: false,
     writtenIds: ["a", "b", "c"],
     restore: async () => assert.fail("create never restores"),
@@ -63,7 +63,7 @@ test("create: removes every new id; already-gone counts as removed", async () =>
 
 test("create: only failed ids are retried; a persistent failure is reported", async () => {
   const removed = [];
-  const once = await undoUnavailabilityWrite({
+  const once = await undoCalendarWrite({
     editing: false,
     writtenIds: ["a", "b"],
     restore: async () => {},
@@ -72,8 +72,20 @@ test("create: only failed ids are retried; a persistent failure is reported", as
   assert.equal(once, "undone");
   assert.deepEqual(removed, ["a", "b", "b"]);
 
-  const stuck = await undoUnavailabilityWrite({
+  const stuck = await undoCalendarWrite({
     editing: false, writtenIds: ["a"], restore: async () => {}, remove: async () => { throw failWith(500); },
   });
   assert.equal(stuck, "failed");
+});
+
+test("edit: a 412 on the retry is ambiguous (our first restore may have landed)", async () => {
+  let restores = 0;
+  const outcome = await undoCalendarWrite({
+    editing: true,
+    writtenIds: ["e1"],
+    restore: async () => { restores += 1; throw failWith(restores === 1 ? 504 : 412); },
+    remove: async () => {},
+  });
+  assert.equal(outcome, "uncertain");
+  assert.equal(restores, 2);
 });
