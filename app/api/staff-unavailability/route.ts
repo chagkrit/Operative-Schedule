@@ -2,6 +2,7 @@ import { AUTHORIZED_EMAIL } from "../../../auth";
 import { affectedBookingView } from "../../lib/affected-booking";
 import {
   deleteStaffUnavailabilityEvent,
+  ifMatchForRestore,
   listCalendarData,
   saveStaffUnavailabilityEvent,
 } from "../../lib/calendar";
@@ -12,7 +13,7 @@ import {
   orderedStaffMembers,
   STAFF_OPTIONS,
 } from "../../lib/schedule";
-import { undoUnavailabilityWrite, type UndoOutcome } from "../../lib/unavailability-undo";
+import { undoCalendarWrite, type UndoOutcome } from "../../lib/calendar-undo";
 import {
   caseStaffStatus,
   conflictingEntries,
@@ -94,10 +95,10 @@ export async function POST(request: Request) {
     }
 
     const entries: { id: string; etag: string; staff: string; startDate: string; endDate: string; note: string }[] = [];
-    const undoWrite = () => undoUnavailabilityWrite({
+    const undoWrite = () => undoCalendarWrite({
       editing: Boolean(existing),
       writtenIds: entries.map((entry) => entry.id),
-      restore: () => saveStaffUnavailabilityEvent(request, {
+      restore: async () => saveStaffUnavailabilityEvent(request, {
         id: existing!.id,
         staff: existing!.staff,
         startDate: existing!.startDate,
@@ -106,26 +107,52 @@ export async function POST(request: Request) {
         updatedBy: AUTHORIZED_EMAIL,
         createdAt: existing!.createdAt,
         createdBy: existing!.createdBy,
-      }, { ifMatch: entries[0]?.etag || undefined }),
+      }, { ifMatch: await ifMatchForRestore(request, existing!.id, entries[0]?.etag || "", { startDate, endDate }) }),
       remove: (entryId) => deleteStaffUnavailabilityEvent(request, entryId),
     });
+    // After an edit is restored, the old range may itself overlap an entry saved meanwhile
+    // (that save checked against our edited range). It cannot be fixed without deleting someone's
+    // entry, so it is detected and reported for a person to resolve.
+    const restoredRangeClash = async () => {
+      if (!existing) return false;
+      try {
+        const after = await listCalendarData(request, today, horizonEnd);
+        return conflictingEntries(after.staffUnavailability, existing.staff, existing, existing.id).length > 0;
+      } catch {
+        return true;
+      }
+    };
     const names = (list: string[]) => list.join(", ");
-    const clashMessage = (clashedStaff: string[], outcome: UndoOutcome) => {
+    const restoredClashNote = " แต่ช่วงวันเดิมของรายการนี้อาจทับซ้อนกับรายการที่บันทึกพร้อมกัน กรุณาโหลดข้อมูลใหม่แล้วแก้ไขรายการใดรายการหนึ่ง";
+    const clashMessage = (clashedStaff: string[], outcome: UndoOutcome, restoredClash: boolean) => {
       const head = `${names(clashedStaff)} มีผู้บันทึกวันที่ไม่ว่างทับซ้อนพร้อมกัน`;
       const others = selected.filter((name) => !clashedStaff.includes(name));
       if (existing) {
-        if (outcome === "undone") return `${head} ระบบคืนค่าการแก้ไขนี้แล้ว กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
+        if (outcome === "undone") {
+          return restoredClash
+            ? `${head} ระบบคืนค่าการแก้ไขนี้แล้ว${restoredClashNote}`
+            : `${head} ระบบคืนค่าการแก้ไขนี้แล้ว กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
+        }
         if (outcome === "changed") return `${head} และรายการนี้ถูกแก้ไขโดยผู้อื่นอีกครั้งระหว่างนั้น ระบบจึงไม่คืนค่าเพื่อไม่ให้ทับการแก้ไขนั้น กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
+        if (outcome === "uncertain") return `${head} และระบบไม่แน่ใจว่าคืนค่าการแก้ไขสำเร็จหรือไม่ กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบรายการนี้`;
         return `${head} และระบบคืนค่าการแก้ไขไม่สำเร็จ รายการนี้อาจทับซ้อนอยู่ กรุณาโหลดข้อมูลใหม่แล้วแก้ไขรายการ`;
       }
       if (outcome === "failed") return `${head} และระบบลบรายการที่เพิ่งบันทึกไม่สำเร็จ อาจมีรายการซ้ำซ้อนอยู่ กรุณาโหลดข้อมูลใหม่แล้วลบรายการที่ซ้ำ`;
       return `${head} ระบบไม่ได้บันทึกรายการใดในคำขอนี้${others.length ? ` (รวมถึง ${names(others)})` : ""} กรุณาตรวจสอบรายการแล้วบันทึกอีกครั้ง`;
     };
-    const verifyFailedMessage = (outcome: UndoOutcome) => {
+    const verifyFailedMessage = (outcome: UndoOutcome, restoredClash: boolean) => {
       const head = "ตรวจสอบรายการหลังบันทึกไม่สำเร็จ";
-      if (outcome === "undone") return `${head} ระบบ${existing ? "คืนค่าการแก้ไขนี้" : "ยกเลิกการบันทึกนี้"}แล้ว กรุณาลองใหม่`;
+      if (outcome === "undone") {
+        return `${head} ระบบ${existing ? "คืนค่าการแก้ไขนี้" : "ยกเลิกการบันทึกนี้"}แล้ว${restoredClash ? restoredClashNote : " กรุณาลองใหม่"}`;
+      }
       if (outcome === "changed") return `${head} และรายการนี้ถูกแก้ไขโดยผู้อื่นระหว่างนั้น กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
+      if (outcome === "uncertain") return `${head} และระบบไม่แน่ใจว่าคืนค่าสำเร็จหรือไม่ กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบรายการนี้`;
       return `${head} และ${existing ? "คืนค่า" : "ยกเลิกการบันทึก"}ไม่สำเร็จ รายการที่บันทึกอาจยังอยู่ กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`;
+    };
+    const undoAndCheck = async () => {
+      const outcome = await undoWrite();
+      const restoredClash = outcome === "undone" && Boolean(existing) && await restoredRangeClash();
+      return { outcome, restoredClash };
     };
 
     try {
@@ -143,8 +170,15 @@ export async function POST(request: Request) {
         entries.push({ ...saved, staff, startDate, endDate, note });
       }
     } catch (error) {
-      // A failed PATCH changed nothing; a failed create batch removes what it already wrote.
-      if (!existing) await undoWrite();
+      // A failed PATCH changed nothing; a failed create batch removes what it already wrote,
+      // and says so if that cleanup fails too.
+      if (!existing && (await undoWrite()) === "failed") {
+        const message = error instanceof Error ? error.message : "บันทึกวันที่ไม่ว่างไม่สำเร็จ";
+        throw Object.assign(
+          new Error(`${message} และลบรายการที่บันทึกไปแล้วบางส่วนไม่สำเร็จ อาจมีรายการค้างอยู่ กรุณาโหลดข้อมูลใหม่แล้วตรวจสอบ`),
+          { status: (error as { status?: number }).status },
+        );
+      }
       throw error;
     }
 
@@ -154,17 +188,17 @@ export async function POST(request: Request) {
     try {
       verified = await listCalendarData(request, today, horizonEnd);
     } catch {
-      const outcome = await undoWrite();
-      return Response.json({ error: verifyFailedMessage(outcome) }, { status: 503 });
+      const { outcome, restoredClash } = await undoAndCheck();
+      return Response.json({ error: verifyFailedMessage(outcome, restoredClash) }, { status: 503 });
     }
     // The earlier check rejected every entry that already existed, so any overlap found now is concurrent.
     // Both racing writers may see each other and both yield: safe, the user simply saves again.
     const clashed = entries.filter((entry) =>
       conflictingEntries(verified.staffUnavailability, entry.staff, { startDate, endDate }, entry.id).length > 0);
     if (clashed.length > 0) {
-      const outcome = await undoWrite();
+      const { outcome, restoredClash } = await undoAndCheck();
       return Response.json(
-        { error: clashMessage(clashed.map((entry) => entry.staff), outcome) },
+        { error: clashMessage(clashed.map((entry) => entry.staff), outcome, restoredClash) },
         { status: outcome === "failed" ? 500 : 409 },
       );
     }

@@ -1,17 +1,18 @@
-// Undo a staff-unavailability save that lost a race or could not be verified. No imports:
-// the Calendar calls are passed in, so the decision logic is tested directly.
+// Undo a Calendar save (staff unavailability or schedule closure) that lost a race or could not be
+// verified. No imports: the Calendar calls are passed in, so the decision logic is tested directly.
 
-export type UndoOutcome = "undone" | "changed" | "failed";
+export type UndoOutcome = "undone" | "changed" | "uncertain" | "failed";
 
 const statusOf = (error: unknown) => (error as { status?: number } | null)?.status;
 
 /**
  * editing: restore() writes the previous values back, guarded by the etag of our own write, so a
- *   412 means someone edited the entry after us: their save is newer and runs its own check, so we
- *   leave it ("changed"). Any other failure is retried once, then reported ("failed").
+ *   412 on the first try means someone edited the event after us: their save is newer and runs its
+ *   own check, so we leave it ("changed"). Any other failure is retried once. A 412 on the retry is
+ *   ambiguous (our first restore may have landed with its response lost), so it is "uncertain".
  * creating: remove() each new id; 404/410 means it is already gone. Failures are retried once.
  */
-export async function undoUnavailabilityWrite(options: {
+export async function undoCalendarWrite(options: {
   editing: boolean;
   writtenIds: readonly string[];
   restore: () => Promise<unknown>;
@@ -24,7 +25,7 @@ export async function undoUnavailabilityWrite(options: {
         await options.restore();
         return "undone";
       } catch (error) {
-        if (statusOf(error) === 412) return "changed";
+        if (statusOf(error) === 412) return attempt === 0 ? "changed" : "uncertain";
       }
     }
     return "failed";

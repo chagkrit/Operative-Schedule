@@ -650,11 +650,11 @@ export async function deleteExtraDayEvent(request: Request, id: string) {
 export async function saveScheduleClosureEvent(
   request: Request,
   closure: { id?: string; date: string; name: string; note: string; updatedBy: string; createdAt?: string; createdBy?: string },
-) {
+  options: { ifMatch?: string } = {},
+): Promise<{ id: string; etag: string; sharedId: boolean }> {
   const id = closure.id || await deterministicId("oc", closure.date);
   const now = new Date().toISOString();
-  const body = JSON.stringify({
-    ...(closure.id ? {} : { id }),
+  const fields = {
     summary: `ปิดรับคิว • ${closure.name}`,
     description: [`วันปิดรับคิว`, `ชื่อ: ${closure.name}`, `หมายเหตุ: ${closure.note || "-"}`, `แก้ไขโดย: ${closure.updatedBy}`].join("\n"),
     start: { date: closure.date },
@@ -669,18 +669,75 @@ export async function saveScheduleClosureEvent(
       created_at: closure.createdAt || now,
       updated_by: closure.updatedBy,
     } },
-  });
+  };
+  const body = JSON.stringify(closure.id ? fields : { id, ...fields });
   if (closure.id) {
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "PATCH", body });
-    return id;
+    // With ifMatch, Google answers 412 when the event changed since that etag (someone else edited it).
+    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body,
+      ...(options.ifMatch ? { headers: { "if-match": options.ifMatch } } : {}),
+    });
+    const patched = (await response.json().catch(() => ({}))) as { etag?: string };
+    return { id, etag: patched.etag || "", sharedId: false };
   }
+  // The per-date id may still belong to a live closure that was later moved to another date by an
+  // edit. Writing to that id would drag it back here and overwrite it, so use a Google-assigned id.
+  if (await getEventVersion(request, id)) {
+    const created = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body: JSON.stringify(fields) });
+    const event = (await created.json()) as { id?: string; etag?: string };
+    if (!event.id) throw new Error("Google Calendar ไม่ส่งรหัสรายการกลับมา");
+    return { id: event.id, etag: event.etag || "", sharedId: false };
+  }
+  let response: Response;
   try {
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${id}`, { method: "PUT", body });
+    response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${id}`, { method: "PUT", body });
   } catch (error) {
     if ((error as { status?: number }).status !== 404) throw error;
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
+    response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
   }
-  return id;
+  const saved = (await response.json().catch(() => ({}))) as { etag?: string };
+  // sharedId: every create for this date writes this same event, so a concurrent create may rely on it.
+  return { id, etag: saved.etag || "", sharedId: true };
+}
+
+/**
+ * The If-Match value for restoring an event we just wrote. Normally our write's own etag. If Google
+ * returned none, read the event: restore only if it still holds the range we wrote (otherwise someone
+ * edited it after us, reported as 412), guarded by its current etag.
+ */
+export async function ifMatchForRestore(
+  request: Request,
+  id: string,
+  writtenEtag: string,
+  written: { startDate: string; endDate: string },
+): Promise<string | undefined> {
+  if (writtenEtag) return writtenEtag;
+  const current = await getEventVersion(request, id);
+  if (!current || current.startDate !== written.startDate || current.endDate !== written.endDate) {
+    throw withStatus("รายการถูกแก้ไขโดยผู้อื่นระหว่างบันทึก", 412);
+  }
+  return current.etag || undefined;
+}
+
+/**
+ * Current etag and all-day range of one event, or null when it is gone. Used to guard a restore
+ * when our own write did not return an etag: restore only if the event still holds what we wrote.
+ */
+export async function getEventVersion(
+  request: Request,
+  id: string,
+): Promise<{ etag: string; startDate: string; endDate: string } | null> {
+  try {
+    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`);
+    const event = (await response.json()) as { etag?: string; status?: string; start?: { date?: string }; end?: { date?: string } };
+    if (event.status === "cancelled" || !event.start?.date || !event.end?.date) return null;
+    return { etag: event.etag || "", startDate: event.start.date, endDate: addDays(event.end.date, -1) };
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 404 || status === 410) return null;
+    throw error;
+  }
 }
 
 export async function deleteScheduleClosureEvent(request: Request, id: string) {
