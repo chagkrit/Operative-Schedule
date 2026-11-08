@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
+import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
 import { useUnseenMoves } from "./useUnseenMoves";
@@ -19,6 +20,19 @@ type Day = {
   closed: boolean;
   closureName: string;
   closureNote: string;
+  unavailableStaff: string[];
+};
+
+type StaffUnavailability = {
+  id: string;
+  staff: string;
+  startDate: string;
+  endDate: string;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  updatedBy: string;
+  updatedAt: string;
 };
 
 type ScheduleClosure = {
@@ -52,6 +66,7 @@ type ScheduleResponse = {
   days: Day[];
   bookings: Booking[];
   closures: ScheduleClosure[];
+  staffUnavailability: StaffUnavailability[];
   horizonStart: string;
   horizonEnd: string;
   recentMoves: RecentMove[];
@@ -116,6 +131,7 @@ type StaffScheduleState = {
 type AffectedBooking = Pick<Booking, "id" | "hn" | "patientName" | "operation" | "staffMembers" | "queueType" | "slotNo">;
 
 const EMPTY_CLOSURE_FORM = { id: "", date: "", name: "", note: "" };
+const EMPTY_UNAVAILABILITY_FORM = { id: "", staff: [] as string[], startDate: "", endDate: "", note: "" };
 
 const STAFF = [
   "อ อารีวรรณ",
@@ -145,6 +161,22 @@ const EMPTY_FORM = {
 
 function staffLabel(staffMembers: readonly string[]) {
   return staffMembers.join(", ") || "ไม่ระบุ";
+}
+
+// Live clash check (decision 17): any known staff on the case unavailable on its date. Nothing is stored on the case.
+function clashStaffFor(booking: { scheduleDate: string; staffMembers: string[] }, entries: StaffUnavailability[]): string[] {
+  if (booking.scheduleDate < bangkokToday()) return [];
+  return caseStaffStatus(booking.staffMembers, unavailableStaffOn(entries, booking.scheduleDate, STAFF), STAFF).unavailableStaff;
+}
+
+function ClashBadge({ booking, entries }: { booking: { scheduleDate: string; staffMembers: string[] }; entries: StaffUnavailability[] }) {
+  const names = clashStaffFor(booking, entries);
+  if (!names.length) return null;
+  return <span className="clash-badge">{names.join(", ")} ไม่ว่าง ควรย้ายวัน</span>;
+}
+
+function partialStaffSuffix(unavailableStaff: readonly string[]) {
+  return unavailableStaff.length ? ` (${unavailableStaff.join(", ")} ไม่ว่าง)` : "";
 }
 
 function displayDate(value: string, short = false) {
@@ -200,6 +232,7 @@ type MonthlyCalendarProps = {
   days: Day[];
   bookings: Booking[];
   closures: ScheduleClosure[];
+  staffUnavailability: StaffUnavailability[];
   horizonStart: string;
   horizonEnd: string;
   month: string;
@@ -208,7 +241,7 @@ type MonthlyCalendarProps = {
   onSelectDate: (value: string) => void;
 };
 
-function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
+function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
   const firstMonth = horizonStart.slice(0, 7);
   const lastMonth = horizonEnd.slice(0, 7);
   const [year, monthNumber] = month.split("-").map(Number);
@@ -230,6 +263,9 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
   const selectedBookings = bookings
     .filter((booking) => booking.scheduleDate === selectedDate)
     .sort((a, b) => a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1);
+  const clashDates = new Set(bookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0).map((booking) => booking.scheduleDate));
+  const selectedUnavailableStaff = unavailableStaffOn(staffUnavailability, selectedDate, STAFF);
+  const selectedClashBookings = selectedBookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0);
   const today = bangkokToday();
 
   function changeMonth(direction: -1 | 1) {
@@ -258,17 +294,18 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
           return (
             <button
               type="button"
-              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""}`}
+              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""} ${clashDates.has(date) ? "has-clash" : ""}`}
               key={date}
               onClick={() => onSelectDate(date)}
               disabled={Boolean(closure) || outsideHorizon}
               title={closure ? `${closure.name}${closure.note ? ` — ${closure.note}` : ""}` : undefined}
-              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${count} เคส`}
+              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${count} เคส${clashDates.has(date) ? " มีเคสควรย้ายวัน" : ""}`}
               aria-pressed={date === selectedDate}
             >
               <span>{Number(date.slice(-2))}</span>
               {closure ? <em>ปิด</em> : null}
               {count > 0 ? <b>{count}</b> : summaries.length > 0 ? <i aria-label="เปิดรับคิว" /> : null}
+              {clashDates.has(date) ? <em className="clash-flag">ย้าย</em> : null}
             </button>
           );
         })}
@@ -285,6 +322,14 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
             <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}</span>
           </p>
         )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
+        {selectedUnavailableStaff.length > 0 && (
+          <div className="month-unavailable-summary">
+            <b>ไม่ว่างวันนี้ · {selectedUnavailableStaff.join(", ")}</b>
+            {selectedClashBookings.length > 0
+              ? <span>ควรย้ายวัน: {selectedClashBookings.map((booking) => `${booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #${booking.slotNo} ${booking.operation}`).join(" · ")}</span>
+              : <span>ยังไม่มีเคสที่ชนวันนี้</span>}
+          </div>
+        )}
       </div>
       <section className="month-bookings" aria-live="polite" aria-label={`เคสผ่าตัดวันที่ ${displayDate(selectedDate)}`}>
         <div className="month-bookings-heading">
@@ -303,6 +348,7 @@ function MonthlyCalendar({ days, bookings, closures, horizonStart, horizonEnd, m
                   <strong>{booking.operation}</strong>
                   <span>{booking.patientName} · HN ••••{booking.hn.slice(-4)}</span>
                   <small>{booking.diagnosis} · {staffLabel(booking.staffMembers)} · {booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</small>
+                  <ClashBadge booking={booking} entries={staffUnavailability} />
                 </div>
                 <StatusDot synced={booking.calendarSyncStatus === "synced"} />
               </article>
@@ -321,6 +367,7 @@ type ManualDateCalendarProps = {
   queueType: "OR17" | "EXTRA";
   staffQueuePreference: "same_staff" | "any";
   staffDayKeys: ReadonlySet<string>;
+  staffMembers: readonly string[];
   manualDateStart: string;
   horizonEnd: string;
   month: string;
@@ -342,6 +389,7 @@ function ManualDateCalendar({
   queueType,
   staffQueuePreference,
   staffDayKeys,
+  staffMembers,
   manualDateStart,
   horizonEnd,
   month,
@@ -375,6 +423,10 @@ function ManualDateCalendar({
     if (day.closed) {
       return { available: false, label: "ปิด", detail: `ปิดรับคิว${day.closureName ? `: ${day.closureName}` : ""}`, day };
     }
+    const staffStatus = caseStaffStatus(staffMembers, day.unavailableStaff, STAFF);
+    if (staffStatus.blocked) {
+      return { available: false, label: "ไม่ว่าง", detail: staffUnavailableMessage(staffStatus.unavailableStaff), day };
+    }
     if (day.count >= day.capacity) {
       return { available: false, label: "เต็ม", detail: "คิวเต็มแล้ว", day };
     }
@@ -384,7 +436,7 @@ function ManualDateCalendar({
     if (staffQueuePreference === "same_staff" && !staffDayKeys.has(`${day.date}:${day.queueType}`)) {
       return { available: false, label: "Staff", detail: "ไม่พบเคสของ Staff ที่เลือกในวันนี้", day };
     }
-    return { available: true, label: "ว่าง", detail: `ว่าง ${day.capacity - day.count} เคส`, day };
+    return { available: true, label: "ว่าง", detail: `ว่าง ${day.capacity - day.count} เคส${staffStatus.unavailableStaff.length ? ` · ${staffStatus.unavailableStaff.join(", ")} ไม่ว่าง` : ""}`, day };
   }
 
   const selectedAvailability = selectedDate ? availabilityFor(selectedDate) : null;
@@ -435,7 +487,7 @@ function ManualDateCalendar({
           <><strong>เลือกแล้ว: {displayDate(selectedDate)}</strong><span>{queueType === "EXTRA" ? "OR Extra" : "OR 17"} · {selectedAvailability.detail}</span></>
         ) : <span>เลือกวันที่สีเข้มที่ระบุว่า “ว่าง” เพื่อระบุคิวผ่าตัด</span>}
       </div>
-      <p className="manual-date-legend"><b>ว่าง</b> เลือกลงคิวได้ <em>เต็ม / ปิด / ไม่เปิด / Staff</em> เลือกไม่ได้</p>
+      <p className="manual-date-legend"><b>ว่าง</b> เลือกลงคิวได้ <em>เต็ม / ปิด / ไม่เปิด / Staff / ไม่ว่าง</em> เลือกไม่ได้</p>
     </section>
   );
 }
@@ -476,6 +528,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [closureSearch, setClosureSearch] = useState("");
   const [closureSaving, setClosureSaving] = useState(false);
   const [pendingClosure, setPendingClosure] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
+  const [unavailabilityForm, setUnavailabilityForm] = useState(EMPTY_UNAVAILABILITY_FORM);
+  const [unavailabilitySaving, setUnavailabilitySaving] = useState(false);
+  const [pendingUnavailability, setPendingUnavailability] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
   const [exportRange, setExportRange] = useState(() => {
     const today = bangkokToday();
     return { from: addCalendarDays(today, -1825), to: addCalendarDays(today, 730) };
@@ -525,6 +580,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
   const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
+  const unavailabilityConfirmRef = useRef<HTMLButtonElement>(null);
+  const unavailabilityFormRef = useRef<HTMLFormElement>(null);
+  const unavailabilityStartRef = useRef<HTMLInputElement>(null);
   const deleteHnRef = useRef<HTMLInputElement>(null);
   const deleteConfirmRef = useRef<HTMLButtonElement>(null);
   const deleteDialogRef = useRef<HTMLElement>(null);
@@ -558,13 +616,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !deleteDialog) return;
+    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !deleting) {
         setBookingConflict(null);
         setShowSyncPrompt(false);
         setPendingClosure(null);
+        setPendingUnavailability(null);
         setDeleteDialog(null);
         if (deleteDialog) requestAnimationFrame(() => deleteTriggerRef.current?.focus());
       }
@@ -586,13 +645,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     document.body.style.overflow = "hidden";
     (deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
-      : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : syncPromptButtonRef.current)?.focus();
+      : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, deleteDialog, deleting, pendingClosure, showSyncPrompt]);
+  }, [bookingConflict, deleteDialog, deleting, pendingClosure, pendingUnavailability, showSyncPrompt]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -668,7 +727,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       .filter((booking) => booking.staffMembers.some((member) => form.staffMembers.includes(member)))
       .map((booking) => `${booking.scheduleDate}:${booking.queueType}`),
   ), [data, form.staffMembers]);
-  const availableDays = useMemo(
+  // Days that pass every rule except staff unavailability. They keep manualDateStart stable and
+  // are the rows the dropdown shows (staff-blocked ones as disabled options).
+  const openDays = useMemo(
     () => (data?.days || []).filter((day) =>
       !day.closed
       && day.count < day.capacity
@@ -677,18 +738,30 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     ),
     [cancer, data, form.staffQueuePreference, staffDayKeys],
   );
+  const staffBlocked = useCallback(
+    (day: Day) => caseStaffStatus(form.staffMembers, day.unavailableStaff, STAFF),
+    [form.staffMembers],
+  );
+  const availableDays = useMemo(
+    () => openDays.filter((day) => !staffBlocked(day).blocked),
+    [openDays, staffBlocked],
+  );
   const dropdownCutoff = addCalendarDays(data?.horizonStart || bangkokToday(), 120);
-  const dropdownAvailableDays = useMemo(
-    () => availableDays.filter((day) => day.date <= dropdownCutoff),
-    [availableDays, dropdownCutoff],
+  const dropdownOpenDays = useMemo(
+    () => openDays.filter((day) => day.date <= dropdownCutoff),
+    [openDays, dropdownCutoff],
+  );
+  const normalOptionDays = useMemo(
+    () => dropdownOpenDays.filter((day) => day.queueType === "OR17"),
+    [dropdownOpenDays],
   );
   const normalDates = useMemo(
-    () => dropdownAvailableDays.filter((day) => day.queueType === "OR17"),
-    [dropdownAvailableDays],
+    () => normalOptionDays.filter((day) => !staffBlocked(day).blocked),
+    [normalOptionDays, staffBlocked],
   );
   const cancerDates = useMemo(
-    () => dropdownAvailableDays,
-    [dropdownAvailableDays],
+    () => dropdownOpenDays.filter((day) => !staffBlocked(day).blocked),
+    [dropdownOpenDays, staffBlocked],
   );
   const upcomingDays = data?.days.slice(0, 8) || [];
   const nextCancerDay = useMemo(
@@ -696,10 +769,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     [availableDays],
   );
   const manualDateStart = useMemo(() => {
-    const dropdownDays = cancer ? cancerDates : normalDates;
+    const dropdownDays = cancer ? dropdownOpenDays : normalOptionDays;
     const lastDropdownDate = dropdownDays.at(-1)?.date || data?.days.at(-1)?.date || bangkokToday();
     return addCalendarDays(lastDropdownDate, 1);
-  }, [cancer, cancerDates, data, normalDates]);
+  }, [cancer, data, dropdownOpenDays, normalOptionDays]);
   const manualQueueType: "OR17" | "EXTRA" = cancer && form.requestedQueueType === "EXTRA" ? "EXTRA" : "OR17";
   const manualCalendarFirstMonth = manualDateStart.slice(0, 7);
   const manualCalendarLastMonth = data?.horizonEnd?.slice(0, 7) || manualCalendarFirstMonth;
@@ -712,6 +785,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const selectedQueueType = cancer && form.cancerSchedulingMode === "earliest"
     ? nextCancerDay?.queueType || ""
     : form.requestedQueueType || (!cancer ? "OR17" : "");
+  const selectedDay = selectedSurgeryDate
+    ? data?.days.find((day) => day.date === selectedSurgeryDate && day.queueType === (selectedQueueType || "OR17"))
+    : undefined;
+  const selectedStaffNotice = selectedDay ? staffBlocked(selectedDay) : null;
   const queuedDate = bangkokToday();
   const waitingDays = selectedSurgeryDate ? daysBetween(queuedDate, selectedSurgeryDate) : null;
   const bookingsByDay = useMemo(() => {
@@ -722,7 +799,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
     return map;
   }, [data]);
-  const moveDates = useMemo(() => {
+  // Spec decisions 2 and 18: staff-blocked days stay in the list as disabled options; closed/full days stay hidden.
+  const moveOptionDays = useMemo(() => {
     if (!selectedCase) return [];
     return (data?.days || []).filter((day) => {
       if (day.closed) return false;
@@ -733,6 +811,16 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       return true;
     });
   }, [data, selectedCase]);
+  const moveDates = useMemo(
+    () => (selectedCase ? moveOptionDays.filter((day) => !caseStaffStatus(selectedCase.staffMembers, day.unavailableStaff, STAFF).blocked) : []),
+    [moveOptionDays, selectedCase],
+  );
+  const moveTargetDay = selectedCase && moveTarget
+    ? moveDates.find((day) => `${day.date}|${day.queueType}` === moveTarget)
+    : undefined;
+  const moveStaffNotice = selectedCase && moveTargetDay
+    ? caseStaffStatus(selectedCase.staffMembers, moveTargetDay.unavailableStaff, STAFF)
+    : null;
   const filteredClosures = useMemo(() => {
     const query = closureSearch.trim().toLocaleLowerCase("th-TH");
     return (data?.closures || []).filter((closure) => !query
@@ -1017,6 +1105,104 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
   }
 
+  const sortedUnavailability = useMemo(
+    () => [...(data?.staffUnavailability || [])].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.staff.localeCompare(b.staff, "th-TH")),
+    [data],
+  );
+
+  const editingOriginalStart = unavailabilityForm.id
+    ? (data?.staffUnavailability || []).find((entry) => entry.id === unavailabilityForm.id)?.startDate || ""
+    : "";
+
+  function toggleUnavailabilityStaff(staff: string) {
+    setUnavailabilityForm((current) => ({
+      ...current,
+      staff: current.staff.includes(staff) ? current.staff.filter((name) => name !== staff) : [...current.staff, staff],
+    }));
+  }
+
+  async function saveUnavailability(confirmExistingBookings = false) {
+    const editing = Boolean(unavailabilityForm.id);
+    if ((!editing && unavailabilityForm.staff.length === 0) || !unavailabilityForm.startDate || !unavailabilityForm.endDate) {
+      setNotice({ type: "error", text: "กรุณาเลือก Staff และระบุวันเริ่มต้น-วันสิ้นสุด" });
+      return;
+    }
+    if (unavailabilityForm.startDate > unavailabilityForm.endDate) {
+      setNotice({ type: "error", text: "วันเริ่มต้องไม่เกินวันสิ้นสุด" });
+      return;
+    }
+    setUnavailabilitySaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/staff-unavailability", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: unavailabilityForm.id || undefined,
+          staff: editing ? undefined : unavailabilityForm.staff,
+          startDate: unavailabilityForm.startDate,
+          endDate: unavailabilityForm.endDate,
+          note: unavailabilityForm.note,
+          confirmExistingBookings,
+        }),
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+        requiresConfirmation?: boolean;
+        affectedBookings?: AffectedBooking[];
+        overlappingStaff?: string[];
+      };
+      if (response.status === 409 && payload.requiresConfirmation) {
+        setPendingUnavailability({ bookings: payload.affectedBookings || [], message: payload.message || "ช่วงวันที่เลือกมีคิวเดิม" });
+        return;
+      }
+      if (!response.ok) {
+        setPendingUnavailability(null);
+        throw new Error(payload.error || "บันทึกวันที่ staff ไม่ว่างไม่สำเร็จ");
+      }
+      setPendingUnavailability(null);
+      setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM);
+      setNotice({ type: "success", text: payload.message || "บันทึกวันที่ staff ไม่ว่างแล้ว" });
+      await loadSchedule();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "บันทึกวันที่ staff ไม่ว่างไม่สำเร็จ" });
+    } finally {
+      setUnavailabilitySaving(false);
+    }
+  }
+
+  function submitUnavailability(event: FormEvent) {
+    event.preventDefault();
+    void saveUnavailability(false);
+  }
+
+  function editUnavailability(entry: StaffUnavailability) {
+    setUnavailabilityForm({ id: entry.id, staff: [entry.staff], startDate: entry.startDate, endDate: entry.endDate, note: entry.note });
+    setNotice(null);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    unavailabilityFormRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    unavailabilityStartRef.current?.focus({ preventScroll: true });
+  }
+
+  async function deleteUnavailability(entry: StaffUnavailability) {
+    if (!window.confirm(`ลบวันที่ staff ไม่ว่าง ${entry.staff} ${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)} ใช่หรือไม่`)) return;
+    setUnavailabilitySaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/staff-unavailability?id=${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+      const payload = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "ลบวันที่ staff ไม่ว่างไม่สำเร็จ");
+      if (unavailabilityForm.id === entry.id) setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM);
+      setNotice({ type: "success", text: payload.message || "ลบวันที่ staff ไม่ว่างแล้ว" });
+      await loadSchedule();
+    } catch (error) {
+      setNotice({ type: "error", text: error instanceof Error ? error.message : "ลบวันที่ staff ไม่ว่างไม่สำเร็จ" });
+    } finally {
+      setUnavailabilitySaving(false);
+    }
+  }
+
   async function searchCases(event?: FormEvent) {
     event?.preventDefault();
     const query = searchQuery.trim();
@@ -1245,6 +1431,32 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       )}
 
+      {pendingUnavailability && (
+        <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setPendingUnavailability(null)}>
+          <section className="queue-conflict-dialog closure-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="unavailability-confirm-title" aria-describedby="unavailability-confirm-message">
+            <span className="queue-conflict-icon" aria-hidden="true">!</span>
+            <div className="queue-conflict-heading">
+              <span>พบคิวเดิมในช่วงที่ staff ไม่ว่าง</span>
+              <h3 id="unavailability-confirm-title">ยืนยันบันทึกและคงคิวเดิม</h3>
+              <p id="unavailability-confirm-message">{pendingUnavailability.message}</p>
+            </div>
+            <div className="closure-affected-list" aria-label="คิวเดิมที่จะคงไว้">
+              {pendingUnavailability.bookings.map((booking) => (
+                <article key={booking.id}>
+                  <b>{booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #{booking.slotNo}</b>
+                  <span>{booking.operation}</span>
+                  <small>{booking.patientName} · HN ••••{booking.hn.slice(-4)} · {staffLabel(booking.staffMembers)}</small>
+                </article>
+              ))}
+            </div>
+            <div className="closure-confirm-actions">
+              <button type="button" onClick={() => setPendingUnavailability(null)}>กลับไปตรวจสอบ</button>
+              <button ref={unavailabilityConfirmRef} type="button" onClick={() => void saveUnavailability(true)} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingUnavailability.bookings.length} เคส`}</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {deleteDialog && (
         <div className="queue-conflict-backdrop delete-case-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDeleteDialog()}>
           {deleteDialog.step === "verify" ? (
@@ -1336,12 +1548,23 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                       cancer ? (
                         <select value={form.requestedDate && form.requestedQueueType ? `${form.requestedDate}|${form.requestedQueueType}` : ""} onChange={(e) => chooseCancerDate(e.target.value)} aria-label="เลือกวันและประเภทคิว">
                           <option value="">{cancerDates.length ? "เลือกวันและประเภทคิว" : "ไม่พบคิวว่างตามเงื่อนไข Staff"}</option>
-                          {cancerDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}
+                          {dropdownOpenDays.map((day) => {
+                            const status = staffBlocked(day);
+                            const label = `${displayDate(day.date, true)} · ${day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}`;
+                            return status.blocked
+                              ? <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`} disabled>{label} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
+                              : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{label} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                          })}
                         </select>
                       ) : (
                         <select value={form.requestedDate} onChange={(e) => setForm((current) => ({ ...current, requestedDate: e.target.value, requestedQueueType: "OR17" }))} aria-label="เลือกวัน OR 17">
                           <option value="">{normalDates.length ? "เลือกวัน OR 17" : "ไม่พบคิวว่างตามเงื่อนไข Staff"}</option>
-                          {normalDates.map((day) => <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}</option>)}
+                          {normalOptionDays.map((day) => {
+                            const status = staffBlocked(day);
+                            return status.blocked
+                              ? <option key={day.date} value={day.date} disabled>{displayDate(day.date, true)} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
+                              : <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                          })}
                         </select>
                       )
                     ) : (
@@ -1360,6 +1583,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           queueType={manualQueueType}
                           staffQueuePreference={form.staffQueuePreference}
                           staffDayKeys={staffDayKeys}
+                          staffMembers={form.staffMembers}
                           manualDateStart={manualDateStart}
                           horizonEnd={data.horizonEnd}
                           month={displayedManualCalendarMonth}
@@ -1417,8 +1641,20 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <p>นับจากวันที่ลงคิว {displayDate(queuedDate, true)}<br />{displayDate(selectedSurgeryDate)} · {selectedQueueType === "EXTRA" ? "OR Extra" : "OR 17"}</p>
               </div>
             )}
+            {selectedStaffNotice?.blocked && (
+              <div className="staff-unavailable-notice" role="status">
+                <strong>วันที่เลือกไม่ว่าง</strong>
+                <span>{staffUnavailableMessage(selectedStaffNotice.unavailableStaff)} · เลือกวันอื่น</span>
+              </div>
+            )}
+            {selectedStaffNotice && selectedStaffNotice.unavailableStaff.length > 0 && !selectedStaffNotice.blocked && (
+              <div className="staff-unavailable-notice" role="status">
+                <strong>มี Staff ไม่ว่างในวันที่เลือก</strong>
+                <span>{staffUnavailableMessage(selectedStaffNotice.unavailableStaff)} · ยังลงคิวได้ เพราะยังมี Staff คนอื่นในเคส</span>
+              </div>
+            )}
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
-            <button className="save-button" type="submit" disabled={saving}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
+            <button className="save-button" type="submit" disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
         </section>
 
@@ -1451,7 +1687,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     {day.closed && <p className="closure-line">ปิดรับคิว · {day.closureName}{day.closureNote ? ` — ${day.closureNote}` : ""}</p>}
                     {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                     {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
-                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}</small></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
+                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
                     {remaining <= 0 && <span className="full-label">คิวเต็ม</span>}
                   </div>
                 </article>;
@@ -1459,7 +1695,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
           ) : scheduleView === "month" ? (
             <div role="tabpanel" aria-label="ปฏิทินผ่าตัดรายเดือน">
-              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} staffUnavailability={data?.staffUnavailability || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
             </div>
           ) : (
             <div className="closure-manager" role="tabpanel" aria-label="ตั้งค่าวันปิดรับคิว">
@@ -1487,6 +1723,37 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   </article>;
                 })}
               </div>
+              <section className="unavailability-manager" aria-labelledby="unavailability-title">
+                <form className="unavailability-form" ref={unavailabilityFormRef} onSubmit={submitUnavailability}>
+                  <div className="unavailability-heading"><strong id="unavailability-title">วันที่ staff ไม่ว่าง</strong><small>{unavailabilityForm.id ? "แก้ไขรายการ (เปลี่ยน Staff ไม่ได้)" : "เลือกได้หลายคน ระบบจะสร้างรายการแยกต่อคน"}</small></div>
+                  <fieldset className="unavailability-staff" disabled={Boolean(unavailabilityForm.id)}>
+                    <legend>Staff <b>*</b></legend>
+                    {STAFF.map((staff) => <label key={staff}><input type="checkbox" checked={unavailabilityForm.staff.includes(staff)} onChange={() => toggleUnavailabilityStaff(staff)} /><span>{staff}</span></label>)}
+                    {unavailabilityForm.id && unavailabilityForm.staff.some((name) => !(STAFF as readonly string[]).includes(name)) && <p className="unavailability-orphan">{unavailabilityForm.staff.join(", ")} · ไม่พบ Staff ในรายชื่อ</p>}
+                  </fieldset>
+                  <label><span>วันเริ่มต้น <b>*</b></span><input ref={unavailabilityStartRef} type="date" min={editingOriginalStart && editingOriginalStart < (data?.horizonStart || "") ? editingOriginalStart : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.startDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, startDate: event.target.value, endDate: current.endDate && current.endDate < event.target.value ? event.target.value : current.endDate }))} required /></label>
+                  <label><span>วันสิ้นสุด <b>*</b></span><input type="date" min={unavailabilityForm.startDate > (data?.horizonStart || "") ? unavailabilityForm.startDate : data?.horizonStart} max={data?.horizonEnd} value={unavailabilityForm.endDate} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, endDate: event.target.value }))} required /></label>
+                  <label className="wide"><span>หมายเหตุ</span><textarea value={unavailabilityForm.note} maxLength={500} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, note: event.target.value }))} placeholder="เช่น ประชุมวิชาการ ลาพักร้อน" /></label>
+                  <div className="unavailability-actions">
+                    {unavailabilityForm.id && <button type="button" onClick={() => setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM)}>ยกเลิกแก้ไข</button>}
+                    <button type="submit" disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
+                  </div>
+                </form>
+                <div className="unavailability-list" aria-live="polite" aria-label="รายการวันที่ staff ไม่ว่าง">
+                  <strong>รายการวันที่ staff ไม่ว่าง <span>{sortedUnavailability.length}</span></strong>
+                  {sortedUnavailability.length === 0 ? <p>ยังไม่มีวันที่ staff ไม่ว่าง</p> : sortedUnavailability.map((entry) => {
+                    const known = (STAFF as readonly string[]).includes(entry.staff);
+                    return <article key={entry.id}>
+                      <div className="unavailability-detail">
+                        <strong>{entry.staff}{!known && <em className="unavailability-orphan-tag"> · ไม่พบ Staff ในรายชื่อ</em>}</strong>
+                        <span>{entry.startDate === entry.endDate ? displayDate(entry.startDate, true) : `${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)}`}</span>
+                        <small>{entry.note || "ไม่มีหมายเหตุ"}</small>
+                      </div>
+                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={() => void deleteUnavailability(entry)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
+                    </article>;
+                  })}
+                </div>
+              </section>
             </div>
           )}
         </aside>
@@ -1513,7 +1780,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); setDeleteDialog(null); }}>
                   <span className="case-identity"><strong>{result.patientName}</strong><small>HN {result.hn} · {result.diagnosis}</small></span>
                   <span className="case-current"><strong>{displayDate(result.scheduleDate, true)}</strong><small>{result.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${result.slotNo}`}</small></span>
-                  <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}</small></span>
+                  <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}</small><ClashBadge booking={result} entries={data?.staffUnavailability || []} /></span>
                   <span className="select-case">{selectedCase?.id === result.id ? "เลือกแล้ว" : "เลือกสลับวัน"}</span>
                 </button>
                 {selectedCase?.id === result.id && (
@@ -1521,11 +1788,22 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     <label htmlFor={`move-${result.id}`}>วันผ่าตัดใหม่</label>
                     <select id={`move-${result.id}`} value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>
                       <option value="">เลือกคิวปลายทางที่ยังว่าง</option>
-                      {moveDates.map((day) => <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}</option>)}
+                      {moveOptionDays.map((day) => {
+                        const status = caseStaffStatus(result.staffMembers, day.unavailableStaff, STAFF);
+                        return status.blocked
+                          ? <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`} disabled>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
+                          : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                      })}
                     </select>
                     <button type="submit" disabled={moving || !moveTarget}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
                     <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
+                    {moveStaffNotice && moveStaffNotice.unavailableStaff.length > 0 && (
+                      <div className="staff-unavailable-notice" role="status">
+                        <strong>มี Staff ไม่ว่างในวันที่เลือก</strong>
+                        <span>{staffUnavailableMessage(moveStaffNotice.unavailableStaff)} · ยังย้ายได้ เพราะยังมี Staff คนอื่นในเคส</span>
+                      </div>
+                    )}
                   </form>
                 )}
               </article>

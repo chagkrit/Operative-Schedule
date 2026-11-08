@@ -155,13 +155,19 @@
   .case-current small, .case-operation small, .case-operation, .select-case, .move-form label,
   .move-form > small, .case-empty, .move-history-list strong, .move-history-list small,
   .move-history-list p, .move-history-list time, footer, .calendar-pill, .delete-case-summary span,
-  .delete-case-summary small, .delete-hn-form label, .delete-hn-form p {
+  .delete-case-summary small, .delete-hn-form label, .delete-hn-form p,
+  .clash-badge, .month-unavailable-summary, .staff-unavailable-notice, .staff-unavailable-notice strong,
+  .unavailability-heading strong, .unavailability-heading small, .unavailability-staff legend,
+  .unavailability-staff label, .unavailability-orphan, .unavailability-orphan-tag,
+  .unavailability-form > label span, .unavailability-list > strong, .unavailability-list > p,
+  .unavailability-detail strong, .unavailability-detail span, .unavailability-detail small,
+  .unavailability-row-actions button, .unavailability-actions button {
     font-size: 12px;
   }
 
   /* Calendar cells are ~44px wide: micro-labels keep a 10px floor. */
   .manual-date-weekday, .manual-date-day, .manual-date-day small, .month-weekday, .month-day b,
-  .month-day.closed em, .month-legend em {
+  .month-day.closed em, .month-day .clash-flag, .month-legend em {
     font-size: 10px;
   }
 
@@ -182,7 +188,8 @@
   /* Inputs: 44px tall and 16px so iOS Safari does not zoom on focus */
   .field input, .field textarea, .field select, .extra-form input, .wait-time-export input,
   .closure-form input, .closure-form textarea, .closure-list-toolbar input, .case-search-form input,
-  .move-form select, .delete-hn-form input {
+  .move-form select, .delete-hn-form input, .unavailability-form input[type="date"],
+  .unavailability-form textarea {
     min-height: 44px;
     font-size: 16px;
   }

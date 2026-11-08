@@ -47,6 +47,18 @@ export type CalendarScheduleClosure = {
   updatedAt: string;
 };
 
+export type CalendarStaffUnavailability = {
+  id: string;
+  staff: string;
+  startDate: string;
+  endDate: string;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  updatedBy: string;
+  updatedAt: string;
+};
+
 type GoogleEvent = LegacyCalendarEvent & {
   id?: string;
   summary?: string;
@@ -299,6 +311,7 @@ export async function listCalendarData(request: Request, from: string, to: strin
   const bookingEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "booking");
   const extraEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "extra_day");
   const closureEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "schedule_closure");
+  const unavailableEvents = allEvents.filter((event) => event.extendedProperties?.private?.or_queue === "staff_unavailable");
   const taggedBookings = bookingEvents.flatMap((event): CalendarBooking[] => {
     const booking = bookingFromEvent(event);
     return booking ? [booking] : [];
@@ -344,7 +357,24 @@ export async function listCalendarData(request: Request, from: string, to: strin
       updatedAt: event.updated || data.created_at || "",
     }];
   }).sort((a, b) => a.date.localeCompare(b.date));
-  return { bookings, extras, closures };
+  const staffUnavailability = unavailableEvents.flatMap((event): CalendarStaffUnavailability[] => {
+    const data = event.extendedProperties?.private;
+    const startDate = event.start?.date;
+    if (!event.id || !data || !startDate) return [];
+    const end = event.end?.date;
+    return [{
+      id: event.id,
+      staff: data.staff || "",
+      startDate,
+      endDate: end ? addDays(end, -1) : startDate,
+      note: data.note || "",
+      createdBy: data.created_by || AUTHORIZED_EMAIL,
+      createdAt: data.created_at || event.created || event.updated || "",
+      updatedBy: data.updated_by || AUTHORIZED_EMAIL,
+      updatedAt: event.updated || data.created_at || "",
+    }];
+  }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.staff.localeCompare(b.staff));
+  return { bookings, extras, closures, staffUnavailability };
 }
 
 async function deterministicId(prefix: string, value: string) {
@@ -654,6 +684,47 @@ export async function saveScheduleClosureEvent(
 }
 
 export async function deleteScheduleClosureEvent(request: Request, id: string) {
+  await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function saveStaffUnavailabilityEvent(
+  request: Request,
+  entry: { id?: string; staff: string; startDate: string; endDate: string; note: string; updatedBy: string; createdAt?: string; createdBy?: string },
+): Promise<string> {
+  const now = new Date().toISOString();
+  const body = JSON.stringify({
+    summary: `${entry.staff} ไม่ว่าง${entry.note ? ` • ${entry.note}` : ""}`,
+    description: [
+      `วันที่ staff ไม่ว่าง`,
+      `Staff: ${entry.staff}`,
+      `ช่วงวันที่: ${entry.startDate} ถึง ${entry.endDate}`,
+      `หมายเหตุ: ${entry.note || "-"}`,
+      `แก้ไขโดย: ${entry.updatedBy}`,
+    ].join("\n"),
+    start: { date: entry.startDate },
+    end: { date: addDays(entry.endDate, 1) },
+    colorId: "8",
+    transparency: "transparent",
+    extendedProperties: { private: {
+      or_queue: "staff_unavailable",
+      staff: entry.staff,
+      note: entry.note,
+      created_by: entry.createdBy || entry.updatedBy,
+      created_at: entry.createdAt || now,
+      updated_by: entry.updatedBy,
+    } },
+  });
+  if (entry.id) {
+    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(entry.id)}`, { method: "PATCH", body });
+    return entry.id;
+  }
+  const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
+  const created = (await response.json()) as { id?: string };
+  if (!created.id) throw new Error("Google Calendar ไม่ส่งรหัสรายการกลับมา");
+  return created.id;
+}
+
+export async function deleteStaffUnavailabilityEvent(request: Request, id: string): Promise<void> {
   await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 

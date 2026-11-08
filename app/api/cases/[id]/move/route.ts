@@ -4,7 +4,8 @@ import {
   restoreCalendarBooking,
   type QueueType,
 } from "../../../../lib/calendar";
-import { destinationError, getSchedule, nextAvailableSlot } from "../../../../lib/queue";
+import { destinationError, getSchedule, nextAvailableSlot, staffBlockedOn } from "../../../../lib/queue";
+import { staffUnavailableMessage } from "../../../../lib/staff-unavailability";
 import { patientDisplayName } from "../../../../lib/privacy";
 import { dateOnly, endOfRollingHorizon, isNormalDay } from "../../../../lib/schedule";
 
@@ -46,6 +47,10 @@ export async function PATCH(
     // restore this case to its previous date and ask the user to choose again.
     const verified = await getSchedule(request, date, date);
     const verifiedDay = verified.days.find((day) => day.date === date && day.queueType === queueType);
+    if (verifiedDay && staffBlockedOn(booking.staffMembers, verifiedDay)) {
+      await restoreCalendarBooking(request, id, move.before);
+      return Response.json({ error: staffUnavailableMessage(verifiedDay.unavailableStaff) }, { status: 409 });
+    }
     if (!verifiedDay || verifiedDay.closed || verifiedDay.count > verifiedDay.capacity) {
       await restoreCalendarBooking(request, id, move.before);
       return Response.json(
