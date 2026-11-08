@@ -16,7 +16,7 @@ test("protects the app with the exact authorized Google account", async () => {
 
 test("keeps the clinical queue safeguards in the server API", async () => {
   const route = await read("app/api/schedule/route.ts");
-  const queue = await read("app/lib/queue.ts");
+  const queue = (await read("app/lib/queue.ts")) + (await read("app/lib/destination.ts"));
   const schedule = await read("app/lib/schedule.ts");
   assert.match(queue, /day\.count === 3 && day\.cancerCount === 0/);
   assert.match(queue, /ช่องสุดท้ายของวันนี้รับ Cancer เท่านั้น/);
@@ -282,7 +282,7 @@ test("starts manual dates after the last dropdown option and prompts Calendar sy
 
 test("stores full-day schedule closures in Calendar and blocks every queue path", async () => {
   const calendar = await read("app/lib/calendar.ts");
-  const queue = await read("app/lib/queue.ts");
+  const queue = (await read("app/lib/queue.ts")) + (await read("app/lib/destination.ts"));
   const closureRoute = await read("app/api/schedule-closures/route.ts");
   const scheduleRoute = await read("app/api/schedule/route.ts");
   const moveRoute = await read("app/api/cases/[id]/move/route.ts");
