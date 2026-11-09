@@ -100,3 +100,16 @@ test("waiting-time export has a duration column after Operation", async () => {
   assert.match(route, /value: "Operation"[^\n]*\n\s*\{ value: "ระยะเวลาผ่าตัด \(นาที\)"/);
   assert.match(route, /booking\.durationMinutes \?\? ""/);
 });
+
+test("minutes 409 body names the day and room; popup is a single OK for kind minutes", async () => {
+  const route = await read("app/api/schedule/route.ts");
+  assert.match(route, /reason: "minutes_exceeded",\s*date,\s*queueType,/);
+  const ui = await read("app/SchedulerApp.tsx");
+  assert.match(ui, /kind\?: "minutes"/);
+  assert.equal((ui.match(/kind: "minutes"/g) || []).length, 3, "book, move, edit");
+  assert.match(ui, /payload\.date \? displayDate\(payload\.date, true\)/);
+  assert.match(ui, /payload\.queueType \|\|/);
+  assert.match(ui, /bookingConflict\.kind !== "minutes" && <h3/);
+  assert.match(ui, /bookingConflict\.kind === "minutes" \? \(\s*<button[\s\S]{0,80}>ตกลง<\/button>/);
+  assert.match(ui, /editDialog\.error && <p id="edit-duration-error" role="alert">/);
+});

@@ -140,6 +140,8 @@ export async function POST(request: Request) {
         {
           error: minutesRefusalMessage(refusal, queueType === "EXTRA" ? "OR Extra" : "OR 17", date),
           reason: "minutes_exceeded",
+          date,
+          queueType,
           minutes: { booked: refusal.booked, remaining: refusal.remaining, requested: refusal.requested, over: refusal.over, limit: refusal.limit },
           suggestions: alternativeDays,
         },

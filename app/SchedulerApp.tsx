@@ -114,6 +114,7 @@ type QueueSuggestion = {
 
 type BookingConflict = {
   heading?: string;
+  kind?: "minutes";
   message: string;
   suggestions: QueueSuggestion[];
 };
@@ -166,7 +167,7 @@ const EMPTY_FORM = {
   requestedQueueType: "",
 };
 
-type MinutesPayload = { reason?: string; minutes?: MinutesRefusal };
+type MinutesPayload = { reason?: string; minutes?: MinutesRefusal; date?: string; queueType?: string };
 
 // Day-card / option text: only enforced room-days (every case has a duration) show minutes.
 function remainingMinutesText(day: { minutesEnforced: boolean; bookedMinutes: number }) {
@@ -1051,13 +1052,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       if (!response.ok) {
         const message = payload.error || "บันทึกไม่สำเร็จ";
         if (response.status === 409 && payload.reason === "minutes_exceeded" && payload.minutes) {
-          const roomLabel = (selectedQueueType || "OR17") === "EXTRA" ? "OR Extra" : "OR 17";
+          const roomLabel = (payload.queueType || selectedQueueType || "OR17") === "EXTRA" ? "OR Extra" : "OR 17";
+          const dayText = payload.date ? displayDate(payload.date, true) : selectedSurgeryDate ? displayDate(selectedSurgeryDate, true) : "";
           setBookingConflict({
             heading: "ลงคิวไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที",
-            message: minutesRefusalMessage(payload.minutes, roomLabel, selectedSurgeryDate ? displayDate(selectedSurgeryDate, true) : ""),
+            kind: "minutes",
+            message: minutesRefusalMessage(payload.minutes, roomLabel, dayText),
             suggestions: payload.suggestions || [],
           });
-        } else if (response.status === 409) {
+          return;
+        }
+        if (response.status === 409) {
           setBookingConflict({ message, suggestions: payload.suggestions || [] });
         }
         setNotice({ type: "error", text: message });
@@ -1313,6 +1318,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       if (response.status === 409 && payload.reason === "minutes_exceeded" && payload.minutes) {
         setBookingConflict({
           heading: "สลับวันไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที",
+          kind: "minutes",
           message: minutesRefusalMessage(payload.minutes, queueType === "EXTRA" ? "OR Extra" : "OR 17", displayDate(date, true)),
           suggestions: [],
         });
@@ -1371,6 +1377,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         setEditDialog(null);
         setBookingConflict({
           heading: "แก้ระยะเวลาไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที",
+          kind: "minutes",
           message: minutesRefusalMessage(payload.minutes, booking.queueType === "EXTRA" ? "OR Extra" : "OR 17", displayDate(booking.scheduleDate, true)),
           suggestions: [],
         });
@@ -1501,8 +1508,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <button ref={conflictCloseRef} className="queue-conflict-close" type="button" aria-label="ปิดคำเตือน" onClick={() => setBookingConflict(null)}>×</button>
             <span className="queue-conflict-icon" aria-hidden="true">!</span>
             <div className="queue-conflict-heading">
-              <span>{bookingConflict.heading || "ไม่สามารถลงคิวที่เลือกได้"}</span>
-              <h3 id="queue-conflict-title">กรุณาเลือกคิวใหม่</h3>
+              <span id={bookingConflict.kind === "minutes" ? "queue-conflict-title" : undefined}>{bookingConflict.heading || "ไม่สามารถลงคิวที่เลือกได้"}</span>
+              {bookingConflict.kind !== "minutes" && <h3 id="queue-conflict-title">กรุณาเลือกคิวใหม่</h3>}
               <p id="queue-conflict-message">{bookingConflict.message}</p>
             </div>
             {bookingConflict.suggestions.length > 0 ? (
@@ -1515,10 +1522,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   </button>
                 ))}
               </div>
-            ) : (
+            ) : bookingConflict.kind === "minutes" ? null : (
               <p className="queue-suggestion-empty">ยังไม่พบคิวอื่นที่ตรงทุกเงื่อนไขในช่วง 12 เดือน กรุณาปิดหน้าต่างแล้วเปลี่ยนเงื่อนไข Staff หรือเลือก “ห้องไหนก็ได้ที่ยังว่าง”</p>
             )}
-            <small className="queue-conflict-footnote">การเลือกจากรายการนี้ยังไม่บันทึกคิว กรุณาตรวจสอบข้อมูลแล้วกด “ตรวจสอบและบันทึกคิว” อีกครั้ง</small>
+            {bookingConflict.kind === "minutes" ? (
+              <button type="button" onClick={() => setBookingConflict(null)}>ตกลง</button>
+            ) : (
+              <small className="queue-conflict-footnote">การเลือกจากรายการนี้ยังไม่บันทึกคิว กรุณาตรวจสอบข้อมูลแล้วกด “ตรวจสอบและบันทึกคิว” อีกครั้ง</small>
+            )}
           </section>
         </div>
       )}
@@ -1599,7 +1610,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <label className="field full"><span>ระยะเวลาผ่าตัด (นาที) <b>*</b></span>
                 <input ref={editInputRef} value={editDialog.value} onChange={(event) => setEditDialog((current) => current ? { ...current, value: event.target.value, error: "" } : null)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} aria-describedby="edit-duration-error" />
               </label>
-              <p id="edit-duration-error" role="alert">{editDialog.error}</p>
+              {editDialog.error && <p id="edit-duration-error" role="alert">{editDialog.error}</p>}
               <button type="submit" disabled={editSaving}>{editSaving ? "กำลังอัปเดต Calendar…" : "บันทึก"}</button>
               <button type="button" onClick={closeEditDialog} disabled={editSaving}>ยกเลิก</button>
             </form>
