@@ -41,3 +41,14 @@ test("legacy calendar events have no duration", async () => {
   const legacy = await read("app/lib/legacy-calendar.ts");
   assert.match(legacy, /durationMinutes: null/);
 });
+
+test("booking route enforces the 360-minute room-day limit", async () => {
+  const route = await read("app/api/schedule/route.ts");
+  assert.match(route, /durationInputError\(/);
+  assert.ok((route.match(/minutesRefusal\(/g) || []).length >= 2, "pre-write filter and post-write re-check");
+  assert.match(route, /reason: "minutes_exceeded"/);
+  assert.match(route, /roomDayDurations\(verified\.bookings, selected\.date, selected\.queueType, id\)/);
+  assert.match(route, /durationMinutes,/);
+  const recheck = route.slice(route.indexOf("roomDayDurations(verified.bookings"));
+  assert.match(recheck.slice(0, recheck.indexOf("status: 409")), /deleteBookingEvent\(request, id\)/);
+});
