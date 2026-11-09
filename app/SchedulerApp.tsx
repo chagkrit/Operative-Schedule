@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
+import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
@@ -21,6 +22,8 @@ type Day = {
   closureName: string;
   closureNote: string;
   unavailableStaff: string[];
+  bookedMinutes: number;
+  minutesEnforced: boolean;
 };
 
 type StaffUnavailability = {
@@ -59,6 +62,7 @@ type Booking = {
   operation: string;
   note: string;
   staffMembers: string[];
+  durationMinutes: number | null;
   calendarSyncStatus: "pending" | "synced" | "failed";
 };
 
@@ -99,6 +103,7 @@ type SearchResult = {
   scheduleDate: string;
   queueType: "OR17" | "EXTRA";
   slotNo: number;
+  durationMinutes: number | null;
 };
 
 type QueueSuggestion = {
@@ -108,6 +113,7 @@ type QueueSuggestion = {
 };
 
 type BookingConflict = {
+  heading?: string;
   message: string;
   suggestions: QueueSuggestion[];
 };
@@ -151,6 +157,7 @@ const EMPTY_FORM = {
   lastName: "",
   phone: "",
   operation: "",
+  durationMinutes: "",
   note: "",
   neoadjuvantTreatment: false,
   staffMembers: [] as string[],
@@ -158,6 +165,17 @@ const EMPTY_FORM = {
   requestedDate: "",
   requestedQueueType: "",
 };
+
+type MinutesPayload = { reason?: string; minutes?: MinutesRefusal };
+
+// Day-card / option text: only enforced room-days (every case has a duration) show minutes.
+function remainingMinutesText(day: { minutesEnforced: boolean; bookedMinutes: number }) {
+  return day.minutesEnforced ? ` · เหลือ ${Math.max(0, DAILY_MINUTES_LIMIT - day.bookedMinutes)} นาที` : "";
+}
+
+function durationText(minutes: number | null | undefined) {
+  return typeof minutes === "number" ? `${minutes} นาที` : "";
+}
 
 function staffLabel(staffMembers: readonly string[]) {
   return staffMembers.join(", ") || "ไม่ระบุ";
@@ -319,7 +337,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
           : selectedSummaries.length > 0 ? selectedSummaries.map((day) => (
           <p key={`${day.date}:${day.queueType}`}>
             <b>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</b>
-            <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}</span>
+            <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}{day.minutesEnforced ? ` · ใช้ไป ${day.bookedMinutes}/${DAILY_MINUTES_LIMIT} นาที` : ""}</span>
           </p>
         )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
         {selectedUnavailableStaff.length > 0 && (
@@ -347,7 +365,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
                 <div className="month-booking-detail">
                   <strong>{booking.operation}</strong>
                   <span>{booking.patientName} · HN ••••{booking.hn.slice(-4)}</span>
-                  <small>{booking.diagnosis} · {staffLabel(booking.staffMembers)} · {booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</small>
+                  <small>{booking.diagnosis} · {staffLabel(booking.staffMembers)} · {booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"}{booking.durationMinutes !== null ? ` · ${durationText(booking.durationMinutes)}` : ""}</small>
                   <ClashBadge booking={booking} entries={staffUnavailability} />
                 </div>
                 <StatusDot synced={booking.calendarSyncStatus === "synced"} />
@@ -436,7 +454,7 @@ function ManualDateCalendar({
     if (staffQueuePreference === "same_staff" && !staffDayKeys.has(`${day.date}:${day.queueType}`)) {
       return { available: false, label: "Staff", detail: "ไม่พบเคสของ Staff ที่เลือกในวันนี้", day };
     }
-    return { available: true, label: "ว่าง", detail: `ว่าง ${day.capacity - day.count} เคส${staffStatus.unavailableStaff.length ? ` · ${staffStatus.unavailableStaff.join(", ")} ไม่ว่าง` : ""}`, day };
+    return { available: true, label: "ว่าง", detail: `ว่าง ${day.capacity - day.count} เคส${remainingMinutesText(day)}${staffStatus.unavailableStaff.length ? ` · ${staffStatus.unavailableStaff.join(", ")} ไม่ว่าง` : ""}`, day };
   }
 
   const selectedAvailability = selectedDate ? availabilityFor(selectedDate) : null;
@@ -520,6 +538,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [moving, setMoving] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<{ booking: SearchResult; typedHn: string; step: "verify" | "confirm" } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [moveDuration, setMoveDuration] = useState("");
+  const [editDialog, setEditDialog] = useState<{ booking: SearchResult; value: string; error: string } | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
   const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
   const [showSyncPrompt, setShowSyncPrompt] = useState(false);
   const [activeDeviceCount, setActiveDeviceCount] = useState(1);
@@ -586,6 +607,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const deleteHnRef = useRef<HTMLInputElement>(null);
   const deleteConfirmRef = useRef<HTMLButtonElement>(null);
   const deleteDialogRef = useRef<HTMLElement>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
+  const editTriggerRef = useRef<HTMLButtonElement | null>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async (showSuccess = false) => {
@@ -616,11 +639,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog) return;
+    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deleting) {
+      if (event.key === "Escape" && !deleting && !editSaving) {
         setBookingConflict(null);
+        setEditDialog(null);
+        if (editDialog) requestAnimationFrame(() => editTriggerRef.current?.focus());
         setShowSyncPrompt(false);
         setPendingClosure(null);
         setPendingUnavailability(null);
@@ -655,13 +680,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     document.body.style.overflow = "hidden";
     (deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
-      : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
+      : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, deleteDialog, deleting, pendingClosure, pendingUnavailability, showSyncPrompt]);
+  }, [bookingConflict, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, showSyncPrompt]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -774,9 +799,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     [dropdownOpenDays, staffBlocked],
   );
   const upcomingDays = data?.days.slice(0, 8) || [];
+  const typedDuration = useMemo(() => parseDurationMinutes(form.durationMinutes), [form.durationMinutes]);
+  // Durations of every case on a room-day (client view; the server is the authority).
+  const minutesRefused = useCallback((day: Day, duration: number, previous?: number | null) => {
+    const others = (data?.bookings || [])
+      .filter((booking) => booking.scheduleDate === day.date && booking.queueType === day.queueType)
+      .map((booking) => booking.durationMinutes);
+    return minutesRefusal(others, previous, duration) !== null;
+  }, [data]);
   const nextCancerDay = useMemo(
-    () => availableDays[0],
-    [availableDays],
+    () => typedDuration === null ? availableDays[0] : availableDays.find((day) => !minutesRefused(day, typedDuration)),
+    [availableDays, minutesRefused, typedDuration],
   );
   const manualDateStart = useMemo(() => {
     const dropdownDays = cancer ? dropdownOpenDays : normalOptionDays;
@@ -983,6 +1016,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setNotice({ type: "error", text: `ยังบันทึกไม่ได้ กรุณากรอก: ${missing.join(", ")}` });
       return;
     }
+    const durationError = durationInputError(form.durationMinutes);
+    if (durationError) {
+      setNotice({ type: "error", text: durationError });
+      return;
+    }
     if (form.dateEntryMode === "manual" && form.requestedDate && form.requestedDate < manualDateStart) {
       setNotice({ type: "error", text: `ระบุวันเองได้ตั้งแต่ ${displayDate(manualDateStart)} เป็นต้นไป` });
       return;
@@ -1009,10 +1047,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         message?: string;
         booking?: { date: string; queueType: string };
         suggestions?: QueueSuggestion[];
-      };
+      } & MinutesPayload;
       if (!response.ok) {
         const message = payload.error || "บันทึกไม่สำเร็จ";
-        if (response.status === 409) {
+        if (response.status === 409 && payload.reason === "minutes_exceeded" && payload.minutes) {
+          const roomLabel = (selectedQueueType || "OR17") === "EXTRA" ? "OR Extra" : "OR 17";
+          setBookingConflict({
+            heading: "ลงคิวไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที",
+            message: minutesRefusalMessage(payload.minutes, roomLabel, selectedSurgeryDate ? displayDate(selectedSurgeryDate, true) : ""),
+            suggestions: payload.suggestions || [],
+          });
+        } else if (response.status === 409) {
           setBookingConflict({ message, suggestions: payload.suggestions || [] });
         }
         setNotice({ type: "error", text: message });
@@ -1248,15 +1293,31 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       return;
     }
     const [date, queueType] = moveTarget.split("|");
+    const needsDuration = selectedCase.durationMinutes === null;
+    if (needsDuration) {
+      const durationError = durationInputError(moveDuration);
+      if (durationError) {
+        setNotice({ type: "error", text: durationError });
+        return;
+      }
+    }
     setMoving(true);
     setNotice(null);
     try {
       const response = await fetch(`/api/cases/${encodeURIComponent(selectedCase.id)}/move`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ date, queueType }),
+        body: JSON.stringify(needsDuration ? { date, queueType, durationMinutes: moveDuration.trim() } : { date, queueType }),
       });
-      const payload = (await response.json()) as { error?: string; message?: string; move?: { id: string; fromDate: string; toDate: string; movedAt: string } };
+      const payload = (await response.json()) as { error?: string; message?: string; move?: { id: string; fromDate: string; toDate: string; movedAt: string } } & MinutesPayload;
+      if (response.status === 409 && payload.reason === "minutes_exceeded" && payload.minutes) {
+        setBookingConflict({
+          heading: "สลับวันไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที",
+          message: minutesRefusalMessage(payload.minutes, queueType === "EXTRA" ? "OR Extra" : "OR 17", displayDate(date, true)),
+          suggestions: [],
+        });
+        return;
+      }
       if (!response.ok) throw new Error(payload.error || "สลับวันผ่าตัดไม่สำเร็จ");
       setNotice({
         type: "success",
@@ -1264,6 +1325,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       });
       setSelectedCase(null);
       setMoveTarget("");
+      setMoveDuration("");
       markOwnMove(payload.move!.id, payload.move!.movedAt);
       await loadSchedule();
       await searchCases();
@@ -1271,6 +1333,61 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setNotice({ type: "error", text: error instanceof Error ? error.message : "สลับวันผ่าตัดไม่สำเร็จ" });
     } finally {
       setMoving(false);
+    }
+  }
+
+  function openEditDialog(booking: SearchResult, trigger: HTMLButtonElement) {
+    setNotice(null);
+    editTriggerRef.current = trigger;
+    setEditDialog({ booking, value: booking.durationMinutes === null ? "" : String(booking.durationMinutes), error: "" });
+  }
+
+  function closeEditDialog() {
+    if (!editSaving) {
+      setEditDialog(null);
+      requestAnimationFrame(() => editTriggerRef.current?.focus());
+    }
+  }
+
+  async function saveDuration(event: FormEvent) {
+    event.preventDefault();
+    if (!editDialog) return;
+    const inputError = durationInputError(editDialog.value);
+    if (inputError) {
+      setEditDialog((current) => current ? { ...current, error: inputError } : null);
+      return;
+    }
+    const { booking } = editDialog;
+    setEditSaving(true);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(booking.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ durationMinutes: editDialog.value.trim() }),
+      });
+      const payload = (await response.json()) as { error?: string; message?: string } & MinutesPayload;
+      if (response.status === 409 && payload.reason === "minutes_exceeded" && payload.minutes) {
+        setEditDialog(null);
+        setBookingConflict({
+          heading: "แก้ระยะเวลาไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที",
+          message: minutesRefusalMessage(payload.minutes, booking.queueType === "EXTRA" ? "OR Extra" : "OR 17", displayDate(booking.scheduleDate, true)),
+          suggestions: [],
+        });
+        return;
+      }
+      if (!response.ok) {
+        setEditDialog((current) => current ? { ...current, error: payload.error || "แก้ระยะเวลาไม่สำเร็จ" } : null);
+        return;
+      }
+      setEditDialog(null);
+      setNotice({ type: "success", text: payload.message || "แก้ระยะเวลาผ่าตัดแล้ว" });
+      await loadSchedule();
+      await searchCases();
+    } catch (error) {
+      setEditDialog((current) => current ? { ...current, error: error instanceof Error ? error.message : "แก้ระยะเวลาไม่สำเร็จ" } : null);
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -1384,7 +1501,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <button ref={conflictCloseRef} className="queue-conflict-close" type="button" aria-label="ปิดคำเตือน" onClick={() => setBookingConflict(null)}>×</button>
             <span className="queue-conflict-icon" aria-hidden="true">!</span>
             <div className="queue-conflict-heading">
-              <span>ไม่สามารถลงคิวที่เลือกได้</span>
+              <span>{bookingConflict.heading || "ไม่สามารถลงคิวที่เลือกได้"}</span>
               <h3 id="queue-conflict-title">กรุณาเลือกคิวใหม่</h3>
               <p id="queue-conflict-message">{bookingConflict.message}</p>
             </div>
@@ -1470,6 +1587,26 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       )}
 
+      {editDialog && (
+        <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeEditDialog()}>
+          <section className="queue-conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-duration-title">
+            <button className="queue-conflict-close" type="button" aria-label="ปิดหน้าต่าง" onClick={closeEditDialog}>×</button>
+            <div className="queue-conflict-heading">
+              <span>{editDialog.booking.patientName} · {displayDate(editDialog.booking.scheduleDate, true)} · {editDialog.booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</span>
+              <h3 id="edit-duration-title">แก้ระยะเวลาผ่าตัด</h3>
+            </div>
+            <form onSubmit={saveDuration} noValidate>
+              <label className="field full"><span>ระยะเวลาผ่าตัด (นาที) <b>*</b></span>
+                <input ref={editInputRef} value={editDialog.value} onChange={(event) => setEditDialog((current) => current ? { ...current, value: event.target.value, error: "" } : null)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} aria-describedby="edit-duration-error" />
+              </label>
+              <p id="edit-duration-error" role="alert">{editDialog.error}</p>
+              <button type="submit" disabled={editSaving}>{editSaving ? "กำลังอัปเดต Calendar…" : "บันทึก"}</button>
+              <button type="button" onClick={closeEditDialog} disabled={editSaving}>ยกเลิก</button>
+            </form>
+          </section>
+        </div>
+      )}
+
       {deleteDialog && (
         <div className="queue-conflict-backdrop delete-case-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDeleteDialog()}>
           {deleteDialog.step === "verify" ? (
@@ -1536,6 +1673,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               <label className="field"><span>ชื่อ <b>*</b></span><input value={form.firstName} onChange={(e) => updateField("firstName", e.target.value)} placeholder="ชื่อผู้ป่วย" /></label>
               <label className="field"><span>สกุล <b>*</b></span><input value={form.lastName} onChange={(e) => updateField("lastName", e.target.value)} placeholder="นามสกุล" /></label>
               <label className="field full"><span>Operation <b>*</b></span><input value={form.operation} onChange={(e) => updateField("operation", e.target.value)} placeholder="ชื่อหัตถการ / การผ่าตัด" /></label>
+              <label className="field full"><span>ระยะเวลาผ่าตัด (นาที) <b>*</b></span><input value={form.durationMinutes} onChange={(e) => updateField("durationMinutes", e.target.value)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} /><small className="field-help">เวลาผ่าตัดรวมต่อห้องต่อวันไม่เกิน {DAILY_MINUTES_LIMIT} นาที</small></label>
               <label className="field full neoadjuvant-field"><span>Neoadjuvant treatment</span><span className="neoadjuvant-choice"><input type="checkbox" checked={form.neoadjuvantTreatment} onChange={(event) => setForm((current) => ({ ...current, neoadjuvantTreatment: event.target.checked }))} />เคยได้รับการรักษาแบบ neoadjuvant มาก่อน</span><small className="field-help">หากไม่เลือก ระบบจะบันทึกว่า “ไม่ได้รับ”</small></label>
               <label className="field full note-field"><span>หมายเหตุ</span><textarea value={form.note} onChange={(e) => updateField("note", e.target.value)} placeholder="ระบุรายละเอียดเพิ่มเติม (ถ้ามี)" maxLength={1000} rows={3} /></label>
               <div className="field staff-field">
@@ -1566,7 +1704,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                             const label = `${displayDate(day.date, true)} · ${day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}`;
                             return status.blocked
                               ? <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`} disabled>{label} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
-                              : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{label} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                              : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{label} · ว่าง {day.capacity - day.count}{remainingMinutesText(day)}{partialStaffSuffix(status.unavailableStaff)}</option>;
                           })}
                         </select>
                       ) : (
@@ -1576,7 +1714,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                             const status = staffBlocked(day);
                             return status.blocked
                               ? <option key={day.date} value={day.date} disabled>{displayDate(day.date, true)} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
-                              : <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                              : <option key={day.date} value={day.date}>{displayDate(day.date, true)} · ว่าง {day.capacity - day.count}{remainingMinutesText(day)}{partialStaffSuffix(status.unavailableStaff)}</option>;
                           })}
                         </select>
                       )
@@ -1696,11 +1834,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 return <article className={`day-card ${day.queueType === "EXTRA" ? "extra" : ""} ${day.closed ? "closed" : ""}`} key={`${day.date}:${day.queueType}`}>
                   <div className="date-block"><strong>{new Date(`${day.date}T12:00:00+07:00`).getDate()}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short" }).format(new Date(`${day.date}T12:00:00+07:00`))}</span></div>
                   <div className="day-main"><div className="day-title"><div><strong>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</strong><span>{displayDate(day.date, true)} · {day.note}</span></div><em>{day.count}/{day.capacity}</em></div>
+                    {day.minutesEnforced && <p className="minutes-line">ใช้ไป {day.bookedMinutes}/{DAILY_MINUTES_LIMIT} นาที</p>}
                     <div className="capacity-bar"><i style={{ width: `${Math.min(100, (day.count / day.capacity) * 100)}%` }} /></div>
                     {day.closed && <p className="closure-line">ปิดรับคิว · {day.closureName}{day.closureNote ? ` — ${day.closureNote}` : ""}</p>}
                     {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                     {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
-                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
+                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}{row.durationMinutes !== null ? ` · ${durationText(row.durationMinutes)}` : ""}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
                     {remaining <= 0 && <span className="full-label">คิวเต็ม</span>}
                   </div>
                 </article>;
@@ -1790,10 +1929,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             {searched && !searching && searchResults.length === 0 && <div className="case-empty">ไม่พบเคสที่ตรงกับคำค้น</div>}
             {searchResults.map((result) => (
               <article className={`case-result ${selectedCase?.id === result.id ? "selected" : ""}`} key={result.id}>
-                <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); setDeleteDialog(null); }}>
+                <button type="button" onClick={() => { setSelectedCase(result); setMoveTarget(""); setMoveDuration(""); setDeleteDialog(null); }}>
                   <span className="case-identity"><strong>{result.patientName}</strong><small>HN {result.hn} · {result.diagnosis}</small></span>
                   <span className="case-current"><strong>{displayDate(result.scheduleDate, true)}</strong><small>{result.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${result.slotNo}`}</small></span>
-                  <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}</small><ClashBadge booking={result} entries={data?.staffUnavailability || []} /></span>
+                  <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}{result.durationMinutes !== null ? ` · ${durationText(result.durationMinutes)}` : ""}</small><ClashBadge booking={result} entries={data?.staffUnavailability || []} /></span>
                   <span className="select-case">{selectedCase?.id === result.id ? "เลือกแล้ว" : "เลือกสลับวัน"}</span>
                 </button>
                 {selectedCase?.id === result.id && (
@@ -1806,10 +1945,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         const status = caseStaffStatus(result.staffMembers, day.unavailableStaff, STAFF);
                         return status.blocked
                           ? <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`} disabled>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ไม่ว่าง: {status.unavailableStaff.join(", ")}</option>
-                          : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}{partialStaffSuffix(status.unavailableStaff)}</option>;
+                          : <option key={`${day.date}:${day.queueType}`} value={`${day.date}|${day.queueType}`}>{displayDate(day.date, true)} · {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · ว่าง {day.capacity - day.count}{remainingMinutesText(day)}{partialStaffSuffix(status.unavailableStaff)}</option>;
                       })}
                     </select>
+                    {result.durationMinutes === null && (
+                      <>
+                        <label htmlFor={`move-duration-${result.id}`}>ระยะเวลาผ่าตัด (นาที) <b>*</b></label>
+                        <input id={`move-duration-${result.id}`} value={moveDuration} onChange={(event) => setMoveDuration(event.target.value)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} />
+                      </>
+                    )}
                     <button type="submit" disabled={moving || !moveTargetDay}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    {result.scheduleDate >= bangkokToday() && <button type="button" onClick={(event) => openEditDialog(result, event.currentTarget)}>แก้ระยะเวลา</button>}
                     <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
                     {moveTargetStale && (

@@ -73,3 +73,24 @@ test("PATCH /api/cases/[id] edits duration with checks and rollback", async () =
 test("search results include durationMinutes", async () => {
   assert.match(await read("app/api/cases/search/route.ts"), /durationMinutes/);
 });
+
+test("client UI: duration field, remaining minutes, edit dialog and 360 popup", async () => {
+  const ui = await read("app/SchedulerApp.tsx");
+  assert.match(ui, /const EMPTY_FORM = \{[\s\S]*?durationMinutes: ""/);
+  assert.match(ui, /ระยะเวลาผ่าตัด \(นาที\)/);
+  assert.match(ui, /value=\{form\.durationMinutes\}[^\n]*inputMode="numeric"/);
+  assert.match(ui, /durationInputError\(form\.durationMinutes\)/);
+  assert.match(ui, /minutesEnforced[\s\S]{0,200}เหลือ[\s\S]{0,80}นาที/);
+  assert.match(ui, /ใช้ไป [\s\S]{0,60}นาที/);
+  assert.match(ui, /fetch\(`\/api\/cases\/\$\{[^}]+\}`, \{\s*method: "PATCH"[\s\S]{0,200}durationMinutes/);
+  assert.match(ui, /แก้ระยะเวลา/);
+  assert.match(ui, /type BookingConflict = \{[^}]*heading\?: string/);
+  assert.equal((ui.match(/reason === "minutes_exceeded"/g) || []).length >= 3, true, "submitBooking, moveCase, edit handler");
+  assert.ok((ui.match(/setBookingConflict\(\{\s*heading/g) || []).length >= 3);
+  for (const heading of ["ลงคิวไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที", "สลับวันไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที", "แก้ระยะเวลาไม่ได้: เวลาผ่าตัดรวมเกิน 360 นาที"]) {
+    assert.ok(ui.includes(heading), heading);
+  }
+  assert.match(ui, /bookingConflict\.heading/);
+  assert.match(ui, /minutesRefusalMessage\(/);
+  assert.match(ui, /minutesRefusal\(/);
+});
