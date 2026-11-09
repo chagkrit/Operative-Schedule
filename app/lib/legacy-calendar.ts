@@ -76,6 +76,7 @@ export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0)
     diagnosis,
     isCancer,
     neoadjuvantTreatment: null,
+    durationMinutes: null,
     hn,
     firstName: patientName,
     lastName: "",

@@ -1,6 +1,7 @@
 import { getToken } from "next-auth/jwt";
 import { AUTHORIZED_EMAIL } from "../../auth";
 import { addDays, daysBetween, orderedStaffMembers } from "./schedule";
+import { parseDurationMinutes } from "./minutes";
 import { calendarEventDate, calendarTimestampDate, parseLegacyCalendarEvent, type LegacyCalendarEvent } from "./legacy-calendar";
 
 export type QueueType = "OR17" | "EXTRA";
@@ -14,6 +15,7 @@ export type CalendarBooking = {
   diagnosis: string;
   isCancer: boolean;
   neoadjuvantTreatment: boolean | null;
+  durationMinutes: number | null;
   hn: string;
   firstName: string;
   lastName: string;
@@ -290,6 +292,7 @@ function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
       : data.neoadjuvant_treatment === "false"
         ? false
         : null,
+    durationMinutes: parseDurationMinutes(data.duration_minutes),
     hn: data.hn || "",
     firstName: data.first_name || "",
     lastName: data.last_name || "",
@@ -389,7 +392,7 @@ function maskedHn(hn: string) {
 
 export async function createBookingEvent(
   request: Request,
-  booking: Omit<CalendarBooking, "id" | "lastMoveFrom" | "lastMoveTo" | "lastMoveAt" | "moveCount">,
+  booking: Omit<CalendarBooking, "id" | "durationMinutes" | "lastMoveFrom" | "lastMoveTo" | "lastMoveAt" | "moveCount"> & { durationMinutes: number },
 ) {
   const id = `oq${crypto.randomUUID().replaceAll("-", "")}`;
   const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
@@ -400,20 +403,7 @@ export async function createBookingEvent(
       body: JSON.stringify({
         id,
         summary: `${room} #${booking.slotNo} • ${booking.operation} • HN ${maskedHn(booking.hn)}`,
-        description: [
-          `Diagnosis: ${booking.diagnosis}`,
-          `Neoadjuvant treatment: ${neoadjuvantLabel(booking.neoadjuvantTreatment)}`,
-          `HN: ${booking.hn}`,
-          `ชื่อ-สกุล: ${booking.firstName} ${booking.lastName}`,
-          `Tel: ${booking.phone}`,
-          `Operation: ${booking.operation}`,
-          `หมายเหตุ: ${booking.note || "-"}`,
-          `วันที่ลงคิว: ${booking.queuedDate}`,
-          `ระยะเวลารอผ่าตัด: ${daysBetween(booking.queuedDate, booking.scheduleDate)} วัน`,
-          `Staff: ${staffLine(booking.staffMembers)}`,
-          `ประเภทคิว: ${room}`,
-          `ลงคิวโดย: ${booking.bookedByEmail}`,
-        ].join("\n"),
+        description: eventDescription({ ...booking, id, lastMoveFrom: "", lastMoveTo: "", lastMoveAt: "", moveCount: 0 }),
         location: room,
         ...timing,
         colorId: staffEventColor(booking.staffMembers),
@@ -425,6 +415,7 @@ export async function createBookingEvent(
           diagnosis: booking.diagnosis,
           is_cancer: String(booking.isCancer),
           neoadjuvant_treatment: booking.neoadjuvantTreatment === null ? "" : String(booking.neoadjuvantTreatment),
+          duration_minutes: String(booking.durationMinutes),
           hn: booking.hn,
           first_name: booking.firstName,
           last_name: booking.lastName,
@@ -511,16 +502,66 @@ function eventDescription(booking: CalendarBooking) {
     `หมายเหตุ: ${booking.note || "-"}`,
     `วันที่ลงคิว: ${booking.queuedDate}`,
     `ระยะเวลารอผ่าตัด: ${daysBetween(booking.queuedDate, booking.scheduleDate)} วัน`,
+    `ระยะเวลาผ่าตัด: ${booking.durationMinutes === null ? "-" : `${booking.durationMinutes} นาที`}`,
     `Staff: ${staffLine(booking.staffMembers)}`,
     `ประเภทคิว: ${room}`,
     `ลงคิวโดย: ${booking.bookedByEmail}`,
   ].join("\n");
 }
 
+function bookingPrivateData(booking: CalendarBooking, previousPrivate: Record<string, string>) {
+  return {
+    ...previousPrivate,
+    or_queue: "booking",
+    queue_type: booking.queueType,
+    slot_no: String(booking.slotNo),
+    diagnosis: booking.diagnosis,
+    is_cancer: String(booking.isCancer),
+    neoadjuvant_treatment: booking.neoadjuvantTreatment === null ? "" : String(booking.neoadjuvantTreatment),
+    duration_minutes: booking.durationMinutes === null ? "" : String(booking.durationMinutes),
+    hn: booking.hn,
+    first_name: booking.firstName,
+    last_name: booking.lastName,
+    phone: booking.phone,
+    operation: booking.operation,
+    note: booking.note,
+    queued_date: booking.queuedDate,
+    staff: booking.staffMembers[0] || "",
+    staff_members: JSON.stringify(booking.staffMembers),
+    booked_by: booking.bookedByEmail,
+    imported_from_calendar: String(Boolean(booking.importedFromCalendar)),
+    last_move_from: booking.lastMoveFrom,
+    last_move_to: booking.lastMoveTo,
+    last_move_at: booking.lastMoveAt,
+    move_count: String(booking.moveCount),
+  };
+}
+
+async function patchBookingEvent(request: Request, id: string, booking: CalendarBooking, previousPrivate: Record<string, string>) {
+  const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
+  const timing = bookingEventTiming(booking.scheduleDate, booking.slotNo);
+  await googleFetch(
+    request,
+    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        summary: `${room} #${booking.slotNo} • ${booking.operation} • HN ${maskedHn(booking.hn)}`,
+        description: eventDescription(booking),
+        location: room,
+        ...timing,
+        colorId: staffEventColor(booking.staffMembers),
+        reminders: { useDefault: false, overrides: [] },
+        extendedProperties: { private: bookingPrivateData(booking, previousPrivate) },
+      }),
+    },
+  );
+}
+
 export async function moveCalendarBooking(
   request: Request,
   id: string,
-  target: { date: string; queueType: QueueType; slotNo: number },
+  target: { date: string; queueType: QueueType; slotNo: number; durationMinutes?: number },
 ) {
   const { booking, event } = await getCalendarBooking(request, id);
   const movedAt = new Date().toISOString();
@@ -529,54 +570,23 @@ export async function moveCalendarBooking(
     scheduleDate: target.date,
     queueType: target.queueType,
     slotNo: target.slotNo,
+    // duration_minutes is written by bookingPrivateData; keep the old value unless a new one is given
+    durationMinutes: target.durationMinutes ?? booking.durationMinutes,
     lastMoveFrom: booking.scheduleDate,
     lastMoveTo: target.date,
     lastMoveAt: movedAt,
     moveCount: booking.moveCount + 1,
   };
-  const room = moved.queueType === "OR17" ? "OR 17" : "OR Extra";
-  const privateData = {
-    ...(event.extendedProperties?.private || {}),
-    or_queue: "booking",
-    queue_type: moved.queueType,
-    slot_no: String(moved.slotNo),
-    diagnosis: moved.diagnosis,
-    is_cancer: String(moved.isCancer),
-    neoadjuvant_treatment: moved.neoadjuvantTreatment === null ? "" : String(moved.neoadjuvantTreatment),
-    hn: moved.hn,
-    first_name: moved.firstName,
-    last_name: moved.lastName,
-    phone: moved.phone,
-    operation: moved.operation,
-    note: moved.note,
-    queued_date: moved.queuedDate,
-    staff: moved.staffMembers[0] || "",
-    staff_members: JSON.stringify(moved.staffMembers),
-    booked_by: moved.bookedByEmail,
-    imported_from_calendar: String(Boolean(moved.importedFromCalendar)),
-    last_move_from: booking.scheduleDate,
-    last_move_to: moved.scheduleDate,
-    last_move_at: movedAt,
-    move_count: String(moved.moveCount),
-  };
-  const timing = bookingEventTiming(moved.scheduleDate, moved.slotNo);
-  await googleFetch(
-    request,
-    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({
-        summary: `${room} #${moved.slotNo} • ${moved.operation} • HN ${maskedHn(moved.hn)}`,
-        description: eventDescription(moved),
-        location: room,
-        ...timing,
-        colorId: staffEventColor(moved.staffMembers),
-        reminders: { useDefault: false, overrides: [] },
-        extendedProperties: { private: privateData },
-      }),
-    },
-  );
+  await patchBookingEvent(request, id, moved, event.extendedProperties?.private || {});
   return { before: booking, after: moved };
+}
+
+export async function updateBookingDuration(request: Request, id: string, durationMinutes: number) {
+  const { booking, event } = await getCalendarBooking(request, id);
+  const updated: CalendarBooking = { ...booking, durationMinutes };
+  // duration_minutes written via bookingPrivateData; or_queue becomes "booking" so legacy events get tagged
+  await patchBookingEvent(request, id, updated, event.extendedProperties?.private || {});
+  return { before: booking, after: updated };
 }
 
 export async function restoreCalendarBooking(
@@ -607,6 +617,7 @@ export async function restoreCalendarBooking(
           queue_type: booking.queueType,
           slot_no: String(booking.slotNo),
           neoadjuvant_treatment: booking.neoadjuvantTreatment === null ? "" : String(booking.neoadjuvantTreatment),
+          duration_minutes: booking.durationMinutes === null ? "" : String(booking.durationMinutes),
           last_move_from: booking.lastMoveFrom,
           last_move_to: booking.lastMoveTo,
           last_move_at: booking.lastMoveAt,
