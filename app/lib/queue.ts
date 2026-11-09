@@ -1,4 +1,5 @@
 import { listCalendarData, type CalendarBooking, type QueueType } from "./calendar";
+import { roomDayMinutes } from "./minutes";
 import { addDays, isNormalDay, STAFF_OPTIONS } from "./schedule";
 import { unavailableStaffOn } from "./staff-unavailability";
 
@@ -9,6 +10,8 @@ export type DaySummary = {
   note: string;
   count: number;
   cancerCount: number;
+  bookedMinutes: number;
+  minutesEnforced: boolean;
   closed: boolean;
   closureName: string;
   closureNote: string;
@@ -28,6 +31,8 @@ export async function getSchedule(request: Request, from: string, to: string) {
         note: "คิวปกติ OR 17",
         count: 0,
         cancerCount: 0,
+        bookedMinutes: 0,
+        minutesEnforced: false,
         closed: closuresByDate.has(date),
         closureName: closuresByDate.get(date)?.name || "",
         closureNote: closuresByDate.get(date)?.note || "",
@@ -43,6 +48,8 @@ export async function getSchedule(request: Request, from: string, to: string) {
       note: extra.note || "คิว OR Extra",
       count: 0,
       cancerCount: 0,
+      bookedMinutes: 0,
+      minutesEnforced: false,
       closed: closuresByDate.has(extra.date),
       closureName: closuresByDate.get(extra.date)?.name || "",
       closureNote: closuresByDate.get(extra.date)?.note || "",
@@ -63,6 +70,8 @@ export async function getSchedule(request: Request, from: string, to: string) {
       note: "นำเข้าจาก Google Calendar",
       count: 0,
       cancerCount: 0,
+      bookedMinutes: 0,
+      minutesEnforced: false,
       closed: closuresByDate.has(date),
       closureName: closuresByDate.get(date)?.name || "",
       closureNote: closuresByDate.get(date)?.note || "",
@@ -76,6 +85,11 @@ export async function getSchedule(request: Request, from: string, to: string) {
       if (booking.isCancer) summary.cancerCount += 1;
     }
   }
+  for (const summary of summaries.values()) {
+    const { enforced, bookedMinutes } = roomDayMinutes(roomDayDurations(bookings, summary.date, summary.queueType));
+    summary.bookedMinutes = bookedMinutes;
+    summary.minutesEnforced = enforced;
+  }
   return {
     days: [...summaries.values()].sort((a, b) =>
       a.date === b.date ? (a.queueType === "OR17" ? -1 : 1) : a.date.localeCompare(b.date),
@@ -84,6 +98,17 @@ export async function getSchedule(request: Request, from: string, to: string) {
     closures,
     staffUnavailability,
   };
+}
+
+export function roomDayDurations(
+  bookings: Pick<CalendarBooking, "id" | "scheduleDate" | "queueType" | "durationMinutes">[],
+  date: string,
+  queueType: QueueType,
+  excludeId?: string,
+): (number | null)[] {
+  return bookings
+    .filter((booking) => booking.scheduleDate === date && booking.queueType === queueType && booking.id !== excludeId)
+    .map((booking) => booking.durationMinutes);
 }
 
 export { destinationError, staffBlockedOn } from "./destination";

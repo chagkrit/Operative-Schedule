@@ -1,6 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
-import { destinationError, getSchedule, nextAvailableSlot, staffBlockedOn } from "../../lib/queue";
+import { destinationError, getSchedule, nextAvailableSlot, roomDayDurations, staffBlockedOn } from "../../lib/queue";
+import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../lib/minutes";
 import { staffUnavailableMessage } from "../../lib/staff-unavailability";
 import { patientDisplayName } from "../../lib/privacy";
 import { addDays, dateOnly, diagnosisIsCancer, endOfRollingHorizon, isNormalDay, isStaffOption, orderedStaffMembers } from "../../lib/schedule";
@@ -90,6 +91,9 @@ export async function POST(request: Request) {
       .filter(([value]) => !value).map(([, label]) => label);
     if (submittedStaffMembers.length === 0) missing.push("Staff");
     if (missing.length) return Response.json({ error: `กรุณากรอกข้อมูลให้ครบ: ${missing.join(", ")}` }, { status: 400 });
+    const durationError = durationInputError(payload.durationMinutes);
+    if (durationError) return Response.json({ error: durationError }, { status: 400 });
+    const durationMinutes = parseDurationMinutes(payload.durationMinutes) as number;
     if (note.length > 1000) return Response.json({ error: "หมายเหตุต้องมีความยาวไม่เกิน 1,000 ตัวอักษร" }, { status: 400 });
     if (submittedStaffMembers.some((staff) => !isStaffOption(staff))) return Response.json({ error: "กรุณาเลือก Staff จากรายชื่อ" }, { status: 400 });
     if (new Set(submittedStaffMembers).size !== submittedStaffMembers.length) return Response.json({ error: "กรุณาเลือก Staff แต่ละคนเพียงครั้งเดียว" }, { status: 400 });
@@ -128,7 +132,21 @@ export async function POST(request: Request) {
     );
     const matchesStaffPreference = (day: (typeof days)[number]) =>
       staffQueuePreference === "any" || staffDayKeys.has(`${day.date}:${day.queueType}`);
-    const matchesClinicalRules = (day: (typeof days)[number]) => !destinationError({ isCancer, staffMembers }, day);
+    const dayMinutesRefusal = (day: (typeof days)[number]) =>
+      minutesRefusal(roomDayDurations(bookings, day.date, day.queueType), undefined, durationMinutes);
+    const matchesClinicalRules = (day: (typeof days)[number]) => !destinationError({ isCancer, staffMembers }, day) && !dayMinutesRefusal(day);
+    const minutesExceededResponse = (refusal: NonNullable<ReturnType<typeof minutesRefusal>>, queueType: string, date: string) =>
+      Response.json(
+        {
+          error: minutesRefusalMessage(refusal, queueType === "EXTRA" ? "OR Extra" : "OR 17", date),
+          reason: "minutes_exceeded",
+          date,
+          queueType,
+          minutes: { booked: refusal.booked, remaining: refusal.remaining, requested: refusal.requested, over: refusal.over, limit: refusal.limit },
+          suggestions: alternativeDays,
+        },
+        { status: 409 },
+      );
     let manualMinDate = "";
     if (dropdownSchedule) {
       const dropdownStaffDayKeys = new Set(
@@ -139,7 +157,8 @@ export async function POST(request: Request) {
       const dropdownDays = dropdownSchedule.days.filter((day) => {
         if (!isCancer && day.queueType !== "OR17") return false;
         if (staffQueuePreference === "same_staff" && !dropdownStaffDayKeys.has(`${day.date}:${day.queueType}`)) return false;
-        return !destinationError({ isCancer, staffMembers }, day);
+        return !destinationError({ isCancer, staffMembers }, day)
+          && !minutesRefusal(roomDayDurations(dropdownSchedule.bookings, day.date, day.queueType), undefined, durationMinutes);
       });
       const lastDropdownDate = dropdownDays.at(-1)?.date || dropdownSchedule.days.at(-1)?.date || today;
       manualMinDate = addDays(lastDropdownDate, 1);
@@ -174,6 +193,10 @@ export async function POST(request: Request) {
     if (!candidates.length) {
       const selectedDay = days.find((day) => day.date === requestedDate && day.queueType === (isCancer ? requestedQueueType : "OR17"));
       const selectedDayError = hasSpecificDate ? destinationError({ isCancer, staffMembers }, selectedDay) : "";
+      if (hasSpecificDate && selectedDay && !selectedDayError && matchesStaffPreference(selectedDay)) {
+        const refusal = dayMinutesRefusal(selectedDay);
+        if (refusal) return minutesExceededResponse(refusal, selectedDay.queueType, selectedDay.date);
+      }
       // A concrete refusal for the chosen day (closed, staff unavailable, full…) is more useful than the same_staff hint.
       const error = selectedDayError
         ? selectedDayError
@@ -206,6 +229,7 @@ export async function POST(request: Request) {
       operation,
       note,
       staffMembers,
+      durationMinutes,
       bookedByEmail: AUTHORIZED_EMAIL,
     });
     const verified = await getSchedule(request, selected.date, selected.date);
@@ -223,6 +247,11 @@ export async function POST(request: Request) {
         { error: "มีผู้ลงคิวพร้อมกันและคิวเต็ม กรุณาเลือกวันใหม่หรือกดบันทึกอีกครั้ง", suggestions: alternativeDays },
         { status: 409 },
       );
+    }
+    const lateRefusal = minutesRefusal(roomDayDurations(verified.bookings, selected.date, selected.queueType, id), undefined, durationMinutes);
+    if (lateRefusal) {
+      await deleteBookingEvent(request, id);
+      return minutesExceededResponse(lateRefusal, selected.queueType, selected.date);
     }
     return Response.json({ booking: { id, date: selected.date, queueType: selected.queueType, slotNo }, message: "บันทึกและเพิ่มใน Google Calendar แล้ว" }, { status: 201 });
   } catch (error) {

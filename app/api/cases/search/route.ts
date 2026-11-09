@@ -27,6 +27,7 @@ export async function GET(request: Request) {
         scheduleDate: booking.scheduleDate,
         queueType: booking.queueType,
         slotNo: booking.slotNo,
+        durationMinutes: booking.durationMinutes,
       })),
     });
   } catch (error) {

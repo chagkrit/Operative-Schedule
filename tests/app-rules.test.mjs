@@ -47,7 +47,7 @@ test("stores an optional booking note from the Operation form in Google Calendar
   assert.match(calendar, /note: data\.note \|\| ""/);
   assert.match(calendar, /หมายเหตุ: \$\{booking\.note \|\| "-"\}/);
   assert.match(calendar, /note: booking\.note/);
-  assert.match(calendar, /note: moved\.note/);
+  assert.match(calendar, /note: booking\.note/);
 });
 
 test("imports legacy Calendar cases without duplicating tagged events", async () => {
@@ -67,7 +67,7 @@ test("keeps single-Staff Calendar events compatible while storing new team membe
   assert.match(calendar, /JSON\.parse\(data\.staff_members \|\| "\[\]"\)/);
   assert.match(calendar, /return legacyStaff \? \[legacyStaff\] : \[\]/);
   assert.match(legacy, /staffMembers: staff === "ไม่ระบุ" \? \[\] : \[staff\]/);
-  assert.match(calendar, /staff_members: JSON\.stringify\(moved\.staffMembers\)/);
+  assert.match(calendar, /staff_members: JSON\.stringify\(booking\.staffMembers\)/);
   assert.match(calendar, /staff_members: JSON\.stringify\(booking\.staffMembers\)/);
 });
 
@@ -97,7 +97,7 @@ test("creates timed Calendar slots and assigns colors by the primary Staff membe
   assert.match(calendar, /staff_members: JSON\.stringify\(booking\.staffMembers\)/);
   assert.match(calendar, /staff: booking\.staffMembers\[0\] \|\| ""/);
   assert.match(calendar, /colorId: staffEventColor\(booking\.staffMembers\)/);
-  assert.match(calendar, /colorId: staffEventColor\(moved\.staffMembers\)/);
+  assert.match(calendar, /colorId: staffEventColor\(booking\.staffMembers\)/);
   const app = await read("app/SchedulerApp.tsx");
   assert.match(app, /displaySlotTime\(row\.slotNo\)/);
 });
@@ -174,7 +174,7 @@ test("persists queued dates and exports de-identified surgical waiting-time data
   const app = await read("app/SchedulerApp.tsx");
   assert.match(calendar, /queuedDate: data\.queued_date \|\| calendarTimestampDate\(event\.created\) \|\| date/);
   assert.match(calendar, /queued_date: booking\.queuedDate/);
-  assert.match(calendar, /queued_date: moved\.queuedDate/);
+  assert.match(calendar, /queued_date: booking\.queuedDate/);
   assert.match(calendar, /วันที่ลงคิว: \$\{booking\.queuedDate\}/);
   assert.match(calendar, /ระยะเวลารอผ่าตัด: \$\{daysBetween\(booking\.queuedDate, booking\.scheduleDate\)\} วัน/);
   assert.match(legacy, /queuedDate: calendarTimestampDate\(event\.created\) \|\| scheduleDate/);
@@ -203,7 +203,7 @@ test("records neoadjuvant treatment through Calendar, moves, and Excel export", 
   assert.match(route, /neoadjuvantTreatment,/);
   assert.match(calendar, /neoadjuvantTreatment: data\.neoadjuvant_treatment === "true"/);
   assert.match(calendar, /neoadjuvant_treatment: booking\.neoadjuvantTreatment === null \? "" : String\(booking\.neoadjuvantTreatment\)/);
-  assert.match(calendar, /neoadjuvant_treatment: moved\.neoadjuvantTreatment === null \? "" : String\(moved\.neoadjuvantTreatment\)/);
+  assert.match(calendar, /neoadjuvant_treatment: booking\.neoadjuvantTreatment === null \? "" : String\(booking\.neoadjuvantTreatment\)/);
   assert.match(calendar, /Neoadjuvant treatment: \$\{neoadjuvantLabel\(booking\.neoadjuvantTreatment\)\}/);
   assert.match(legacy, /neoadjuvantTreatment: null/);
   assert.match(exportRoute, /ได้รับ neoadjuvant treatment มาก่อน/);

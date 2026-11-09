@@ -4,7 +4,8 @@ import {
   restoreCalendarBooking,
   type QueueType,
 } from "../../../../lib/calendar";
-import { destinationError, getSchedule, nextAvailableSlot, staffBlockedOn } from "../../../../lib/queue";
+import { destinationError, getSchedule, nextAvailableSlot, roomDayDurations, staffBlockedOn } from "../../../../lib/queue";
+import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../../../lib/minutes";
 import { staffUnavailableMessage } from "../../../../lib/staff-unavailability";
 import { patientDisplayName } from "../../../../lib/privacy";
 import { dateOnly, endOfRollingHorizon, isNormalDay } from "../../../../lib/schedule";
@@ -15,7 +16,7 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const payload = (await request.json()) as { date?: string; queueType?: QueueType };
+    const payload = (await request.json()) as { date?: string; queueType?: QueueType; durationMinutes?: unknown };
     const date = payload.date?.trim() || "";
     const queueType = payload.queueType;
     const today = dateOnly();
@@ -32,15 +33,36 @@ export async function PATCH(
       return Response.json({ error: "เคสที่ไม่ใช่ Cancer ย้ายได้เฉพาะ OR 17 วันอังคารหรือพฤหัสบดี" }, { status: 400 });
     }
 
+    let suppliedDuration: number | null = null;
+    if (booking.durationMinutes === null) {
+      const durationError = durationInputError(payload.durationMinutes);
+      if (durationError) return Response.json({ error: durationError }, { status: 400 });
+      suppliedDuration = parseDurationMinutes(payload.durationMinutes);
+    }
+    const effectiveMinutes = (booking.durationMinutes ?? suppliedDuration) as number;
+    const minutesExceededResponse = (refusal: NonNullable<ReturnType<typeof minutesRefusal>>) =>
+      Response.json(
+        {
+          error: minutesRefusalMessage(refusal, queueType === "EXTRA" ? "OR Extra" : "OR 17", date),
+          reason: "minutes_exceeded",
+          minutes: { booked: refusal.booked, remaining: refusal.remaining, requested: refusal.requested, over: refusal.over, limit: refusal.limit },
+          suggestions: [],
+        },
+        { status: 409 },
+      );
+
     const { days, bookings } = await getSchedule(request, today, horizonEnd);
     const destination = days.find((day) => day.date === date && day.queueType === queueType);
     const invalidDestination = destinationError(booking, destination);
     if (invalidDestination) return Response.json({ error: invalidDestination }, { status: 409 });
+    const refusal = minutesRefusal(roomDayDurations(bookings, date, queueType!, id), undefined, effectiveMinutes);
+    if (refusal) return minutesExceededResponse(refusal);
 
     const move = await moveCalendarBooking(request, id, {
       date,
       queueType: queueType!,
       slotNo: nextAvailableSlot(bookings, date, queueType!, destination!.capacity),
+      ...(suppliedDuration !== null ? { durationMinutes: suppliedDuration } : {}),
     });
 
     // Re-read the destination after the write. If simultaneous updates overfill it,
@@ -57,6 +79,12 @@ export async function PATCH(
         { error: "มีผู้สลับคิวพร้อมกันและคิวปลายทางเต็ม กรุณาเลือกวันใหม่" },
         { status: 409 },
       );
+    }
+
+    const lateRefusal = minutesRefusal(roomDayDurations(verified.bookings, date, queueType!, id), undefined, effectiveMinutes);
+    if (lateRefusal) {
+      await restoreCalendarBooking(request, id, move.before);
+      return minutesExceededResponse(lateRefusal);
     }
 
     return Response.json({
