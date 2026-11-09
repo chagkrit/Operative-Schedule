@@ -570,7 +570,6 @@ export async function moveCalendarBooking(
     scheduleDate: target.date,
     queueType: target.queueType,
     slotNo: target.slotNo,
-    // duration_minutes is written by bookingPrivateData; keep the old value unless a new one is given
     durationMinutes: target.durationMinutes ?? booking.durationMinutes,
     lastMoveFrom: booking.scheduleDate,
     lastMoveTo: target.date,
@@ -584,7 +583,6 @@ export async function moveCalendarBooking(
 export async function updateBookingDuration(request: Request, id: string, durationMinutes: number) {
   const { booking, event } = await getCalendarBooking(request, id);
   const updated: CalendarBooking = { ...booking, durationMinutes };
-  // duration_minutes written via bookingPrivateData; or_queue becomes "booking" so legacy events get tagged
   await patchBookingEvent(request, id, updated, event.extendedProperties?.private || {});
   return { before: booking, after: updated };
 }
