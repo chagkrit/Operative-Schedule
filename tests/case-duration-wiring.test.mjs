@@ -52,3 +52,24 @@ test("booking route enforces the 360-minute room-day limit", async () => {
   const recheck = route.slice(route.indexOf("roomDayDurations(verified.bookings"));
   assert.match(recheck.slice(0, recheck.indexOf("status: 409")), /deleteBookingEvent\(request, id\)/);
 });
+
+test("move route checks minutes on the destination and re-checks after the write", async () => {
+  const move = await read("app/api/cases/[id]/move/route.ts");
+  assert.match(move, /durationMinutes/);
+  assert.ok((move.match(/minutesRefusal\(/g) || []).length >= 2, "pre-write and post-write minutesRefusal");
+  assert.match(move, /reason: "minutes_exceeded"/);
+  assert.match(move, /restoreCalendarBooking\(/);
+});
+
+test("PATCH /api/cases/[id] edits duration with checks and rollback", async () => {
+  const route = await read("app/api/cases/[id]/route.ts");
+  assert.match(route, /export async function PATCH/);
+  assert.match(route, /updateBookingDuration\(/);
+  assert.ok((route.match(/minutesRefusal\(/g) || []).length >= 2, "pre-write and post-write minutesRefusal");
+  assert.match(route, /restoreCalendarBooking\(/);
+  assert.match(route, /เคสนี้นำเข้าจาก Google Calendar โดยตรง กรุณาสลับวันเพื่อใส่ระยะเวลา/);
+});
+
+test("search results include durationMinutes", async () => {
+  assert.match(await read("app/api/cases/search/route.ts"), /durationMinutes/);
+});
