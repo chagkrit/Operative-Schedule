@@ -94,3 +94,9 @@ test("client UI: duration field, remaining minutes, edit dialog and 360 popup", 
   assert.match(ui, /minutesRefusalMessage\(/);
   assert.match(ui, /minutesRefusal\(/);
 });
+
+test("waiting-time export has a duration column after Operation", async () => {
+  const route = await read("app/api/wait-time-export/route.ts");
+  assert.match(route, /value: "Operation"[^\n]*\n\s*\{ value: "ระยะเวลาผ่าตัด \(นาที\)"/);
+  assert.match(route, /booking\.durationMinutes \?\? ""/);
+});
