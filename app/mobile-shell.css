@@ -19,7 +19,7 @@
     bottom: 0;
     z-index: 50;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     padding-bottom: env(safe-area-inset-bottom);
     background: var(--soft-base);
     box-shadow: 0 -8px 20px rgba(135, 151, 173, .38);
@@ -46,7 +46,7 @@
   .bottom-nav-icon {
     position: relative;
     display: inline-flex;
-    padding: 4px 18px;
+    padding: 4px 14px;
     border-radius: 999px;
   }
   .bottom-nav-link[aria-current="page"] .bottom-nav-icon { box-shadow: var(--pressed); }
@@ -79,7 +79,8 @@
   .app-shell[data-screen="schedule"] [data-screens]:not([data-screens~="schedule"]),
   .app-shell[data-screen="book"] [data-screens]:not([data-screens~="book"]),
   .app-shell[data-screen="search"] [data-screens]:not([data-screens~="search"]),
-  .app-shell[data-screen="alerts"] [data-screens]:not([data-screens~="alerts"]) {
+  .app-shell[data-screen="alerts"] [data-screens]:not([data-screens~="alerts"]),
+  .app-shell[data-screen="guide"] [data-screens]:not([data-screens~="guide"]) {
     display: none;
   }
 }
@@ -122,6 +123,7 @@
   }
   .topbar .topbar-actions .calendar-pill { max-width: none; font-size: 12px; }
   .topbar .topbar-actions .sync-button,
+  .topbar .topbar-actions .guide-button,
   .topbar .topbar-actions .export-button,
   .topbar .topbar-actions .signout-button { min-height: 44px; height: auto; font-size: 14px; }
   .topbar .topbar-actions form { display: flex; }
@@ -172,7 +174,7 @@
   }
 
   /* Touch targets: 44px */
-  .sync-button, .export-button, .signout-button, .setup-banner > button, .text-button,
+  .sync-button, .guide-button, .export-button, .signout-button, .setup-banner > button, .text-button,
   .schedule-tabs button, .staff-queue-preference button, .date-entry-toggle button, .extra-form button,
   .wait-time-export button, .month-toolbar button, .closure-form-actions button,
   .closure-row-actions button, .closure-confirm-actions button, .case-search-form button,
