@@ -8,6 +8,7 @@ import { diagnosisIsCancer } from "./lib/schedule";
 import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
+import UserGuide from "./UserGuide";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
 import { useUnseenMoves } from "./useUnseenMoves";
 
@@ -1466,6 +1467,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
           </div>
           <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
+          <button className="guide-button" type="button" onClick={() => { selectTab("guide"); if (window.matchMedia("(min-width: 1001px)").matches) document.getElementById("screen-guide")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>คู่มือ</button>
           <button className="export-button" type="button" onClick={() => { setMenuOpen(false); void exportWaitingTime(); }} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
         </div>
@@ -2002,6 +2004,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           </div>
         </aside>
       </section>
+
+      <UserGuide />
 
       <footer><span>Breast &amp; Endocrine Surgery CMU</span><p>ข้อมูลผู้ป่วยเป็นความลับ · กรุณาใช้งานผ่านบัญชีที่ได้รับอนุญาตเท่านั้น</p></footer>
       <BottomNav active={activeTab} unseenAlerts={unseen} onSelect={selectTab} />

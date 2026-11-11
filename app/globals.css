@@ -824,3 +824,18 @@ button:disabled { cursor: not-allowed; }
 .month-day.has-clash { border-color: #e3c27a; box-shadow: inset 0 0 0 1px #e3c27a; }
 .month-day .clash-flag { color: #5c4210; font-size: 9px; font-style: normal; font-weight: 900; }
 .month-unavailable-summary { display: grid; gap: 2px; margin-top: 6px; padding: 8px 10px; border: 1px solid #e3c27a; border-left-width: 4px; border-radius: 10px; color: #5c4210; background: #fff6df; font-size: 11px; line-height: 1.45; }
+
+/* Thai user guide */
+.guide-button { height: 36px; padding: 0 13px; border: 1px solid #c9c2ea; border-radius: 999px; color: #4b3aa6; background: #f1eefc; font-size: 10px; font-weight: 900; white-space: nowrap; }
+.guide-button:hover { background: #e6e1f9; }
+.guide-panel { margin: 18px 0; padding: 20px; }
+.guide-intro { margin: 0 0 10px; font-size: 13px; opacity: .75; }
+.guide-sections { display: grid; gap: 10px; }
+.guide-sections details { border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.7); }
+.guide-sections summary { cursor: pointer; padding: 13px 16px; font-size: 15px; font-weight: 800; line-height: 1.5; }
+.guide-body { padding: 0 18px 14px; font-size: 14px; line-height: 1.75; }
+.guide-body p, .guide-body ul, .guide-body ol { margin: 8px 0; }
+.guide-body ul { padding-left: 22px; list-style: disc; }
+.guide-body ol { padding-left: 24px; list-style: decimal; }
+.guide-body h4 { margin: 14px 0 4px; font-size: 14px; font-weight: 800; color: var(--rose); }
+.guide-body a { color: var(--rose); text-decoration: underline; text-underline-offset: 3px; }

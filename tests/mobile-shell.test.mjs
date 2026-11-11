@@ -25,7 +25,7 @@ test("bottom bar is a labelled nav of links with aria-current and no push animat
   assert.match(nav, /href=\{tabHref\(tab\)\}/);
   assert.match(nav, /aria-hidden="true"/);
   assert.doesNotMatch(nav, /next\/link/);
-  for (const label of ["ตาราง", "ลงคิว", "ค้นหา", "แจ้งเตือน"]) assert.match(nav, new RegExp(label));
+  for (const label of ["ตาราง", "ลงคิว", "ค้นหา", "แจ้งเตือน", "คู่มือ"]) assert.match(nav, new RegExp(label));
 });
 
 test("bar clears the iPhone home indicator and is phone-only", async () => {

@@ -1,4 +1,4 @@
-export const TAB_IDS = ["schedule", "book", "search", "alerts"] as const;
+export const TAB_IDS = ["schedule", "book", "search", "alerts", "guide"] as const;
 export type TabId = (typeof TAB_IDS)[number];
 export const DEFAULT_TAB: TabId = "schedule";
 export const ALERTS_SEEN_KEY = "or-queue:alerts-seen";

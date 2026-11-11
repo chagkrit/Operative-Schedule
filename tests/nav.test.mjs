@@ -29,8 +29,8 @@ const blockedStorage = {
   setItem() { throw new Error("blocked"); },
 };
 
-test("lists the four destinations in bar order with ตาราง as the default", () => {
-  assert.deepEqual([...TAB_IDS], ["schedule", "book", "search", "alerts"]);
+test("lists the five destinations in bar order with ตาราง as the default", () => {
+  assert.deepEqual([...TAB_IDS], ["schedule", "book", "search", "alerts", "guide"]);
   assert.equal(DEFAULT_TAB, "schedule");
 });
 
