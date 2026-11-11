@@ -828,14 +828,34 @@ button:disabled { cursor: not-allowed; }
 /* Thai user guide */
 .guide-button { height: 36px; padding: 0 13px; border: 1px solid #c9c2ea; border-radius: 999px; color: #4b3aa6; background: #f1eefc; font-size: 10px; font-weight: 900; white-space: nowrap; }
 .guide-button:hover { background: #e6e1f9; }
-.guide-panel { margin: 18px 0; padding: 20px; }
-.guide-intro { margin: 0 0 10px; font-size: 13px; opacity: .75; }
-.guide-sections { display: grid; gap: 10px; }
-.guide-sections details { border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.7); }
-.guide-sections summary { cursor: pointer; padding: 13px 16px; font-size: 15px; font-weight: 800; line-height: 1.5; }
-.guide-body { padding: 0 18px 14px; font-size: 14px; line-height: 1.75; }
-.guide-body p, .guide-body ul, .guide-body ol { margin: 8px 0; }
-.guide-body ul { padding-left: 22px; list-style: disc; }
-.guide-body ol { padding-left: 24px; list-style: decimal; }
-.guide-body h4 { margin: 14px 0 4px; font-size: 14px; font-weight: 800; color: var(--rose); }
+.guide-panel { margin: 18px 0; padding: 22px; }
+.guide-intro { margin: 0 0 14px; font-size: 13px; color: var(--muted); }
+.guide-sections { display: grid; gap: 12px; }
+.guide-sections details { position: relative; border-radius: 20px; background: var(--soft-base); box-shadow: var(--raised); overflow: hidden; }
+.guide-sections details[open] { background: #fff; box-shadow: var(--raised-large); }
+.guide-sections details[open]::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--rose); }
+.guide-sections summary { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 12px 16px 12px 18px; cursor: pointer; list-style: none; font-size: 15px; font-weight: 700; line-height: 1.4; color: var(--muted); -webkit-tap-highlight-color: transparent; }
+.guide-sections summary::-webkit-details-marker { display: none; }
+.guide-sections summary:focus-visible { outline: 3px solid #5635d4; outline-offset: -3px; border-radius: 20px; }
+.guide-sections details[open] summary { color: var(--ink); font-weight: 800; font-size: 16px; padding-left: 24px; border-bottom: 1px solid #efe4e8; }
+.guide-num { flex: none; display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 12px; font-size: 14px; font-weight: 800; color: var(--muted); box-shadow: var(--pressed); }
+.guide-sections details[open] .guide-num { color: #fff; background: var(--rose); box-shadow: none; }
+.guide-title { flex: 1; min-width: 0; }
+.guide-chevron { flex: none; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.guide-sections details[open] .guide-chevron { transform: rotate(180deg); color: var(--rose); }
+.guide-body { padding: 14px 20px 20px 24px; font-size: 15px; line-height: 1.8; color: var(--ink); }
+.guide-body p, .guide-body ul, .guide-body ol { margin: 10px 0; }
+.guide-body ul { padding-left: 20px; list-style: disc; }
+.guide-body li { margin: 6px 0; }
+.guide-body li::marker { color: var(--rose); }
+.guide-body ol { padding-left: 0; list-style: none; counter-reset: gstep; }
+.guide-body ol > li { counter-increment: gstep; position: relative; padding-left: 38px; margin: 10px 0; }
+.guide-body ol > li::before { content: counter(gstep); position: absolute; left: 0; top: 3px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 800; color: var(--rose); background: var(--rose-soft); line-height: 1; }
+.guide-body h4 { margin: 18px 0 4px; padding: 5px 12px; display: inline-block; border-radius: 999px; font-size: 13px; font-weight: 800; color: var(--rose); background: var(--rose-soft); }
+.guide-body strong { font-weight: 800; }
 .guide-body a { color: var(--rose); text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 1000px) {
+  .guide-panel { padding: 16px 14px; }
+  .guide-sections summary { padding-right: 14px; }
+  .guide-body { padding: 12px 16px 18px 20px; }
+}

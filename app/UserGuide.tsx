@@ -203,14 +203,23 @@ export default function UserGuide() {
         <div><span className="step">05</span><h3 id="guide-title">คู่มือการใช้งาน</h3></div>
         <span className="search-scope">ภาษาไทย</span>
       </div>
-      <p className="guide-intro">กดหัวข้อเพื่อเปิด/ปิดรายละเอียด</p>
+      <p className="guide-intro">แตะหัวข้อเพื่ออ่านรายละเอียด (เปิดได้ทีละหัวข้อ หัวข้อที่เปิดอยู่จะเป็นการ์ดสีขาวมีแถบสีชมพู)</p>
       <div className="guide-sections">
-        {SECTIONS.map((section) => (
-          <details key={section.id} id={`guide-${section.id}`} open={section.open}>
-            <summary>{section.title}</summary>
-            <div className="guide-body">{section.body}</div>
-          </details>
-        ))}
+        {SECTIONS.map((section) => {
+          const parts = /^(\d+)\.\s*(.*)$/.exec(section.title);
+          const num = parts ? parts[1] : "";
+          const title = parts ? parts[2] : section.title;
+          return (
+            <details key={section.id} id={`guide-${section.id}`} name="user-guide" open={section.open}>
+              <summary>
+                <span className="guide-num" aria-hidden="true">{num}</span>
+                <span className="guide-title">{title}</span>
+                <svg className="guide-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6" /></svg>
+              </summary>
+              <div className="guide-body">{section.body}</div>
+            </details>
+          );
+        })}
       </div>
     </section>
   );
