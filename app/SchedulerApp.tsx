@@ -11,7 +11,7 @@ import BottomNav from "./BottomNav";
 import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
-import { REFRESH_INTERVAL_MS, shouldRefreshQuietly } from "./lib/refresh";
+import { REFRESH_INTERVAL_MS, freshnessLabel, shouldRefreshQuietly } from "./lib/refresh";
 import { useUnseenMoves } from "./useUnseenMoves";
 
 type Day = {
@@ -525,7 +525,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [syncing, setSyncing] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const [, setRefreshFailed] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const lastLoadedAtRef = useRef<number | null>(null);
   const lastFormEditAtRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
@@ -659,8 +660,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       setNotice({ type: "error", text: message });
       return false;
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -1570,7 +1576,15 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       )}
 
-      {lastSyncedAt && data?.calendarConnected && <p className="last-sync" role="status">อัปเดตจาก Google Calendar ล่าสุด {new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Bangkok" }).format(lastSyncedAt)} น. · ข้อมูลเดิม {data.importedCount} เคส</p>}
+      {lastSyncedAt && data?.calendarConnected && (() => {
+        const { tone, text } = freshnessLabel(now, lastSyncedAt.getTime(), data.importedCount, refreshFailed);
+        return (
+          <p className={`last-sync ${tone}`} role="status">
+            {text}
+            {tone === "failed" && <button type="button" className="text-button" onClick={() => void syncCalendar()} disabled={syncing}>ลองใหม่</button>}
+          </p>
+        );
+      })()}
 
       {notice && <div className={`notice ${notice.type}`} role="alert">{notice.text}</div>}
 

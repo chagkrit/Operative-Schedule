@@ -24,6 +24,14 @@ test("quiet refresh never raises the alert notice", async () => {
   assert.match(body, /if \(quiet\) \{\s*setRefreshFailed\(true\)/);
   assert.match(body, /status === 401/);
   assert.match(body, /setRefreshFailed\(false\)/);
+  assert.ok(body.indexOf("status === 401") < body.indexOf("if (quiet)"), "401 branch must come before the quiet branch");
+});
+
+test("a quiet load never touches the loading flag", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const start = app.indexOf("const loadSchedule = useCallback");
+  const end = app.indexOf("}, []);", start);
+  assert.match(app.slice(start, end), /if \(!quiet\) setLoading\(false\)/);
 });
 
 test("quiet refresh is gated and event-driven", async () => {
@@ -34,4 +42,12 @@ test("quiet refresh is gated and event-driven", async () => {
   assert.match(app, /addEventListener\("online"/);
   assert.match(app, /REFRESH_INTERVAL_MS/);
   assert.match(app, /lastFormEditAtRef/);
+});
+
+test("freshness line uses the shared label and offers retry", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /freshnessLabel\(/);
+  assert.match(app, /className=\{`last-sync \$\{/);
+  assert.match(app, />ลองใหม่</);
+  assert.doesNotMatch(app, /อัปเดตจาก Google Calendar ล่าสุด/);
 });

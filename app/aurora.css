@@ -133,6 +133,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice.success { color: var(--green) !important; background: var(--green-tint) !important; }
 .notice.error { color: var(--danger) !important; background: var(--danger-tint) !important; }
 .last-sync { color: var(--green); }
+.last-sync.stale, .last-sync.failed { color: var(--amber); }
 
 /* ---------- Buttons ---------- */
 .export-button, .save-button, .google-button, .case-search-form button, .move-form button,
