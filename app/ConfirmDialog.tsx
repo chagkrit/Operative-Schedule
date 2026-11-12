@@ -21,7 +21,7 @@ export default function ConfirmDialog({ title, message, confirmLabel, busy, canc
         </div>
         <div className="closure-confirm-actions">
           <button ref={cancelRef} type="button" onClick={onCancel} disabled={busy}>ยกเลิก</button>
-          <button type="button" onClick={onConfirm} disabled={busy}>{busy ? "กำลังลบ…" : confirmLabel}</button>
+          <button type="button" onClick={onConfirm} aria-busy={busy} disabled={busy}>{busy ? "กำลังลบ…" : confirmLabel}</button>
         </div>
       </section>
     </div>

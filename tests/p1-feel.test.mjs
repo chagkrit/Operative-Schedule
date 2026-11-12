@@ -87,3 +87,11 @@ test("replaces the post-booking Sync modal with a confirmed message", async () =
   assert.match(app, /ยืนยันกับ Google Calendar แล้ว/);
   assert.match(app, /แต่ยังยืนยันกับ Google Calendar ไม่ได้/);
 });
+
+test("busy buttons announce and show a spinner", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const css = await read("app/aurora.css");
+  assert.ok((app.match(/aria-busy=\{/g) || []).length >= 6);
+  assert.match(css, /button\[aria-busy="true"\]::before/);
+  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*button\[aria-busy="true"\]::before \{ animation: none/);
+});

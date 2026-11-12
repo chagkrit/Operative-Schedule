@@ -1572,7 +1572,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <StatusDot synced={Boolean(data?.calendarConnected)} />
             <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
           </div>
-          <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
+          <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} aria-busy={syncing} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           <button className="guide-button" type="button" onClick={() => { selectTab("guide"); if (window.matchMedia("(min-width: 1001px)").matches) document.getElementById("screen-guide")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>คู่มือ</button>
           <button className="export-button" type="button" onClick={() => { setMenuOpen(false); void exportWaitingTime(); }} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
@@ -1602,7 +1602,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         <div className="setup-banner" role="status">
           <span className="banner-icon">!</span>
           <div><strong>ยังอ่านข้อมูลจาก Google Calendar ไม่สำเร็จ</strong><p>{calendarError || `กรุณาเชื่อมบัญชี ${data?.calendarName || authorizedEmail}`} แล้วกด “Sync ทันที” อีกครั้ง</p></div>
-          <button type="button" onClick={syncCalendar} disabled={syncing}>{syncing ? "กำลัง Sync…" : "Sync ทันที"}</button>
+          <button type="button" onClick={syncCalendar} aria-busy={syncing} disabled={syncing}>{syncing ? "กำลัง Sync…" : "Sync ทันที"}</button>
         </div>
       )}
 
@@ -1691,7 +1691,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
             <div className="closure-confirm-actions">
               <button type="button" onClick={() => setPendingClosure(null)}>กลับไปตรวจสอบ</button>
-              <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
+              <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} aria-busy={closureSaving} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
             </div>
           </section>
         </div>
@@ -1717,7 +1717,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
             <div className="closure-confirm-actions">
               <button type="button" onClick={() => setPendingUnavailability(null)}>กลับไปตรวจสอบ</button>
-              <button ref={unavailabilityConfirmRef} type="button" onClick={() => void saveUnavailability(true)} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingUnavailability.bookings.length} เคส`}</button>
+              <button ref={unavailabilityConfirmRef} type="button" onClick={() => void saveUnavailability(true)} aria-busy={unavailabilitySaving} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingUnavailability.bookings.length} เคส`}</button>
             </div>
           </section>
         </div>
@@ -1736,7 +1736,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <input ref={editInputRef} value={editDialog.value} onChange={(event) => setEditDialog((current) => current ? { ...current, value: event.target.value, error: "" } : null)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} aria-describedby="edit-duration-error" />
               </label>
               {editDialog.error && <p id="edit-duration-error" role="alert">{editDialog.error}</p>}
-              <button type="submit" disabled={editSaving}>{editSaving ? "กำลังอัปเดต Calendar…" : "บันทึก"}</button>
+              <button type="submit" aria-busy={editSaving} disabled={editSaving}>{editSaving ? "กำลังอัปเดต Calendar…" : "บันทึก"}</button>
               <button type="button" onClick={closeEditDialog} disabled={editSaving}>ยกเลิก</button>
             </form>
           </section>
@@ -1784,7 +1784,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               </div>
               <div className="delete-confirm-actions">
                 <button type="button" onClick={() => setDeleteDialog((current) => current ? { ...current, step: "verify" } : null)} disabled={deleting}>กลับไปตรวจสอบ</button>
-                <button ref={deleteConfirmRef} className="delete-final-button" type="button" onClick={() => void deleteCase()} disabled={deleting}>{deleting ? "กำลังลบจาก Calendar…" : "ยืนยันลบเคส"}</button>
+                <button ref={deleteConfirmRef} className="delete-final-button" type="button" onClick={() => void deleteCase()} aria-busy={deleting} disabled={deleting}>{deleting ? "กำลังลบจาก Calendar…" : "ยืนยันลบเคส"}</button>
               </div>
             </section>
           )}
@@ -1942,7 +1942,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               </div>
             )}
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
-            <button className="save-button" type="submit" disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
+            <button className="save-button" type="submit" aria-busy={saving} disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
         </section>
 
@@ -1995,7 +1995,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <label className="wide"><span>หมายเหตุ</span><textarea value={closureForm.note} maxLength={500} onChange={(event) => setClosureForm((current) => ({ ...current, note: event.target.value }))} placeholder="รายละเอียดเพิ่มเติมหรือเหตุผลที่ปิดรับคิว" /></label>
                 <div className="closure-form-actions">
                   {closureForm.id && <button type="button" onClick={() => setClosureForm(EMPTY_CLOSURE_FORM)}>ยกเลิกแก้ไข</button>}
-                  <button type="submit" disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : closureForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันปิดรับคิว"}</button>
+                  <button type="submit" aria-busy={closureSaving} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : closureForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันปิดรับคิว"}</button>
                 </div>
               </form>
               <div className="closure-list-toolbar">
@@ -2025,7 +2025,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   <label className="wide"><span>หมายเหตุ</span><textarea value={unavailabilityForm.note} maxLength={500} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, note: event.target.value }))} placeholder="เช่น ประชุมวิชาการ ลาพักร้อน" /></label>
                   <div className="unavailability-actions">
                     {unavailabilityForm.id && <button type="button" onClick={() => setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM)}>ยกเลิกแก้ไข</button>}
-                    <button type="submit" disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
+                    <button type="submit" aria-busy={unavailabilitySaving} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
                   </div>
                 </form>
                 <div className="unavailability-list" aria-live="polite" aria-label="รายการวันที่ staff ไม่ว่าง">
@@ -2058,7 +2058,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <label htmlFor="case-search">ค้นหาจากเคสใน Google Calendar</label>
             <div>
               <input id="case-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="พิมพ์ HN ชื่อ หรือสกุล" autoComplete="off" />
-              <button type="submit" disabled={searching}>{searching ? "กำลังค้นหา…" : "ค้นหา"}</button>
+              <button type="submit" aria-busy={searching} disabled={searching}>{searching ? "กำลังค้นหา…" : "ค้นหา"}</button>
             </div>
           </form>
 
@@ -2091,7 +2091,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         <input id={`move-duration-${result.id}`} value={moveDuration} onChange={(event) => setMoveDuration(event.target.value)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} />
                       </>
                     )}
-                    <button type="submit" disabled={moving || !moveTargetDay || selectedCaseStale}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    <button type="submit" aria-busy={moving} disabled={moving || !moveTargetDay || selectedCaseStale}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
                     {result.scheduleDate >= bangkokToday() && <button type="button" onClick={(event) => openEditDialog(result, event.currentTarget)} disabled={selectedCaseStale}>แก้ระยะเวลา</button>}
                     <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim() || selectedCaseStale} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
