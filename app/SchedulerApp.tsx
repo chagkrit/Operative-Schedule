@@ -8,6 +8,7 @@ import { diagnosisIsCancer } from "./lib/schedule";
 import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
+import ConfirmDialog from "./ConfirmDialog";
 import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
@@ -563,6 +564,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [unavailabilityForm, setUnavailabilityForm] = useState(EMPTY_UNAVAILABILITY_FORM);
   const [unavailabilitySaving, setUnavailabilitySaving] = useState(false);
   const [pendingUnavailability, setPendingUnavailability] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; action: () => Promise<void> } | null>(null);
   const [exportRange, setExportRange] = useState(() => {
     const today = bangkokToday();
     return { from: addCalendarDays(today, -1825), to: addCalendarDays(today, 730) };
@@ -621,6 +623,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const editInputRef = useRef<HTMLInputElement>(null);
   const editTriggerRef = useRef<HTMLButtonElement | null>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const confirmCancelRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async ({ showSuccess = false, quiet = false }: { showSuccess?: boolean; quiet?: boolean } = {}) => {
     const loadId = ++latestLoadRef.current;
@@ -681,7 +685,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   useEffect(() => {
     refreshGuardRef.current = {
       busy: saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
-      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || showSyncPrompt),
+      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || showSyncPrompt || confirmDialog),
     };
   });
 
@@ -717,11 +721,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog) return;
+    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog && !confirmDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deleting && !editSaving) {
+      if (event.key === "Escape" && !deleting && !editSaving && !(confirmDialog && (closureSaving || unavailabilitySaving))) {
         setBookingConflict(null);
+        setConfirmDialog(null);
+        if (confirmDialog) requestAnimationFrame(() => confirmTriggerRef.current?.focus());
         setEditDialog(null);
         if (editDialog) requestAnimationFrame(() => editTriggerRef.current?.focus());
         setShowSyncPrompt(false);
@@ -756,7 +762,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       }
     };
     document.body.style.overflow = "hidden";
-    (deleteDialog
+    (confirmDialog ? confirmCancelRef.current : deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
       : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
     window.addEventListener("keydown", closeOnEscape);
@@ -764,7 +770,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, showSyncPrompt]);
+  }, [bookingConflict, closureSaving, confirmDialog, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, showSyncPrompt, unavailabilitySaving]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -1239,8 +1245,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setNotice(null);
   }
 
-  async function deleteClosure(closure: ScheduleClosure) {
-    if (!window.confirm(`ลบวันปิดรับคิว ${displayDate(closure.date)} — ${closure.name} ใช่หรือไม่`)) return;
+  function deleteClosure(closure: ScheduleClosure, trigger: HTMLButtonElement) {
+    confirmTriggerRef.current = trigger;
+    setConfirmDialog({
+      title: "ลบวันปิดรับคิว",
+      message: `ลบวันปิดรับคิว ${displayDate(closure.date)} — ${closure.name} ใช่หรือไม่`,
+      confirmLabel: "ลบ",
+      action: () => performDeleteClosure(closure),
+    });
+  }
+
+  async function performDeleteClosure(closure: ScheduleClosure) {
     setClosureSaving(true);
     setNotice(null);
     try {
@@ -1337,8 +1352,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     unavailabilityStartRef.current?.focus({ preventScroll: true });
   }
 
-  async function deleteUnavailability(entry: StaffUnavailability) {
-    if (!window.confirm(`ลบวันที่ staff ไม่ว่าง ${entry.staff} ${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)} ใช่หรือไม่`)) return;
+  function deleteUnavailability(entry: StaffUnavailability, trigger: HTMLButtonElement) {
+    confirmTriggerRef.current = trigger;
+    setConfirmDialog({
+      title: "ลบวันที่ staff ไม่ว่าง",
+      message: `ลบวันที่ staff ไม่ว่าง ${entry.staff} ${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)} ใช่หรือไม่`,
+      confirmLabel: "ลบ",
+      action: () => performDeleteUnavailability(entry),
+    });
+  }
+
+  async function performDeleteUnavailability(entry: StaffUnavailability) {
     setUnavailabilitySaving(true);
     setNotice(null);
     try {
@@ -1642,6 +1666,27 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <button ref={syncPromptButtonRef} type="button" onClick={() => void confirmSyncAfterBooking()} disabled={syncing}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           </section>
         </div>
+      )}
+
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel={confirmDialog.confirmLabel}
+          busy={closureSaving || unavailabilitySaving}
+          cancelRef={confirmCancelRef}
+          onCancel={() => {
+            setConfirmDialog(null);
+            requestAnimationFrame(() => confirmTriggerRef.current?.focus());
+          }}
+          onConfirm={() => {
+            const { action } = confirmDialog;
+            void action().finally(() => {
+              setConfirmDialog(null);
+              requestAnimationFrame(() => confirmTriggerRef.current?.focus());
+            });
+          }}
+        />
       )}
 
       {pendingClosure && (
@@ -1981,7 +2026,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   return <article key={closure.id}>
                     <div className="closure-date"><strong>{Number(closure.date.slice(-2))}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short", year: "numeric" }).format(new Date(`${closure.date}T12:00:00+07:00`))}</span></div>
                     <div className="closure-detail"><strong>{closure.name}</strong><span>{closure.note || "ไม่มีหมายเหตุ"}</span><small>แก้ไขล่าสุด {closure.updatedAt ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(closure.updatedAt)) : "ไม่ระบุเวลา"}{affectedCount ? ` · มีคิวเดิม ${affectedCount} เคส` : ""}</small></div>
-                    <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={() => void deleteClosure(closure)} disabled={closureSaving}>ลบ</button></div>
+                    <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={(event) => deleteClosure(closure, event.currentTarget)} disabled={closureSaving}>ลบ</button></div>
                   </article>;
                 })}
               </div>
@@ -2011,7 +2056,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         <span>{entry.startDate === entry.endDate ? displayDate(entry.startDate, true) : `${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)}`}</span>
                         <small>{entry.note || "ไม่มีหมายเหตุ"}</small>
                       </div>
-                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={() => void deleteUnavailability(entry)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
+                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={(event) => deleteUnavailability(entry, event.currentTarget)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
                     </article>;
                   })}
                 </div>

@@ -121,7 +121,8 @@ test("staff unavailability manager is wired into the closures tab", async () => 
   assert.match(app, /วันที่ staff ไม่ว่าง/);
   assert.match(app, /ไม่พบ Staff ในรายชื่อ/);
   assert.match(app, /confirmExistingBookings/);
-  assert.match(app, /confirm\([^)]*ลบวันที่ staff ไม่ว่าง/);
+  assert.match(app, /ลบวันที่ staff ไม่ว่าง \$\{entry\.staff\}/);
+  assert.doesNotMatch(app, /window\.confirm/);
   assert.match(app, /ยืนยันและคงคิวเดิม \$\{pendingUnavailability/);
   assert.match(app, /overlappingStaff|payload\.error/);
   assert.match(css, /\.unavailability-manager/);

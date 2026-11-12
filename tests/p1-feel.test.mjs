@@ -68,3 +68,13 @@ test("flags a case changed on another device, but not past cases", async () => {
   assert.match(app, /เคสนี้ถูกแก้จากอีกเครื่อง กรุณาค้นหาใหม่/);
   assert.ok((app.match(/disabled=\{[^}]*selectedCaseStale/g) || []).length >= 3, "move, edit and delete must be disabled");
 });
+
+test("uses the Aurora confirm dialog instead of window.confirm", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const dialog = await read("app/ConfirmDialog.tsx");
+  assert.doesNotMatch(app, /window\.confirm/);
+  assert.match(app, /<ConfirmDialog/);
+  assert.ok((app.match(/setConfirmDialog\(/g) || []).length >= 2);
+  assert.match(dialog, /role="alertdialog"/);
+  assert.match(dialog, /aria-modal="true"/);
+});
