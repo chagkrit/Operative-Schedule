@@ -95,3 +95,51 @@ test("busy buttons announce and show a spinner", async () => {
   assert.match(css, /button\[aria-busy="true"\]::before/);
   assert.match(css, /prefers-reduced-motion: reduce\) \{\s*button\[aria-busy="true"\]::before \{ animation: none/);
 });
+
+test("spinner and skeleton borders survive the global border reset", async () => {
+  const css = await read("app/aurora.css");
+  const start = css.indexOf('button[aria-busy="true"]::before {');
+  const rule = css.slice(start, css.indexOf("}", start));
+  assert.match(rule, /border: 2px solid currentColor !important;/);
+  assert.match(rule, /border-right-color: transparent !important;/);
+  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*button\[aria-busy="true"\]::before \{ animation: none; border-right-color: currentColor !important;/);
+  const skStart = css.indexOf(".orq-skeleton {");
+  assert.match(css.slice(skStart, css.indexOf("}", skStart)), /border: 1px solid var\(--hairline\) !important;/);
+});
+
+test("stale notes only judge a selection against data loaded after it", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const dateStart = app.indexOf("const requestedDateStale = ");
+  const dateExpr = app.slice(dateStart, app.indexOf(");", dateStart));
+  assert.match(dateExpr, /requestedDateChosenAt !== null && lastSyncedAt && lastSyncedAt\.getTime\(\) > requestedDateChosenAt/);
+  const caseStart = app.indexOf("const selectedCaseStale = ");
+  const caseExpr = app.slice(caseStart, app.indexOf(");", caseStart));
+  assert.match(caseExpr, /searchedAt !== null && lastSyncedAt && lastSyncedAt\.getTime\(\) > searchedAt/);
+  assert.match(app, /setSearchResults\(payload\.results \|\| \[\]\);\s*setSearchedAt\(Date\.now\(\)\);/);
+  // Every way of picking a date stamps the pick time: cancer list, OR17 list, manual calendar, 409 suggestion.
+  for (const fn of ["chooseCancerDate", "chooseListDate", "chooseManualDate", "chooseSuggestedQueue"]) {
+    const s = app.indexOf(`function ${fn}(`);
+    assert.ok(s >= 0, `${fn} must exist`);
+    assert.match(app.slice(s, app.indexOf("\n  }\n", s)), /noteRequestedDateChosen\(/, `${fn} must stamp the pick time`);
+  }
+  assert.match(app, /onChange=\{\(e\) => chooseListDate\(e\.target\.value\)\} aria-label="เลือกวัน OR 17"/);
+});
+
+test("freshness clock catches up on focus and retry announces busy", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /const tryQuietRefresh = \(\) => \{\s*setNow\(Date\.now\(\)\);/);
+  assert.match(app, /aria-busy=\{syncing\} onClick=\{\(\) => void syncCalendar\(\)\} disabled=\{syncing\}>ลองใหม่</);
+});
+
+test("first load blocks the quiet refresh and failed first load shows no skeleton", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /busy: loading \|\| saving/);
+  assert.match(app, /\{loading && !data && <CalendarSkeleton \/>\}/);
+  assert.doesNotMatch(app, /: <CalendarSkeleton \/>/);
+});
+
+test("dead manual-date-loading CSS is gone", async () => {
+  for (const file of ["app/globals.css", "app/mobile-shell.css", "app/SchedulerApp.tsx"]) {
+    assert.doesNotMatch(await read(file), /manual-date-loading/, file);
+  }
+});

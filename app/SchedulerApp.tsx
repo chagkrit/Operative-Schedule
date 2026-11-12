@@ -544,6 +544,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  // When the selection's source arrived; a stale note only trusts schedule data loaded after it.
+  const [searchedAt, setSearchedAt] = useState<number | null>(null);
+  const [requestedDateChosenAt, setRequestedDateChosenAt] = useState<number | null>(null);
   const [searched, setSearched] = useState(false);
   const [selectedCase, setSelectedCase] = useState<SearchResult | null>(null);
   const [moveTarget, setMoveTarget] = useState("");
@@ -682,13 +685,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
 
   useEffect(() => {
     refreshGuardRef.current = {
-      busy: saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
+      busy: loading || saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
       dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || confirmDialog),
     };
   });
 
   useEffect(() => {
     const tryQuietRefresh = () => {
+      setNow(Date.now());
       const { busy, dialogOpen } = refreshGuardRef.current;
       if (!shouldRefreshQuietly({
         now: Date.now(),
@@ -946,12 +950,14 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const moveTargetStale = Boolean(selectedCase && moveTarget && !moveTargetDay);
   const requestedDateStale = Boolean(
     data && form.requestedDate
+    && requestedDateChosenAt !== null && lastSyncedAt && lastSyncedAt.getTime() > requestedDateChosenAt
     && !(cancer && form.cancerSchedulingMode === "earliest")
     && !openDays.some((d) => d.date === form.requestedDate && d.queueType === (form.requestedQueueType || "OR17")),
   );
   // Past cases fall outside the schedule window, and far-future ones outside horizonEnd; neither can be judged from data.bookings.
   const selectedCaseStale = Boolean(
     data && selectedCase
+    && searchedAt !== null && lastSyncedAt && lastSyncedAt.getTime() > searchedAt
     && selectedCase.scheduleDate >= data.horizonStart
     && selectedCase.scheduleDate <= data.horizonEnd
     && !data.bookings.some((b) => b.id === selectedCase.id && b.scheduleDate === selectedCase.scheduleDate && b.queueType === selectedCase.queueType),
@@ -996,10 +1002,20 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setNotice(null);
   }
 
+  function noteRequestedDateChosen(date: string) {
+    setRequestedDateChosenAt(date ? Date.now() : null);
+  }
+
   function chooseCancerDate(value: string) {
     const [requestedDate = "", requestedQueueType = ""] = value.split("|");
     setForm((current) => ({ ...current, requestedDate, requestedQueueType }));
+    noteRequestedDateChosen(requestedDate);
     setNotice(null);
+  }
+
+  function chooseListDate(value: string) {
+    setForm((current) => ({ ...current, requestedDate: value, requestedQueueType: "OR17" }));
+    noteRequestedDateChosen(value);
   }
 
   function setDateEntryMode(mode: "list" | "manual") {
@@ -1019,6 +1035,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       requestedDate: value,
       requestedQueueType: current.requestedQueueType || "OR17",
     }));
+    noteRequestedDateChosen(value);
     setNotice(null);
   }
 
@@ -1035,6 +1052,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       requestedDate: suggestion.date,
       requestedQueueType: suggestion.queueType,
     }));
+    noteRequestedDateChosen(suggestion.date);
     setManualCalendarMonth(suggestion.date.slice(0, 7));
     setBookingConflict(null);
     setNotice({ type: "success", text: "เลือกคิวใหม่แล้ว กรุณาตรวจสอบและกดบันทึกอีกครั้ง" });
@@ -1390,6 +1408,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       const payload = (await response.json()) as { results?: SearchResult[]; error?: string };
       if (!response.ok) throw new Error(payload.error || "ค้นหาไม่สำเร็จ");
       setSearchResults(payload.results || []);
+      setSearchedAt(Date.now());
     } catch (error) {
       setSearchResults([]);
       setNotice({ type: "error", text: error instanceof Error ? error.message : "ค้นหาไม่สำเร็จ" });
@@ -1611,7 +1630,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         return (
           <p className={`last-sync ${tone}`} role="status">
             {text}
-            {tone === "failed" && <button type="button" className="text-button" onClick={() => void syncCalendar()} disabled={syncing}>ลองใหม่</button>}
+            {tone === "failed" && <button type="button" className="text-button" aria-busy={syncing} onClick={() => void syncCalendar()} disabled={syncing}>ลองใหม่</button>}
           </p>
         );
       })()}
@@ -1844,7 +1863,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           })}
                         </select>
                       ) : (
-                        <select value={form.requestedDate} onChange={(e) => setForm((current) => ({ ...current, requestedDate: e.target.value, requestedQueueType: "OR17" }))} aria-label="เลือกวัน OR 17">
+                        <select value={form.requestedDate} onChange={(e) => chooseListDate(e.target.value)} aria-label="เลือกวัน OR 17">
                           <option value="">{normalDates.length ? "เลือกวัน OR 17" : "ไม่พบคิวว่างตามเงื่อนไข Staff"}</option>
                           {normalOptionDays.map((day) => {
                             const status = staffBlocked(day);
@@ -1864,7 +1883,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                             </select>
                           ) : <span className="fixed-room">OR 17</span>}
                         </div>
-                        {data ? <ManualDateCalendar
+                        {data && <ManualDateCalendar
                           days={data.days}
                           cancer={cancer}
                           queueType={manualQueueType}
@@ -1877,7 +1896,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           selectedDate={form.requestedDate}
                           onMonthChange={setManualCalendarMonth}
                           onSelectDate={chooseManualDate}
-                        /> : <CalendarSkeleton />}
+                        />}
+                        {loading && !data && <CalendarSkeleton />}
                       </>
                     )}
                     {requestedDateStale && <small className="field-help field-warning" role="status">วันที่เลือกเต็มหรือปิดแล้ว กรุณาเลือกวันใหม่</small>}
