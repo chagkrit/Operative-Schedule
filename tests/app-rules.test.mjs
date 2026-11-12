@@ -271,7 +271,7 @@ test("starts manual dates after the last dropdown option and prompts Calendar sy
   assert.match(app, /horizonEnd=\{data\.horizonEnd\}/);
   assert.match(app, /manualCalendarMonth/);
   assert.match(app, /วันถัดจากคิวว่างสุดท้ายใน Drop-down/);
-  assert.match(app, /กด Sync ทันที เพื่อบันทึกลงใน Calendar/);
+  assert.match(app, /บันทึกคิวแล้ว · ยืนยันกับ Google Calendar แล้ว/);
   assert.match(app, /ขณะนี้มีเครื่องที่ log in เข้าระบบอยู่/);
   assert.match(scheduleRoute, /dateEntryMode === "manual"/);
   assert.match(scheduleRoute, /requestedDate < manualMinDate/);

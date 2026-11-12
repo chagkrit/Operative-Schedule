@@ -8,8 +8,11 @@ import { diagnosisIsCancer } from "./lib/schedule";
 import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
+import ConfirmDialog from "./ConfirmDialog";
+import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
+import { REFRESH_INTERVAL_MS, freshnessLabel, shouldRefreshQuietly } from "./lib/refresh";
 import { useUnseenMoves } from "./useUnseenMoves";
 
 type Day = {
@@ -523,6 +526,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [syncing, setSyncing] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const lastLoadedAtRef = useRef<number | null>(null);
+  const lastFormEditAtRef = useRef<number | null>(null);
+  const inFlightRef = useRef(false);
+  const latestLoadRef = useRef(0);
+  const refreshGuardRef = useRef({ busy: false, dialogOpen: false });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showExtra, setShowExtra] = useState(false);
@@ -534,6 +544,9 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  // When the selection's source arrived; a stale note only trusts schedule data loaded after it.
+  const [searchedAt, setSearchedAt] = useState<number | null>(null);
+  const [requestedDateChosenAt, setRequestedDateChosenAt] = useState<number | null>(null);
   const [searched, setSearched] = useState(false);
   const [selectedCase, setSelectedCase] = useState<SearchResult | null>(null);
   const [moveTarget, setMoveTarget] = useState("");
@@ -544,7 +557,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [editDialog, setEditDialog] = useState<{ booking: SearchResult; value: string; error: string } | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
-  const [showSyncPrompt, setShowSyncPrompt] = useState(false);
   const [activeDeviceCount, setActiveDeviceCount] = useState(1);
   const [staffSchedule, setStaffSchedule] = useState<StaffScheduleState>({ staffKey: "", cases: [], error: "" });
   const [closureForm, setClosureForm] = useState(EMPTY_CLOSURE_FORM);
@@ -554,6 +566,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [unavailabilityForm, setUnavailabilityForm] = useState(EMPTY_UNAVAILABILITY_FORM);
   const [unavailabilitySaving, setUnavailabilitySaving] = useState(false);
   const [pendingUnavailability, setPendingUnavailability] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; action: () => Promise<void> } | null>(null);
   const [exportRange, setExportRange] = useState(() => {
     const today = bangkokToday();
     return { from: addCalendarDays(today, -1825), to: addCalendarDays(today, 730) };
@@ -601,7 +614,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     };
   }, [menuOpen]);
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
-  const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
   const unavailabilityConfirmRef = useRef<HTMLButtonElement>(null);
   const unavailabilityFormRef = useRef<HTMLFormElement>(null);
@@ -612,27 +624,54 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const editInputRef = useRef<HTMLInputElement>(null);
   const editTriggerRef = useRef<HTMLButtonElement | null>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const confirmCancelRef = useRef<HTMLButtonElement>(null);
 
-  const loadSchedule = useCallback(async (showSuccess = false) => {
+  const loadSchedule = useCallback(async ({ showSuccess = false, quiet = false }: { showSuccess?: boolean; quiet?: boolean } = {}) => {
+    const loadId = ++latestLoadRef.current;
+    // A quiet result that a newer load has overtaken is dropped, so it cannot hide a just-saved booking.
+    const overtaken = () => quiet && loadId !== latestLoadRef.current;
+    let status = 0;
     try {
       const response = await fetch("/api/schedule", { cache: "no-store" });
+      status = response.status;
       const payload = (await response.json()) as ScheduleResponse;
       if (!response.ok) throw new Error(payload.error || "โหลดตารางคิวไม่สำเร็จ");
+      if (overtaken()) return false;
       setData(payload);
       setCalendarError(null);
       setLastSyncedAt(new Date());
+      setRefreshFailed(false);
+      lastLoadedAtRef.current = Date.now();
       if (showSuccess) {
         setNotice({ type: "success", text: `Sync Google Calendar แล้ว · นำเข้าข้อมูลเดิม ${payload.importedCount} เคส` });
       }
       return true;
     } catch (error) {
+      if (overtaken()) return false;
       const message = error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ";
+      // 401 (signed out, or the server-held Google token is dead) is never quiet.
+      if (status === 401) {
+        setCalendarError(message);
+        setNotice({ type: "error", text: message });
+        return false;
+      }
+      // Network errors and 5xx on a quiet refresh only change the freshness line.
+      if (quiet) {
+        setRefreshFailed(true);
+        return false;
+      }
       setCalendarError(message);
       setNotice({ type: "error", text: message });
       return false;
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -641,14 +680,58 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog) return;
+    lastFormEditAtRef.current = form === EMPTY_FORM ? null : Date.now();
+  }, [form]);
+
+  useEffect(() => {
+    refreshGuardRef.current = {
+      busy: loading || saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
+      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || confirmDialog),
+    };
+  });
+
+  useEffect(() => {
+    const tryQuietRefresh = () => {
+      setNow(Date.now());
+      const { busy, dialogOpen } = refreshGuardRef.current;
+      if (!shouldRefreshQuietly({
+        now: Date.now(),
+        lastLoadedAt: lastLoadedAtRef.current,
+        inFlight: inFlightRef.current,
+        busy,
+        dialogOpen,
+        lastFormEditAt: lastFormEditAtRef.current,
+      })) return;
+      inFlightRef.current = true;
+      void loadSchedule({ quiet: true }).finally(() => {
+        inFlightRef.current = false;
+      });
+    };
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") tryQuietRefresh();
+    };
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("focus", tryQuietRefresh);
+    window.addEventListener("online", tryQuietRefresh);
+    const timer = window.setInterval(refreshIfVisible, REFRESH_INTERVAL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("focus", tryQuietRefresh);
+      window.removeEventListener("online", tryQuietRefresh);
+      window.clearInterval(timer);
+    };
+  }, [loadSchedule]);
+
+  useEffect(() => {
+    if (!bookingConflict && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog && !confirmDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deleting && !editSaving) {
+      if (event.key === "Escape" && !deleting && !editSaving && !(confirmDialog && (closureSaving || unavailabilitySaving))) {
         setBookingConflict(null);
+        setConfirmDialog(null);
+        if (confirmDialog) requestAnimationFrame(() => confirmTriggerRef.current?.focus());
         setEditDialog(null);
         if (editDialog) requestAnimationFrame(() => editTriggerRef.current?.focus());
-        setShowSyncPrompt(false);
         setPendingClosure(null);
         setPendingUnavailability(null);
         setDeleteDialog(null);
@@ -680,15 +763,15 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       }
     };
     document.body.style.overflow = "hidden";
-    (deleteDialog
+    (confirmDialog ? confirmCancelRef.current : deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
-      : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
+      : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : null)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, showSyncPrompt]);
+  }, [bookingConflict, closureSaving, confirmDialog, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, unavailabilitySaving]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -865,6 +948,20 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     : undefined;
   // After a Sync the chosen destination may have filled up, closed or become staff-blocked.
   const moveTargetStale = Boolean(selectedCase && moveTarget && !moveTargetDay);
+  const requestedDateStale = Boolean(
+    data && form.requestedDate
+    && requestedDateChosenAt !== null && lastSyncedAt && lastSyncedAt.getTime() > requestedDateChosenAt
+    && !(cancer && form.cancerSchedulingMode === "earliest")
+    && !openDays.some((d) => d.date === form.requestedDate && d.queueType === (form.requestedQueueType || "OR17")),
+  );
+  // Past cases fall outside the schedule window, and far-future ones outside horizonEnd; neither can be judged from data.bookings.
+  const selectedCaseStale = Boolean(
+    data && selectedCase
+    && searchedAt !== null && lastSyncedAt && lastSyncedAt.getTime() > searchedAt
+    && selectedCase.scheduleDate >= data.horizonStart
+    && selectedCase.scheduleDate <= data.horizonEnd
+    && !data.bookings.some((b) => b.id === selectedCase.id && b.scheduleDate === selectedCase.scheduleDate && b.queueType === selectedCase.queueType),
+  );
   const moveTargetMissing = Boolean(moveTarget && !moveOptionDays.some((day) => `${day.date}|${day.queueType}` === moveTarget));
   const moveStaffNotice = selectedCase && moveTargetDay
     ? caseStaffStatus(selectedCase.staffMembers, moveTargetDay.unavailableStaff, STAFF)
@@ -905,10 +1002,20 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setNotice(null);
   }
 
+  function noteRequestedDateChosen(date: string) {
+    setRequestedDateChosenAt(date ? Date.now() : null);
+  }
+
   function chooseCancerDate(value: string) {
     const [requestedDate = "", requestedQueueType = ""] = value.split("|");
     setForm((current) => ({ ...current, requestedDate, requestedQueueType }));
+    noteRequestedDateChosen(requestedDate);
     setNotice(null);
+  }
+
+  function chooseListDate(value: string) {
+    setForm((current) => ({ ...current, requestedDate: value, requestedQueueType: "OR17" }));
+    noteRequestedDateChosen(value);
   }
 
   function setDateEntryMode(mode: "list" | "manual") {
@@ -928,6 +1035,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       requestedDate: value,
       requestedQueueType: current.requestedQueueType || "OR17",
     }));
+    noteRequestedDateChosen(value);
     setNotice(null);
   }
 
@@ -944,6 +1052,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       requestedDate: suggestion.date,
       requestedQueueType: suggestion.queueType,
     }));
+    noteRequestedDateChosen(suggestion.date);
     setManualCalendarMonth(suggestion.date.slice(0, 7));
     setBookingConflict(null);
     setNotice({ type: "success", text: "เลือกคิวใหม่แล้ว กรุณาตรวจสอบและกดบันทึกอีกครั้ง" });
@@ -953,15 +1062,10 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setSyncing(true);
     setNotice(null);
     try {
-      return await loadSchedule(true);
+      return await loadSchedule({ showSuccess: true });
     } finally {
       setSyncing(false);
     }
-  }
-
-  async function confirmSyncAfterBooking() {
-    const synced = await syncCalendar();
-    if (synced) setShowSyncPrompt(false);
   }
 
   async function exportWaitingTime() {
@@ -1070,11 +1174,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         return;
       }
       const room = payload.booking?.queueType === "EXTRA" ? "OR Extra" : "OR 17";
-      setNotice({ type: "success", text: `${payload.message} • ${displayDate(payload.booking!.date, true)} • ${room}` });
+      const dateText = displayDate(payload.booking!.date, true);
       setBookingConflict(null);
-      setShowSyncPrompt(true);
       setForm(EMPTY_FORM);
-      await loadSchedule();
+      const confirmed = await loadSchedule({ quiet: true });
+      setNotice(confirmed
+        ? { type: "success", text: `บันทึกคิวแล้ว · ยืนยันกับ Google Calendar แล้ว • ${dateText} • ${room}` }
+        : { type: "error", text: `บันทึกคิวแล้ว แต่ยังยืนยันกับ Google Calendar ไม่ได้ • ${dateText} • ${room} — กด "ลองใหม่"` });
       if (window.matchMedia("(max-width: 1000px)").matches) selectTab("schedule", { focus: false });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" });
@@ -1151,8 +1257,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setNotice(null);
   }
 
-  async function deleteClosure(closure: ScheduleClosure) {
-    if (!window.confirm(`ลบวันปิดรับคิว ${displayDate(closure.date)} — ${closure.name} ใช่หรือไม่`)) return;
+  function deleteClosure(closure: ScheduleClosure, trigger: HTMLButtonElement) {
+    confirmTriggerRef.current = trigger;
+    setConfirmDialog({
+      title: "ลบวันปิดรับคิว",
+      message: `ลบวันปิดรับคิว ${displayDate(closure.date)} — ${closure.name} ใช่หรือไม่`,
+      confirmLabel: "ลบ",
+      action: () => performDeleteClosure(closure),
+    });
+  }
+
+  async function performDeleteClosure(closure: ScheduleClosure) {
     setClosureSaving(true);
     setNotice(null);
     try {
@@ -1249,8 +1364,17 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     unavailabilityStartRef.current?.focus({ preventScroll: true });
   }
 
-  async function deleteUnavailability(entry: StaffUnavailability) {
-    if (!window.confirm(`ลบวันที่ staff ไม่ว่าง ${entry.staff} ${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)} ใช่หรือไม่`)) return;
+  function deleteUnavailability(entry: StaffUnavailability, trigger: HTMLButtonElement) {
+    confirmTriggerRef.current = trigger;
+    setConfirmDialog({
+      title: "ลบวันที่ staff ไม่ว่าง",
+      message: `ลบวันที่ staff ไม่ว่าง ${entry.staff} ${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)} ใช่หรือไม่`,
+      confirmLabel: "ลบ",
+      action: () => performDeleteUnavailability(entry),
+    });
+  }
+
+  async function performDeleteUnavailability(entry: StaffUnavailability) {
     setUnavailabilitySaving(true);
     setNotice(null);
     try {
@@ -1284,6 +1408,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       const payload = (await response.json()) as { results?: SearchResult[]; error?: string };
       if (!response.ok) throw new Error(payload.error || "ค้นหาไม่สำเร็จ");
       setSearchResults(payload.results || []);
+      setSearchedAt(Date.now());
     } catch (error) {
       setSearchResults([]);
       setNotice({ type: "error", text: error instanceof Error ? error.message : "ค้นหาไม่สำเร็จ" });
@@ -1466,7 +1591,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <StatusDot synced={Boolean(data?.calendarConnected)} />
             <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
           </div>
-          <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
+          <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} aria-busy={syncing} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           <button className="guide-button" type="button" onClick={() => { selectTab("guide"); if (window.matchMedia("(min-width: 1001px)").matches) document.getElementById("screen-guide")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>คู่มือ</button>
           <button className="export-button" type="button" onClick={() => { setMenuOpen(false); void exportWaitingTime(); }} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
@@ -1496,11 +1621,19 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         <div className="setup-banner" role="status">
           <span className="banner-icon">!</span>
           <div><strong>ยังอ่านข้อมูลจาก Google Calendar ไม่สำเร็จ</strong><p>{calendarError || `กรุณาเชื่อมบัญชี ${data?.calendarName || authorizedEmail}`} แล้วกด “Sync ทันที” อีกครั้ง</p></div>
-          <button type="button" onClick={syncCalendar} disabled={syncing}>{syncing ? "กำลัง Sync…" : "Sync ทันที"}</button>
+          <button type="button" onClick={syncCalendar} aria-busy={syncing} disabled={syncing}>{syncing ? "กำลัง Sync…" : "Sync ทันที"}</button>
         </div>
       )}
 
-      {lastSyncedAt && data?.calendarConnected && <p className="last-sync" role="status">อัปเดตจาก Google Calendar ล่าสุด {new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Bangkok" }).format(lastSyncedAt)} น. · ข้อมูลเดิม {data.importedCount} เคส</p>}
+      {lastSyncedAt && data?.calendarConnected && (() => {
+        const { tone, text } = freshnessLabel(now, lastSyncedAt.getTime(), data.importedCount, refreshFailed);
+        return (
+          <p className={`last-sync ${tone}`} role="status">
+            {text}
+            {tone === "failed" && <button type="button" className="text-button" aria-busy={syncing} onClick={() => void syncCalendar()} disabled={syncing}>ลองใหม่</button>}
+          </p>
+        );
+      })()}
 
       {notice && <div className={`notice ${notice.type}`} role="alert">{notice.text}</div>}
 
@@ -1536,16 +1669,25 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         </div>
       )}
 
-      {showSyncPrompt && (
-        <div className="queue-conflict-backdrop" role="presentation">
-          <section className="queue-conflict-dialog sync-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-prompt-title" aria-describedby="sync-prompt-message">
-            <span className="sync-confirm-icon" aria-hidden="true">↻</span>
-            <span>บันทึกคิวสำเร็จ</span>
-            <h3 id="sync-prompt-title">กด Sync ทันที เพื่อบันทึกลงใน Calendar</h3>
-            <p id="sync-prompt-message">ระบบส่งรายการเข้าปฏิทินแล้ว การ Sync จะดึงข้อมูลล่าสุดกลับมายืนยันบนหน้าเว็บ</p>
-            <button ref={syncPromptButtonRef} type="button" onClick={() => void confirmSyncAfterBooking()} disabled={syncing}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
-          </section>
-        </div>
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel={confirmDialog.confirmLabel}
+          busy={closureSaving || unavailabilitySaving}
+          cancelRef={confirmCancelRef}
+          onCancel={() => {
+            setConfirmDialog(null);
+            requestAnimationFrame(() => confirmTriggerRef.current?.focus());
+          }}
+          onConfirm={() => {
+            const { action } = confirmDialog;
+            void action().finally(() => {
+              setConfirmDialog(null);
+              requestAnimationFrame(() => confirmTriggerRef.current?.focus());
+            });
+          }}
+        />
       )}
 
       {pendingClosure && (
@@ -1568,7 +1710,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
             <div className="closure-confirm-actions">
               <button type="button" onClick={() => setPendingClosure(null)}>กลับไปตรวจสอบ</button>
-              <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
+              <button ref={closureConfirmRef} type="button" onClick={() => void saveClosure(true)} aria-busy={closureSaving} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingClosure.bookings.length} เคส`}</button>
             </div>
           </section>
         </div>
@@ -1594,7 +1736,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
             <div className="closure-confirm-actions">
               <button type="button" onClick={() => setPendingUnavailability(null)}>กลับไปตรวจสอบ</button>
-              <button ref={unavailabilityConfirmRef} type="button" onClick={() => void saveUnavailability(true)} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingUnavailability.bookings.length} เคส`}</button>
+              <button ref={unavailabilityConfirmRef} type="button" onClick={() => void saveUnavailability(true)} aria-busy={unavailabilitySaving} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : `ยืนยันและคงคิวเดิม ${pendingUnavailability.bookings.length} เคส`}</button>
             </div>
           </section>
         </div>
@@ -1613,7 +1755,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <input ref={editInputRef} value={editDialog.value} onChange={(event) => setEditDialog((current) => current ? { ...current, value: event.target.value, error: "" } : null)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} aria-describedby="edit-duration-error" />
               </label>
               {editDialog.error && <p id="edit-duration-error" role="alert">{editDialog.error}</p>}
-              <button type="submit" disabled={editSaving}>{editSaving ? "กำลังอัปเดต Calendar…" : "บันทึก"}</button>
+              <button type="submit" aria-busy={editSaving} disabled={editSaving}>{editSaving ? "กำลังอัปเดต Calendar…" : "บันทึก"}</button>
               <button type="button" onClick={closeEditDialog} disabled={editSaving}>ยกเลิก</button>
             </form>
           </section>
@@ -1661,7 +1803,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               </div>
               <div className="delete-confirm-actions">
                 <button type="button" onClick={() => setDeleteDialog((current) => current ? { ...current, step: "verify" } : null)} disabled={deleting}>กลับไปตรวจสอบ</button>
-                <button ref={deleteConfirmRef} className="delete-final-button" type="button" onClick={() => void deleteCase()} disabled={deleting}>{deleting ? "กำลังลบจาก Calendar…" : "ยืนยันลบเคส"}</button>
+                <button ref={deleteConfirmRef} className="delete-final-button" type="button" onClick={() => void deleteCase()} aria-busy={deleting} disabled={deleting}>{deleting ? "กำลังลบจาก Calendar…" : "ยืนยันลบเคส"}</button>
               </div>
             </section>
           )}
@@ -1721,7 +1863,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           })}
                         </select>
                       ) : (
-                        <select value={form.requestedDate} onChange={(e) => setForm((current) => ({ ...current, requestedDate: e.target.value, requestedQueueType: "OR17" }))} aria-label="เลือกวัน OR 17">
+                        <select value={form.requestedDate} onChange={(e) => chooseListDate(e.target.value)} aria-label="เลือกวัน OR 17">
                           <option value="">{normalDates.length ? "เลือกวัน OR 17" : "ไม่พบคิวว่างตามเงื่อนไข Staff"}</option>
                           {normalOptionDays.map((day) => {
                             const status = staffBlocked(day);
@@ -1741,7 +1883,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                             </select>
                           ) : <span className="fixed-room">OR 17</span>}
                         </div>
-                        {data ? <ManualDateCalendar
+                        {data && <ManualDateCalendar
                           days={data.days}
                           cancer={cancer}
                           queueType={manualQueueType}
@@ -1754,9 +1896,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           selectedDate={form.requestedDate}
                           onMonthChange={setManualCalendarMonth}
                           onSelectDate={chooseManualDate}
-                        /> : <p className="manual-date-loading" role="status">กำลังโหลดปฏิทินคิวผ่าตัด…</p>}
+                        />}
+                        {loading && !data && <CalendarSkeleton />}
                       </>
                     )}
+                    {requestedDateStale && <small className="field-help field-warning" role="status">วันที่เลือกเต็มหรือปิดแล้ว กรุณาเลือกวันใหม่</small>}
                     {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down ถึง {data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วง 12 เดือน"}</small>}
                   </>
                 )}
@@ -1818,7 +1962,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
               </div>
             )}
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
-            <button className="save-button" type="submit" disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
+            <button className="save-button" type="submit" aria-busy={saving} disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
         </section>
 
@@ -1838,8 +1982,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
           {scheduleView === "list" ? (
             <div className="schedule-list" role="tabpanel" aria-label="รายการคิวที่กำลังจะมาถึง">
-              {loading && <div className="empty-state">กำลังโหลดคิว…</div>}
-              {!loading && upcomingDays.length === 0 && <div className="empty-state">ยังไม่มีวันผ่าตัดที่เปิดรับคิว</div>}
+              {loading && !data ? <QueueSkeleton /> : null}
+              {!loading && data && upcomingDays.length === 0 && <div className="empty-state">ยังไม่มีวันผ่าตัดที่เปิดรับคิว</div>}
               {upcomingDays.map((day) => {
                 const rows = bookingsByDay.get(`${day.date}:${day.queueType}`) || [];
                 const remaining = day.capacity - day.count;
@@ -1871,7 +2015,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                 <label className="wide"><span>หมายเหตุ</span><textarea value={closureForm.note} maxLength={500} onChange={(event) => setClosureForm((current) => ({ ...current, note: event.target.value }))} placeholder="รายละเอียดเพิ่มเติมหรือเหตุผลที่ปิดรับคิว" /></label>
                 <div className="closure-form-actions">
                   {closureForm.id && <button type="button" onClick={() => setClosureForm(EMPTY_CLOSURE_FORM)}>ยกเลิกแก้ไข</button>}
-                  <button type="submit" disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : closureForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันปิดรับคิว"}</button>
+                  <button type="submit" aria-busy={closureSaving} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : closureForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันปิดรับคิว"}</button>
                 </div>
               </form>
               <div className="closure-list-toolbar">
@@ -1884,7 +2028,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   return <article key={closure.id}>
                     <div className="closure-date"><strong>{Number(closure.date.slice(-2))}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short", year: "numeric" }).format(new Date(`${closure.date}T12:00:00+07:00`))}</span></div>
                     <div className="closure-detail"><strong>{closure.name}</strong><span>{closure.note || "ไม่มีหมายเหตุ"}</span><small>แก้ไขล่าสุด {closure.updatedAt ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(closure.updatedAt)) : "ไม่ระบุเวลา"}{affectedCount ? ` · มีคิวเดิม ${affectedCount} เคส` : ""}</small></div>
-                    <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={() => void deleteClosure(closure)} disabled={closureSaving}>ลบ</button></div>
+                    <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={(event) => deleteClosure(closure, event.currentTarget)} disabled={closureSaving}>ลบ</button></div>
                   </article>;
                 })}
               </div>
@@ -1901,7 +2045,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                   <label className="wide"><span>หมายเหตุ</span><textarea value={unavailabilityForm.note} maxLength={500} onChange={(event) => setUnavailabilityForm((current) => ({ ...current, note: event.target.value }))} placeholder="เช่น ประชุมวิชาการ ลาพักร้อน" /></label>
                   <div className="unavailability-actions">
                     {unavailabilityForm.id && <button type="button" onClick={() => setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM)}>ยกเลิกแก้ไข</button>}
-                    <button type="submit" disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
+                    <button type="submit" aria-busy={unavailabilitySaving} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
                   </div>
                 </form>
                 <div className="unavailability-list" aria-live="polite" aria-label="รายการวันที่ staff ไม่ว่าง">
@@ -1914,7 +2058,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         <span>{entry.startDate === entry.endDate ? displayDate(entry.startDate, true) : `${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)}`}</span>
                         <small>{entry.note || "ไม่มีหมายเหตุ"}</small>
                       </div>
-                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={() => void deleteUnavailability(entry)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
+                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={(event) => deleteUnavailability(entry, event.currentTarget)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
                     </article>;
                   })}
                 </div>
@@ -1934,7 +2078,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             <label htmlFor="case-search">ค้นหาจากเคสใน Google Calendar</label>
             <div>
               <input id="case-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="พิมพ์ HN ชื่อ หรือสกุล" autoComplete="off" />
-              <button type="submit" disabled={searching}>{searching ? "กำลังค้นหา…" : "ค้นหา"}</button>
+              <button type="submit" aria-busy={searching} disabled={searching}>{searching ? "กำลังค้นหา…" : "ค้นหา"}</button>
             </div>
           </form>
 
@@ -1967,10 +2111,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         <input id={`move-duration-${result.id}`} value={moveDuration} onChange={(event) => setMoveDuration(event.target.value)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} />
                       </>
                     )}
-                    <button type="submit" disabled={moving || !moveTargetDay}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
-                    {result.scheduleDate >= bangkokToday() && <button type="button" onClick={(event) => openEditDialog(result, event.currentTarget)}>แก้ระยะเวลา</button>}
-                    <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
+                    <button type="submit" aria-busy={moving} disabled={moving || !moveTargetDay || selectedCaseStale}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    {result.scheduleDate >= bangkokToday() && <button type="button" onClick={(event) => openEditDialog(result, event.currentTarget)} disabled={selectedCaseStale}>แก้ระยะเวลา</button>}
+                    <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim() || selectedCaseStale} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
+                    {selectedCaseStale && <small className="field-help field-warning" role="status">เคสนี้ถูกแก้จากอีกเครื่อง กรุณาค้นหาใหม่</small>}
                     {moveTargetStale && (
                       <div className="staff-unavailable-notice" role="status">
                         <strong>วันที่เลือกใช้ย้ายไม่ได้แล้ว</strong>

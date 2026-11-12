@@ -70,7 +70,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* ---------- Type ---------- */
 .brand h1, .hero h2, .panel-heading h3, .month-toolbar strong, .signin-card h1,
-.queue-conflict-heading h3, .sync-confirm-dialog h3, .legal-card h1 {
+.queue-conflict-heading h3, .legal-card h1 {
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: -.02em;
@@ -133,6 +133,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice.success { color: var(--green) !important; background: var(--green-tint) !important; }
 .notice.error { color: var(--danger) !important; background: var(--danger-tint) !important; }
 .last-sync { color: var(--green); }
+.last-sync.stale, .last-sync.failed { color: var(--amber); }
 
 /* ---------- Buttons ---------- */
 .export-button, .save-button, .google-button, .case-search-form button, .move-form button,
@@ -244,8 +245,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .queue-conflict-dialog { border-radius: 30px; box-shadow: var(--raised-large), var(--shadow-float) !important; }
 .queue-conflict-icon { border-radius: 16px; color: var(--amber) !important; background: var(--amber-tint) !important; box-shadow: none !important; }
 .queue-conflict-icon.delete-icon { color: var(--danger) !important; background: var(--danger-tint) !important; }
-.sync-confirm-icon { color: var(--green) !important; background: var(--green-tint) !important; box-shadow: none !important; }
-.sync-confirm-dialog button { border-radius: 999px; background: var(--green); }
 .queue-suggestion-list > button { border-radius: 16px; }
 .queue-suggestion-list > button:hover { box-shadow: inset 0 0 0 1.5px var(--rose) !important; }
 
@@ -337,3 +336,49 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .month-legend > span { background: var(--rose-coral); }
 .month-legend em { color: var(--muted) !important; background: repeating-linear-gradient(135deg, transparent 0 4px, var(--hairline) 4px 5px); }
+
+/* First-load skeletons */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.orq-skeleton {
+  background: linear-gradient(100deg, var(--glass-a) 30%, rgba(255, 255, 255, .55) 50%, var(--glass-a) 70%) 0 0 / 200% 100%;
+  border: 1px solid var(--hairline) !important;
+  border-radius: 12px;
+  animation: orq-shimmer 1.4s linear infinite;
+}
+.orq-skeleton-queue { display: grid; gap: 10px; }
+.orq-skeleton-day { height: 28px; width: 45%; }
+.orq-skeleton-row { height: 64px; }
+.orq-skeleton-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.orq-skeleton-cell { aspect-ratio: 1; border-radius: 10px; }
+@keyframes orq-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .orq-skeleton { animation: none; background: var(--glass-a); }
+}
+
+/* Inline busy spinner: any button announcing aria-busy shows a small ring before its label. */
+button[aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid currentColor !important;
+  border-right-color: transparent !important;
+  border-radius: 50%;
+  animation: orq-spin 0.8s linear infinite;
+}
+@keyframes orq-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  button[aria-busy="true"]::before { animation: none; border-right-color: currentColor !important; opacity: 0.6; }
+}
