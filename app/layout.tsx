@@ -1,8 +1,13 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
+import { Anuphan, IBM_Plex_Sans_Thai } from "next/font/google";
 import "./globals.css";
 import "./staff-selector-v2.css";
 import "./mobile-shell.css";
+import "./aurora.css";
+
+const anuphan = Anuphan({ subsets: ["thai", "latin"], weight: ["400", "500", "600", "700"], variable: "--font-anuphan", display: "swap" });
+const plexThai = IBM_Plex_Sans_Thai({ subsets: ["thai", "latin"], weight: ["400", "500", "600", "700"], variable: "--font-plex-thai", display: "swap" });
 
 export const viewport: Viewport = { viewportFit: "cover" };
 
@@ -35,7 +40,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="th">
+    <html lang="th" className={`${anuphan.variable} ${plexThai.variable}`}>
       <body>{children}</body>
     </html>
   );

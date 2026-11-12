@@ -1,0 +1,320 @@
+/*
+ * Aurora redesign (2026-11) — "Glass + gradient".
+ * Source of truth: Design System artifact "OR Queue Aurora".
+ * Loaded LAST (after mobile-shell.css): remaps the Soft UI tokens of globals.css and restyles
+ * key surfaces. Equal-specificity rules here win because they come later; rules that override
+ * an `!important` in globals.css carry `!important` too. Light theme only for now.
+ */
+
+:root {
+  /* Aurora tokens */
+  --bg-base: #fbf4f6;
+  --mesh-rose: #f4b6cb;
+  --mesh-peach: #fbd9c4;
+  --mesh-mint: #c4eadb;
+  --glass-a: rgba(255, 255, 255, .62);
+  --glass-strong: rgba(255, 255, 255, .84);
+  --glass-edge: rgba(255, 255, 255, .9);
+  --hairline: rgba(120, 17, 61, .12);
+  --ink: #24131b;
+  --muted: #68505b;
+  --rose: #a71955;
+  --rose-coral: #c8324f;
+  --rose-deep: #78113d;
+  --rose-soft: #fbe3ec;
+  --on-rose: #ffffff;
+  --green: #136a53;
+  --green-tint: #def3ea;
+  --amber: #8a5110;
+  --amber-tint: #fdf0dc;
+  --danger: #b3261e;
+  --danger-tint: #fde8e6;
+  --focus: #5635d4;
+  --grad: linear-gradient(135deg, var(--rose), var(--rose-coral));
+  --shadow-glass: 0 1px 2px rgba(76, 20, 44, .06), 0 12px 32px rgba(76, 20, 44, .10);
+  --shadow-float: 0 24px 64px rgba(76, 20, 44, .20);
+  --shadow-glow: 0 8px 24px rgba(200, 50, 79, .32);
+  --font-display: var(--font-anuphan), "Anuphan", var(--font-plex-thai), "IBM Plex Sans Thai", "Noto Sans Thai", system-ui, sans-serif;
+  --font-body: var(--font-plex-thai), "IBM Plex Sans Thai", "Noto Sans Thai", "Leelawadee UI", system-ui, sans-serif;
+
+  /* Legacy Soft UI tokens remapped onto glass */
+  --soft-base: var(--glass-strong);
+  --cream: var(--bg-base);
+  --raised: inset 0 1px 0 var(--glass-edge), 0 0 0 1px var(--hairline), var(--shadow-glass);
+  --raised-large: inset 0 1px 0 var(--glass-edge), 0 0 0 1px var(--hairline), 0 1px 2px rgba(76, 20, 44, .06), 0 18px 48px rgba(76, 20, 44, .12);
+  --pressed: inset 0 0 0 1px var(--hairline), inset 0 1px 3px rgba(76, 20, 44, .06);
+  --glass: var(--glass-strong);
+  --glass-highlight: inset 0 1px 0 var(--glass-edge), inset 0 0 0 1px var(--hairline), 0 2px 8px rgba(76, 20, 44, .06);
+  --bottom-nav-height: 56px;
+  --bottom-nav-muted: var(--muted);
+  --bottom-nav-active: var(--rose);
+}
+
+/* ---------- Canvas: aurora mesh behind everything ---------- */
+html { background: var(--bg-base); }
+/* body stays transparent so the fixed mesh (z-index -1) shows between html and content. */
+body { background: transparent; color: var(--ink); font-family: var(--font-body); -webkit-font-smoothing: antialiased; }
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(48rem 32rem at 95% -10%, var(--mesh-rose), transparent 70%),
+    radial-gradient(40rem 30rem at -12% 30%, var(--mesh-peach), transparent 70%),
+    radial-gradient(46rem 26rem at 60% 112%, var(--mesh-mint), transparent 70%);
+}
+button, input, select, textarea { font-family: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline-color: var(--focus) !important; outline-offset: 3px; }
+
+/* ---------- Type ---------- */
+.brand h1, .hero h2, .panel-heading h3, .month-toolbar strong, .signin-card h1,
+.queue-conflict-heading h3, .sync-confirm-dialog h3, .legal-card h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+.rule-number, .date-block strong, .day-title em, .month-day-summary > div strong, .wait-time-card strong, .step {
+  font-family: var(--font-display);
+}
+.eyebrow { font-family: var(--font-body); letter-spacing: .16em; }
+.eyebrow.pink { color: var(--rose); }
+.field input::placeholder, .field textarea::placeholder, .case-search-form input::placeholder, .delete-hn-form input::placeholder { color: var(--muted); opacity: .8; }
+
+/* ---------- Top bar: floating glass capsule ---------- */
+.topbar {
+  min-height: 76px;
+  margin-top: 14px;
+  padding: 10px 14px 10px 10px;
+  border-radius: 999px;
+  background: var(--glass-a);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: var(--raised);
+}
+.brand-logo { width: 52px; height: 52px; box-shadow: 0 0 0 2px var(--glass-edge), var(--shadow-glass); }
+.brand h1 { font-size: 22px; }
+.calendar-pill.connected { color: var(--green) !important; background: var(--green-tint) !important; box-shadow: none !important; }
+.calendar-pill.disconnected { color: var(--amber) !important; background: var(--amber-tint) !important; box-shadow: none !important; }
+.guide-button { color: var(--rose); background: transparent; }
+.guide-button:hover { background: var(--rose-soft); }
+
+/* ---------- Hero ---------- */
+.hero h2 { line-height: 1.14; }
+.hero h2 span {
+  color: transparent;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+.presence-status { color: var(--ink); background: var(--glass-strong); box-shadow: var(--glass-highlight); }
+.rule-number { padding: 0 6px; color: var(--rose) !important; background: transparent !important; box-shadow: none !important; font-size: 64px; font-weight: 600; font-style: normal; letter-spacing: -.03em; }
+
+/* ---------- Glass panels ---------- */
+.panel, .rule-card, .signin-card {
+  background: var(--glass-a) !important;
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: var(--raised-large) !important;
+}
+.panel, .signin-card { border-radius: 30px; }
+.rule-card { border-radius: 24px; }
+.signin-shell { background: transparent; }
+
+.step { color: var(--on-rose) !important; background: var(--grad) !important; box-shadow: var(--shadow-glow) !important; font-size: 13px; font-weight: 700; }
+.diagnosis-badge, .search-scope, .history-count { color: var(--rose) !important; background: var(--rose-soft) !important; box-shadow: none !important; }
+
+/* ---------- Banners and notices ---------- */
+.setup-banner { color: var(--amber) !important; background: var(--amber-tint) !important; box-shadow: var(--shadow-glass) !important; }
+.setup-banner > button { color: #fff; background: var(--amber); border-radius: 999px; }
+.banner-icon { background: var(--amber); }
+.notice { box-shadow: var(--shadow-float) !important; border-radius: 18px; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+.notice.success { color: var(--green) !important; background: var(--green-tint) !important; }
+.notice.error { color: var(--danger) !important; background: var(--danger-tint) !important; }
+.last-sync { color: var(--green); }
+
+/* ---------- Buttons ---------- */
+.export-button, .save-button, .google-button, .case-search-form button, .move-form button,
+.extra-form button, .wait-time-export button {
+  color: var(--on-rose) !important;
+  background: var(--grad) !important;
+  box-shadow: var(--shadow-glow) !important;
+}
+.closure-form-actions button:last-child, .unavailability-actions button:last-child {
+  color: var(--on-rose) !important;
+  background: var(--grad) !important;
+  box-shadow: var(--shadow-glow) !important;
+}
+.save-button { border-radius: 999px; font-family: var(--font-body); }
+.delete-confirm-actions button:last-child, .delete-final-button, .delete-case-button, .closure-confirm-actions button:last-child {
+  color: #fff !important;
+  background: var(--danger) !important;
+  box-shadow: 0 8px 20px rgba(179, 38, 30, .25) !important;
+}
+.delete-confirm-actions button:disabled, .delete-case-button:disabled {
+  color: var(--muted) !important;
+  background: var(--glass-strong) !important;
+  box-shadow: var(--pressed) !important;
+}
+.sync-button:hover, .signout-button:hover, .text-button:hover, .month-toolbar button:hover, .closure-row-actions button:hover,
+.closure-form-actions button:hover, .queue-conflict-close:hover, .calendar-pill:hover {
+  box-shadow: var(--glass-highlight), inset 0 0 0 1px var(--rose) !important;
+}
+.text-button { color: var(--rose) !important; }
+
+/* ---------- Segmented controls: active = gradient pill ---------- */
+.schedule-tabs, .staff-queue-preference > div, .date-entry-toggle { border-radius: 999px; background: var(--glass-strong) !important; box-shadow: var(--glass-highlight) !important; }
+.schedule-tabs button, .staff-queue-preference button, .date-entry-toggle button { border-radius: 999px; background: transparent !important; box-shadow: none !important; color: var(--muted) !important; }
+.schedule-tabs button.active, .staff-queue-preference button.active, .date-entry-toggle button.active {
+  color: var(--on-rose) !important;
+  background: var(--grad) !important;
+  box-shadow: var(--shadow-glow) !important;
+}
+
+/* ---------- Choice cards ---------- */
+.mode-options label.selected, .case-result.selected,
+.staff-selector label:has(input:checked), .neoadjuvant-choice:has(input:checked), .unavailability-staff label:has(input:checked) {
+  color: var(--rose-deep) !important;
+  background: var(--rose-soft) !important;
+  box-shadow: inset 0 0 0 1.5px var(--rose) !important;
+}
+
+/* ---------- Inputs ---------- */
+.field input:focus, .field select:focus, .field textarea:focus, .extra-form input:focus,
+.case-search-form input:focus, .move-form select:focus, .wait-time-export input:focus,
+.closure-form input:focus, .closure-form textarea:focus, .closure-list-toolbar input:focus,
+.delete-hn-form input:focus {
+  box-shadow: inset 0 0 0 1.5px var(--rose), 0 0 0 4px var(--rose-soft) !important;
+}
+
+/* ---------- Schedule list ---------- */
+.day-card { border-radius: 22px; }
+.day-card.extra, .day-card.closed { box-shadow: var(--raised) !important; }
+.date-block { width: 56px; height: 64px; border-radius: 16px; color: var(--rose) !important; background: var(--rose-soft) !important; box-shadow: none !important; }
+.date-block strong { font-size: 26px; font-weight: 600; letter-spacing: -.03em; }
+.day-card.extra .date-block { color: var(--on-rose) !important; background: var(--grad) !important; box-shadow: var(--shadow-glow) !important; }
+.day-title strong { font-size: 15px; }
+.day-title em { color: var(--rose-deep); font-style: normal; font-weight: 600; font-size: 17px; }
+.capacity-bar { height: 6px; background: var(--hairline); box-shadow: none; }
+.capacity-bar i { background: linear-gradient(90deg, var(--rose), var(--rose-coral)); }
+.warning-line, .extra-line { display: inline-block; margin-right: 6px; padding: 2px 10px; border-radius: 999px; color: var(--rose); background: var(--rose-soft); }
+.closure-line { color: var(--danger) !important; }
+.mini-bookings > div > span:first-child { border-radius: 8px; color: var(--muted); background: var(--glass-strong); box-shadow: var(--pressed); }
+.mini-bookings .cancer-mark, .month-booking-slot.cancer, .diagnosis-badge.cancer {
+  color: var(--rose) !important;
+  background: var(--rose-soft) !important;
+  box-shadow: inset 0 0 0 1px rgba(167, 25, 85, .25) !important;
+}
+.month-booking-slot { color: var(--ink) !important; background: var(--glass-strong) !important; box-shadow: var(--pressed) !important; }
+.full-label { color: var(--muted); }
+
+/* ---------- Month calendar ---------- */
+.month-toolbar button { border-radius: 999px; }
+.month-day { border-radius: 12px; }
+.month-day i { background: var(--green); }
+.month-day b { color: var(--rose); background: var(--rose-soft); }
+.month-day.has-extra::after { background: var(--rose-coral); box-shadow: none; }
+.month-day.closed {
+  color: var(--muted) !important;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, var(--hairline) 6px 7px), rgba(255, 255, 255, .35) !important;
+  box-shadow: none !important;
+}
+.month-day.closed em { color: var(--muted) !important; }
+.month-day.today { box-shadow: inset 0 0 0 2px var(--rose), var(--shadow-glass) !important; }
+.month-day.today > span { text-decoration: none; }
+.month-day.has-clash { box-shadow: inset 0 0 0 2px #d9a441, var(--shadow-glass) !important; }
+.month-day.selected {
+  color: var(--on-rose) !important;
+  background: var(--grad) !important;
+  box-shadow: var(--shadow-glow) !important;
+}
+.month-day.selected b { color: var(--rose); background: #fff; }
+.month-day.selected i { background: #fff; }
+.month-day-summary > div strong { color: var(--rose); font-weight: 600; }
+.month-closure-summary { color: var(--danger) !important; }
+.month-bookings-heading span { color: var(--rose); background: var(--rose-soft); }
+
+/* ---------- Dialogs ---------- */
+.queue-conflict-backdrop {
+  background: rgba(251, 244, 246, .45);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+}
+.queue-conflict-dialog { border-radius: 30px; box-shadow: var(--raised-large), var(--shadow-float) !important; }
+.queue-conflict-icon { border-radius: 16px; color: var(--amber) !important; background: var(--amber-tint) !important; box-shadow: none !important; }
+.queue-conflict-icon.delete-icon { color: var(--danger) !important; background: var(--danger-tint) !important; }
+.sync-confirm-icon { color: var(--green) !important; background: var(--green-tint) !important; box-shadow: none !important; }
+.sync-confirm-dialog button { border-radius: 999px; background: var(--green); }
+.queue-suggestion-list > button { border-radius: 16px; }
+.queue-suggestion-list > button:hover { box-shadow: inset 0 0 0 1.5px var(--rose) !important; }
+
+/* ---------- Closure / staff unavailability ---------- */
+.closure-date { color: var(--danger) !important; background: var(--danger-tint) !important; box-shadow: none !important; }
+
+/* ---------- Mobile shell ---------- */
+@media (max-width: 1000px) {
+  .topbar { min-height: 64px; margin-top: 10px; padding: 8px 8px 8px 8px; border-radius: 28px; }
+  .brand-logo { width: 44px; height: 44px; }
+  .menu-button { border-radius: 999px; }
+  .topbar .topbar-actions[data-open="true"] {
+    top: calc(100% + 8px);
+    border-radius: 24px;
+    background: var(--glass-strong);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    box-shadow: var(--raised-large), var(--shadow-float);
+  }
+
+  .app-shell { padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom) + 48px); }
+  .bottom-nav {
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    gap: 4px;
+    padding: 6px;
+    border-radius: 28px;
+    background: var(--glass-a);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    box-shadow: var(--raised), var(--shadow-float);
+  }
+  .bottom-nav-link { border-radius: 22px; }
+  .bottom-nav-link[aria-current="page"] { color: var(--rose); background: var(--rose-soft); }
+  .bottom-nav-link[aria-current="page"] .bottom-nav-icon { box-shadow: none; }
+  .bottom-nav-link:focus-visible { border-radius: 22px; }
+  .bottom-nav-badge { color: var(--on-rose); background: var(--grad); font-family: var(--font-body); }
+}
+
+@media (max-width: 650px) {
+  .hero h2 { line-height: 1.16; }
+  .panel, .booking-panel, .schedule-panel, .case-search-panel, .move-history-panel { border-radius: 26px; }
+}
+
+/* ---------- Fallbacks ---------- */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .panel, .rule-card, .signin-card, .topbar, .bottom-nav { background: rgba(255, 255, 255, .92) !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .panel, .rule-card, .signin-card, .topbar, .bottom-nav, .queue-conflict-backdrop, .notice {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .panel, .rule-card, .signin-card, .topbar, .bottom-nav { background: rgba(255, 255, 255, .95) !important; }
+}
+
+/* ---------- Fixes found in the render check ---------- */
+.panel { min-width: 0; }
+.wait-time-export > label, .wait-time-export input { min-width: 0; max-width: 100%; }
+.minutes-line { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.5; }
+.mini-bookings > div { grid-template-columns: 28px minmax(0, 1fr) 10px; gap: 10px; padding: 8px 10px !important; border-radius: 14px; }
+.mini-bookings > div > span:first-child { width: 28px; height: 28px; font-size: 11px; }
+@media (max-width: 1000px) {
+  .bottom-nav { background: rgba(255, 255, 255, .8); }
+  .last-sync { margin: 10px 4px 12px; text-align: left; }
+}
+@media (max-width: 650px) {
+  .hero h2 { font-size: 34px; }
+}
+.month-legend > span { background: var(--rose-coral); }
+.month-legend em { color: var(--muted) !important; background: repeating-linear-gradient(135deg, transparent 0 4px, var(--hairline) 4px 5px); }
