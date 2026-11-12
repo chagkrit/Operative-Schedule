@@ -8,6 +8,7 @@ import { diagnosisIsCancer } from "./lib/schedule";
 import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
+import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
 import { useUnseenMoves } from "./useUnseenMoves";
@@ -1754,7 +1755,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                           selectedDate={form.requestedDate}
                           onMonthChange={setManualCalendarMonth}
                           onSelectDate={chooseManualDate}
-                        /> : <p className="manual-date-loading" role="status">กำลังโหลดปฏิทินคิวผ่าตัด…</p>}
+                        /> : <CalendarSkeleton />}
                       </>
                     )}
                     {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down ถึง {data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วง 12 เดือน"}</small>}
@@ -1838,8 +1839,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
           {scheduleView === "list" ? (
             <div className="schedule-list" role="tabpanel" aria-label="รายการคิวที่กำลังจะมาถึง">
-              {loading && <div className="empty-state">กำลังโหลดคิว…</div>}
-              {!loading && upcomingDays.length === 0 && <div className="empty-state">ยังไม่มีวันผ่าตัดที่เปิดรับคิว</div>}
+              {loading && !data ? <QueueSkeleton /> : null}
+              {!loading && data && upcomingDays.length === 0 && <div className="empty-state">ยังไม่มีวันผ่าตัดที่เปิดรับคิว</div>}
               {upcomingDays.map((day) => {
                 const rows = bookingsByDay.get(`${day.date}:${day.queueType}`) || [];
                 const remaining = day.capacity - day.count;
