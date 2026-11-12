@@ -11,6 +11,7 @@ import BottomNav from "./BottomNav";
 import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
 import { parseTab, tabHref, type TabId } from "./lib/nav";
+import { REFRESH_INTERVAL_MS, shouldRefreshQuietly } from "./lib/refresh";
 import { useUnseenMoves } from "./useUnseenMoves";
 
 type Day = {
@@ -524,6 +525,12 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [syncing, setSyncing] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [, setRefreshFailed] = useState(false);
+  const lastLoadedAtRef = useRef<number | null>(null);
+  const lastFormEditAtRef = useRef<number | null>(null);
+  const inFlightRef = useRef(false);
+  const latestLoadRef = useRef(0);
+  const refreshGuardRef = useRef({ busy: false, dialogOpen: false });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showExtra, setShowExtra] = useState(false);
@@ -614,20 +621,40 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const editTriggerRef = useRef<HTMLButtonElement | null>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
 
-  const loadSchedule = useCallback(async (showSuccess = false) => {
+  const loadSchedule = useCallback(async ({ showSuccess = false, quiet = false }: { showSuccess?: boolean; quiet?: boolean } = {}) => {
+    const loadId = ++latestLoadRef.current;
+    // A quiet result that a newer load has overtaken is dropped, so it cannot hide a just-saved booking.
+    const overtaken = () => quiet && loadId !== latestLoadRef.current;
+    let status = 0;
     try {
       const response = await fetch("/api/schedule", { cache: "no-store" });
+      status = response.status;
       const payload = (await response.json()) as ScheduleResponse;
       if (!response.ok) throw new Error(payload.error || "โหลดตารางคิวไม่สำเร็จ");
+      if (overtaken()) return false;
       setData(payload);
       setCalendarError(null);
       setLastSyncedAt(new Date());
+      setRefreshFailed(false);
+      lastLoadedAtRef.current = Date.now();
       if (showSuccess) {
         setNotice({ type: "success", text: `Sync Google Calendar แล้ว · นำเข้าข้อมูลเดิม ${payload.importedCount} เคส` });
       }
       return true;
     } catch (error) {
+      if (overtaken()) return false;
       const message = error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ";
+      // 401 (signed out, or the server-held Google token is dead) is never quiet.
+      if (status === 401) {
+        setCalendarError(message);
+        setNotice({ type: "error", text: message });
+        return false;
+      }
+      // Network errors and 5xx on a quiet refresh only change the freshness line.
+      if (quiet) {
+        setRefreshFailed(true);
+        return false;
+      }
       setCalendarError(message);
       setNotice({ type: "error", text: message });
       return false;
@@ -639,6 +666,48 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   useEffect(() => {
     const timer = window.setTimeout(() => void loadSchedule(), 0);
     return () => window.clearTimeout(timer);
+  }, [loadSchedule]);
+
+  useEffect(() => {
+    lastFormEditAtRef.current = form === EMPTY_FORM ? null : Date.now();
+  }, [form]);
+
+  useEffect(() => {
+    refreshGuardRef.current = {
+      busy: saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
+      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || showSyncPrompt),
+    };
+  });
+
+  useEffect(() => {
+    const tryQuietRefresh = () => {
+      const { busy, dialogOpen } = refreshGuardRef.current;
+      if (!shouldRefreshQuietly({
+        now: Date.now(),
+        lastLoadedAt: lastLoadedAtRef.current,
+        inFlight: inFlightRef.current,
+        busy,
+        dialogOpen,
+        lastFormEditAt: lastFormEditAtRef.current,
+      })) return;
+      inFlightRef.current = true;
+      void loadSchedule({ quiet: true }).finally(() => {
+        inFlightRef.current = false;
+      });
+    };
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") tryQuietRefresh();
+    };
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("focus", tryQuietRefresh);
+    window.addEventListener("online", tryQuietRefresh);
+    const timer = window.setInterval(refreshIfVisible, REFRESH_INTERVAL_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("focus", tryQuietRefresh);
+      window.removeEventListener("online", tryQuietRefresh);
+      window.clearInterval(timer);
+    };
   }, [loadSchedule]);
 
   useEffect(() => {
@@ -954,7 +1023,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     setSyncing(true);
     setNotice(null);
     try {
-      return await loadSchedule(true);
+      return await loadSchedule({ showSuccess: true });
     } finally {
       setSyncing(false);
     }
