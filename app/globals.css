@@ -126,6 +126,7 @@ button { cursor: pointer; }
 .field textarea { min-height: 82px; padding: 12px 14px; resize: vertical; font: inherit; line-height: 1.45; }
 .field textarea::placeholder { color: #b0a2a7; }
 .field-help { margin-top: -2px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.field-help.field-warning { color: var(--amber); }
 .muted-field { opacity: .62; }
 .staff-field { align-content: start; }
 .staff-selector { display: grid; gap: 7px; margin: 0; padding: 0; border: 0; }

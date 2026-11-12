@@ -274,7 +274,7 @@ test("booking: a concrete refusal for the chosen day wins over the same_staff hi
 test("move button is disabled when the chosen destination went stale after a Sync", async () => {
   const app = await read("app/SchedulerApp.tsx");
   assert.match(app, /const moveTargetStale = Boolean\(selectedCase && moveTarget && !moveTargetDay\)/);
-  assert.match(app, /<button type="submit" disabled=\{moving \|\| !moveTargetDay\}>/);
+  assert.match(app, /<button type="submit" disabled=\{moving \|\| !moveTargetDay || selectedCaseStale\}>/);
   assert.doesNotMatch(app, /disabled=\{moving \|\| !moveTarget\}/);
   assert.match(app, /if \(!selectedCase \|\| !moveTarget \|\| !moveTargetDay\)/);
   assert.match(app, /moveTargetMissing && <option value=\{moveTarget\} disabled>/);

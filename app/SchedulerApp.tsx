@@ -941,6 +941,18 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     : undefined;
   // After a Sync the chosen destination may have filled up, closed or become staff-blocked.
   const moveTargetStale = Boolean(selectedCase && moveTarget && !moveTargetDay);
+  const requestedDateStale = Boolean(
+    data && form.requestedDate
+    && !(cancer && form.cancerSchedulingMode === "earliest")
+    && !openDays.some((d) => d.date === form.requestedDate && d.queueType === (form.requestedQueueType || "OR17")),
+  );
+  // Past cases fall outside the schedule window, and far-future ones outside horizonEnd; neither can be judged from data.bookings.
+  const selectedCaseStale = Boolean(
+    data && selectedCase
+    && selectedCase.scheduleDate >= data.horizonStart
+    && selectedCase.scheduleDate <= data.horizonEnd
+    && !data.bookings.some((b) => b.id === selectedCase.id && b.scheduleDate === selectedCase.scheduleDate && b.queueType === selectedCase.queueType),
+  );
   const moveTargetMissing = Boolean(moveTarget && !moveOptionDays.some((day) => `${day.date}|${day.queueType}` === moveTarget));
   const moveStaffNotice = selectedCase && moveTargetDay
     ? caseStaffStatus(selectedCase.staffMembers, moveTargetDay.unavailableStaff, STAFF)
@@ -1841,6 +1853,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         /> : <CalendarSkeleton />}
                       </>
                     )}
+                    {requestedDateStale && <small className="field-help field-warning" role="status">วันที่เลือกเต็มหรือปิดแล้ว กรุณาเลือกวันใหม่</small>}
                     {form.dateEntryMode === "manual" && <small className="field-help">เริ่มเลือกได้ตั้งแต่ {displayDate(manualDateStart)} ซึ่งเป็นวันถัดจากคิวว่างสุดท้ายใน Drop-down ถึง {data?.horizonEnd ? displayDate(data.horizonEnd) : "สิ้นสุดช่วง 12 เดือน"}</small>}
                   </>
                 )}
@@ -2051,10 +2064,11 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                         <input id={`move-duration-${result.id}`} value={moveDuration} onChange={(event) => setMoveDuration(event.target.value)} inputMode="numeric" autoComplete="off" placeholder={`1–${DAILY_MINUTES_LIMIT}`} />
                       </>
                     )}
-                    <button type="submit" disabled={moving || !moveTargetDay}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
-                    {result.scheduleDate >= bangkokToday() && <button type="button" onClick={(event) => openEditDialog(result, event.currentTarget)}>แก้ระยะเวลา</button>}
-                    <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim()} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
+                    <button type="submit" disabled={moving || !moveTargetDay || selectedCaseStale}>{moving ? "กำลังอัปเดต Calendar…" : "ยืนยันสลับวัน"}</button>
+                    {result.scheduleDate >= bangkokToday() && <button type="button" onClick={(event) => openEditDialog(result, event.currentTarget)} disabled={selectedCaseStale}>แก้ระยะเวลา</button>}
+                    <button className="delete-case-button" type="button" onClick={(event) => openDeleteDialog(result, event.currentTarget)} disabled={!result.hn.trim() || selectedCaseStale} title={result.hn.trim() ? undefined : "ไม่พบ HN สำหรับยืนยันตัวตน"}>ลบเคส</button>
                     <small>ระบบจะตรวจจำนวนคิวและกติกา Cancer อีกครั้งก่อนย้าย</small>
+                    {selectedCaseStale && <small className="field-help field-warning" role="status">เคสนี้ถูกแก้จากอีกเครื่อง กรุณาค้นหาใหม่</small>}
                     {moveTargetStale && (
                       <div className="staff-unavailable-notice" role="status">
                         <strong>วันที่เลือกใช้ย้ายไม่ได้แล้ว</strong>

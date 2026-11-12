@@ -51,3 +51,20 @@ test("freshness line uses the shared label and offers retry", async () => {
   assert.match(app, />ลองใหม่</);
   assert.doesNotMatch(app, /อัปเดตจาก Google Calendar ล่าสุด/);
 });
+
+test("keeps a refreshed-away date and says so", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /const requestedDateStale = /);
+  assert.match(app, /วันที่เลือกเต็มหรือปิดแล้ว กรุณาเลือกวันใหม่/);
+  assert.match(app, /<small className="field-help field-warning" role="status">/);
+});
+
+test("flags a case changed on another device, but not past cases", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  const start = app.indexOf("const selectedCaseStale = ");
+  assert.ok(start >= 0, "selectedCaseStale must exist");
+  const expr = app.slice(start, app.indexOf(");", start));
+  assert.match(expr, /selectedCase\.scheduleDate >= data\.horizonStart/);
+  assert.match(app, /เคสนี้ถูกแก้จากอีกเครื่อง กรุณาค้นหาใหม่/);
+  assert.ok((app.match(/disabled=\{[^}]*selectedCaseStale/g) || []).length >= 3, "move, edit and delete must be disabled");
+});
