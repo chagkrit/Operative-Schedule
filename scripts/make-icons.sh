@@ -11,8 +11,8 @@ trap 'rm -rf "$tmp"' EXIT
 
 # Source is 2048x2080 with no alpha: pad to a white square (never upscaled past 2080).
 sips --padToHeightWidth 2080 2080 --padColor FFFFFF "$src" --out "$tmp/square.jpg" >/dev/null
-# Maskable: logo ~80% of the canvas so it stays inside the safe zone.
-sips --padToHeightWidth 2600 2600 --padColor FFFFFF "$src" --out "$tmp/mask.jpg" >/dev/null
+# Maskable: logo ~70% of the canvas (circular masks never clip the ring) so it stays inside the safe zone.
+sips --padToHeightWidth 2900 2900 --padColor FFFFFF "$src" --out "$tmp/mask.jpg" >/dev/null
 
 mkdir -p "$out"
 sips -s format png -z 512 512 "$tmp/square.jpg" --out "$tmp/icon-512.png" >/dev/null

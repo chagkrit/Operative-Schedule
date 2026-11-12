@@ -5,6 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "OR Queue — Breast & Endocrine Surgery CMU",
     short_name: "OR Queue",
     description: "ระบบลงคิวผ่าตัด OR 17 และ OR Extra",
+    id: "/",
     lang: "th",
     start_url: "/?tab=schedule",
     display: "standalone",

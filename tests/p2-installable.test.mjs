@@ -62,3 +62,14 @@ test("no service worker in this PR", () => {
   }
   assert.ok(!existsSync(join(root, "public/sw.js")), "public/sw.js must not exist");
 });
+
+test("manifest declares a stable app id", () => {
+  const src = readFileSync(new URL("../app/manifest.ts", import.meta.url), "utf8");
+  assert.match(src, /id: "\/"/);
+});
+
+test("maskable icon is padded to 2900px (logo ~70%)", () => {
+  const src = readFileSync(new URL("../scripts/make-icons.sh", import.meta.url), "utf8");
+  assert.ok(src.includes("2900"), "make-icons.sh pads maskable canvas to 2900");
+  assert.ok(!src.includes("2600"), "old 2600 padding removed");
+});
