@@ -78,3 +78,12 @@ test("uses the Aurora confirm dialog instead of window.confirm", async () => {
   assert.match(dialog, /role="alertdialog"/);
   assert.match(dialog, /aria-modal="true"/);
 });
+
+test("replaces the post-booking Sync modal with a confirmed message", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.doesNotMatch(app, /showSyncPrompt/);
+  assert.doesNotMatch(app, /confirmSyncAfterBooking/);
+  assert.doesNotMatch(app, /syncPromptButtonRef/);
+  assert.match(app, /ยืนยันกับ Google Calendar แล้ว/);
+  assert.match(app, /แต่ยังยืนยันกับ Google Calendar ไม่ได้/);
+});

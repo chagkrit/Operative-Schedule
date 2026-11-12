@@ -70,7 +70,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* ---------- Type ---------- */
 .brand h1, .hero h2, .panel-heading h3, .month-toolbar strong, .signin-card h1,
-.queue-conflict-heading h3, .sync-confirm-dialog h3, .legal-card h1 {
+.queue-conflict-heading h3, .legal-card h1 {
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: -.02em;
@@ -245,8 +245,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .queue-conflict-dialog { border-radius: 30px; box-shadow: var(--raised-large), var(--shadow-float) !important; }
 .queue-conflict-icon { border-radius: 16px; color: var(--amber) !important; background: var(--amber-tint) !important; box-shadow: none !important; }
 .queue-conflict-icon.delete-icon { color: var(--danger) !important; background: var(--danger-tint) !important; }
-.sync-confirm-icon { color: var(--green) !important; background: var(--green-tint) !important; box-shadow: none !important; }
-.sync-confirm-dialog button { border-radius: 999px; background: var(--green); }
 .queue-suggestion-list > button { border-radius: 16px; }
 .queue-suggestion-list > button:hover { box-shadow: inset 0 0 0 1.5px var(--rose) !important; }
 

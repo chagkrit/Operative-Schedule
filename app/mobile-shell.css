@@ -135,7 +135,7 @@
   .eyebrow, .presence-status, .setup-banner p, .last-sync, .queue-conflict-heading > span, .queue-conflict-heading p,
   .queue-suggestion-list > strong, .queue-suggestion-list > button > span:last-child, .queue-suggestion-list b,
   .queue-suggestion-list small, .queue-suggestion-empty, .queue-conflict-footnote,
-  .sync-confirm-dialog > span:not(.sync-confirm-icon), .sync-confirm-dialog p, .step, .diagnosis-badge,
+  .step, .diagnosis-badge,
   .field span, .extra-form label span, .neoadjuvant-choice, .field-help, .staff-selector legend,
   .staff-selector label, .staff-selector small, .staff-queue-preference small, .staff-smart-heading span,
   .staff-smart-heading > b, .staff-smart-date small, .staff-smart-list dt, .staff-smart-privacy,

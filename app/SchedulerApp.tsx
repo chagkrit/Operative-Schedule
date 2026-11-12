@@ -554,7 +554,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [editDialog, setEditDialog] = useState<{ booking: SearchResult; value: string; error: string } | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [bookingConflict, setBookingConflict] = useState<BookingConflict | null>(null);
-  const [showSyncPrompt, setShowSyncPrompt] = useState(false);
   const [activeDeviceCount, setActiveDeviceCount] = useState(1);
   const [staffSchedule, setStaffSchedule] = useState<StaffScheduleState>({ staffKey: "", cases: [], error: "" });
   const [closureForm, setClosureForm] = useState(EMPTY_CLOSURE_FORM);
@@ -612,7 +611,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     };
   }, [menuOpen]);
   const conflictCloseRef = useRef<HTMLButtonElement>(null);
-  const syncPromptButtonRef = useRef<HTMLButtonElement>(null);
   const closureConfirmRef = useRef<HTMLButtonElement>(null);
   const unavailabilityConfirmRef = useRef<HTMLButtonElement>(null);
   const unavailabilityFormRef = useRef<HTMLFormElement>(null);
@@ -685,7 +683,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   useEffect(() => {
     refreshGuardRef.current = {
       busy: saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
-      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || showSyncPrompt || confirmDialog),
+      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || confirmDialog),
     };
   });
 
@@ -721,7 +719,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !showSyncPrompt && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog && !confirmDialog) return;
+    if (!bookingConflict && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog && !confirmDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !deleting && !editSaving && !(confirmDialog && (closureSaving || unavailabilitySaving))) {
@@ -730,7 +728,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         if (confirmDialog) requestAnimationFrame(() => confirmTriggerRef.current?.focus());
         setEditDialog(null);
         if (editDialog) requestAnimationFrame(() => editTriggerRef.current?.focus());
-        setShowSyncPrompt(false);
         setPendingClosure(null);
         setPendingUnavailability(null);
         setDeleteDialog(null);
@@ -764,13 +761,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     document.body.style.overflow = "hidden";
     (confirmDialog ? confirmCancelRef.current : deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
-      : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : syncPromptButtonRef.current)?.focus();
+      : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : null)?.focus();
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, closureSaving, confirmDialog, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, showSyncPrompt, unavailabilitySaving]);
+  }, [bookingConflict, closureSaving, confirmDialog, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, unavailabilitySaving]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -1053,11 +1050,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
   }
 
-  async function confirmSyncAfterBooking() {
-    const synced = await syncCalendar();
-    if (synced) setShowSyncPrompt(false);
-  }
-
   async function exportWaitingTime() {
     if (!exportRange.from || !exportRange.to || exportRange.from > exportRange.to) {
       setNotice({ type: "error", text: "กรุณาระบุช่วงวันผ่าตัดสำหรับ Export ให้ถูกต้อง" });
@@ -1164,11 +1156,13 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         return;
       }
       const room = payload.booking?.queueType === "EXTRA" ? "OR Extra" : "OR 17";
-      setNotice({ type: "success", text: `${payload.message} • ${displayDate(payload.booking!.date, true)} • ${room}` });
+      const dateText = displayDate(payload.booking!.date, true);
       setBookingConflict(null);
-      setShowSyncPrompt(true);
       setForm(EMPTY_FORM);
-      await loadSchedule();
+      const confirmed = await loadSchedule({ quiet: true });
+      setNotice(confirmed
+        ? { type: "success", text: `บันทึกคิวแล้ว · ยืนยันกับ Google Calendar แล้ว • ${dateText} • ${room}` }
+        : { type: "error", text: `บันทึกคิวแล้ว แต่ยังยืนยันกับ Google Calendar ไม่ได้ • ${dateText} • ${room} — กด "ลองใหม่"` });
       if (window.matchMedia("(max-width: 1000px)").matches) selectTab("schedule", { focus: false });
     } catch (error) {
       setNotice({ type: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" });
@@ -1652,18 +1646,6 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             ) : (
               <small className="queue-conflict-footnote">การเลือกจากรายการนี้ยังไม่บันทึกคิว กรุณาตรวจสอบข้อมูลแล้วกด “ตรวจสอบและบันทึกคิว” อีกครั้ง</small>
             )}
-          </section>
-        </div>
-      )}
-
-      {showSyncPrompt && (
-        <div className="queue-conflict-backdrop" role="presentation">
-          <section className="queue-conflict-dialog sync-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="sync-prompt-title" aria-describedby="sync-prompt-message">
-            <span className="sync-confirm-icon" aria-hidden="true">↻</span>
-            <span>บันทึกคิวสำเร็จ</span>
-            <h3 id="sync-prompt-title">กด Sync ทันที เพื่อบันทึกลงใน Calendar</h3>
-            <p id="sync-prompt-message">ระบบส่งรายการเข้าปฏิทินแล้ว การ Sync จะดึงข้อมูลล่าสุดกลับมายืนยันบนหน้าเว็บ</p>
-            <button ref={syncPromptButtonRef} type="button" onClick={() => void confirmSyncAfterBooking()} disabled={syncing}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           </section>
         </div>
       )}
