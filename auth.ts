@@ -1,6 +1,10 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
+import { userStore } from "./app/lib/user-store";
 
+// The Google Calendar owner (calendar id default, legacy `booked_by`/`updated_by` fallback,
+// calendar label in the UI). Not an access rule: who may sign in comes from the allowlist
+// in app/lib/user-store.ts.
 export const AUTHORIZED_EMAIL = "hnbcmu@gmail.com";
 
 // When GOOGLE_REFRESH_TOKEN is set, Calendar access is held by the server (see app/lib/calendar.ts),
@@ -27,7 +31,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: { signIn: "/signin", error: "/signin" },
   callbacks: {
     async signIn({ profile }) {
-      return Boolean(profile?.email_verified && profile.email?.toLowerCase() === AUTHORIZED_EMAIL);
+      if (!profile?.email_verified || !profile.email) return false;
+      return (await userStore.getAccess(profile.email)).allowed;
     },
     async jwt({ token, account, profile }) {
       if (account && !SERVER_CALENDAR_TOKEN) {
@@ -42,8 +47,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user?.email) session.user.email = session.user.email.toLowerCase();
       return session;
     },
-    authorized({ auth: session }) {
-      return session?.user?.email?.toLowerCase() === AUTHORIZED_EMAIL;
+    // Only runs from a proxy/middleware, which this app does not have; pages and API routes
+    // check the allowlist themselves (app/lib/session.ts, authorizedAccessToken in calendar.ts).
+    async authorized({ auth: session }) {
+      const email = session?.user?.email;
+      return Boolean(email && (await userStore.getAccess(email)).allowed);
     },
   },
   trustHost: true,

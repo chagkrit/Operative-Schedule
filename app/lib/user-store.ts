@@ -192,8 +192,11 @@ export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
       return users;
     },
     async write(users) {
+      // Options first, synchronously: the etag must be the one current when write() was called,
+      // not one a concurrent read() sets while the SDK import is awaited (a seed must stay create-only).
+      const opts = blobPutOptions(etag);
       const { put } = await import("@vercel/blob");
-      const saved = await put(pathname, JSON.stringify(users, null, 2), blobPutOptions(etag));
+      const saved = await put(pathname, JSON.stringify(users, null, 2), opts);
       etag = saved.etag || null;
     },
   };

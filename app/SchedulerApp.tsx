@@ -546,7 +546,8 @@ function StatusDot({ synced }: { synced: boolean }) {
   return <span className={`status-dot ${synced ? "synced" : "pending"}`} aria-hidden="true" />;
 }
 
-export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: string }) {
+// isAdmin: allowlist role of the signed-in user (from app/page.tsx), for the admin-only menu link.
+export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: string; isAdmin: boolean }) {
   const [data, setData] = useState<ScheduleResponse | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(true);

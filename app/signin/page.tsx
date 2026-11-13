@@ -1,12 +1,11 @@
 import Image from "next/image";
 import Link from "next/link";
-import { auth, AUTHORIZED_EMAIL } from "../../auth";
 import { redirect } from "next/navigation";
 import { signInWithGoogle } from "./actions";
+import { sessionAccess } from "../lib/session";
 
 export default async function SignInPage() {
-  const session = await auth();
-  if (session?.user?.email?.toLowerCase() === AUTHORIZED_EMAIL) redirect("/");
+  if (await sessionAccess()) redirect("/");
 
   return (
     <main className="signin-shell">

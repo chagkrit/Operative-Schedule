@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { auth, AUTHORIZED_EMAIL } from "../auth";
+import { AUTHORIZED_EMAIL } from "../auth";
+import { sessionAccess } from "./lib/session";
 import SchedulerApp from "./SchedulerApp";
 
 export const metadata: Metadata = {
@@ -10,11 +11,12 @@ export const metadata: Metadata = {
 };
 
 export default async function Home() {
-  const session = await auth();
-  if (session?.user?.email?.toLowerCase() !== AUTHORIZED_EMAIL) redirect("/signin");
+  // Not allowed (or the list is unreadable): send to /signin without touching the session.
+  const access = await sessionAccess();
+  if (!access) redirect("/signin");
   return (
     <Suspense fallback={null}>
-      <SchedulerApp authorizedEmail={AUTHORIZED_EMAIL} />
+      <SchedulerApp authorizedEmail={AUTHORIZED_EMAIL} isAdmin={access.role === "admin"} />
     </Suspense>
   );
 }

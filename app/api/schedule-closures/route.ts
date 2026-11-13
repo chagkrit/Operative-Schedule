@@ -1,4 +1,3 @@
-import { AUTHORIZED_EMAIL } from "../../../auth";
 import {
   deleteScheduleClosureEvent,
   ifMatchForRestore,
@@ -8,6 +7,7 @@ import {
 import { undoCalendarWrite, type UndoOutcome } from "../../lib/calendar-undo";
 import { dateOnly, endOfRollingHorizon } from "../../lib/schedule";
 import { affectedBookingView } from "../../lib/affected-booking";
+import { requestUserEmail } from "../../lib/session";
 
 function validIsoDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -17,6 +17,7 @@ function validIsoDate(value: string) {
 
 export async function POST(request: Request) {
   try {
+    const actorEmail = await requestUserEmail(request);
     const payload = (await request.json()) as {
       id?: string;
       date?: string;
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
       date,
       name,
       note,
-      updatedBy: AUTHORIZED_EMAIL,
+      updatedBy: actorEmail,
       createdAt: existing?.createdAt,
       createdBy: existing?.createdBy,
     });
@@ -81,7 +82,7 @@ export async function POST(request: Request) {
         date: existing!.date,
         name: existing!.name,
         note: existing!.note,
-        updatedBy: AUTHORIZED_EMAIL,
+        updatedBy: existing!.updatedBy,
         createdAt: existing!.createdAt,
         createdBy: existing!.createdBy,
       }, { ifMatch: await ifMatchForRestore(request, existing!.id, saved.etag, { startDate: date, endDate: date }) }),

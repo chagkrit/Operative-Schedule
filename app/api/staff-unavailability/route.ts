@@ -1,4 +1,3 @@
-import { AUTHORIZED_EMAIL } from "../../../auth";
 import { affectedBookingView } from "../../lib/affected-booking";
 import {
   deleteStaffUnavailabilityEvent,
@@ -20,9 +19,11 @@ import {
   findOverlappingStaff,
   isIsoDate,
 } from "../../lib/staff-unavailability";
+import { requestUserEmail } from "../../lib/session";
 
 export async function POST(request: Request) {
   try {
+    const actorEmail = await requestUserEmail(request);
     const body: unknown = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return Response.json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง" }, { status: 400 });
@@ -104,7 +105,7 @@ export async function POST(request: Request) {
         startDate: existing!.startDate,
         endDate: existing!.endDate,
         note: existing!.note,
-        updatedBy: AUTHORIZED_EMAIL,
+        updatedBy: existing!.updatedBy,
         createdAt: existing!.createdAt,
         createdBy: existing!.createdBy,
       }, { ifMatch: await ifMatchForRestore(request, existing!.id, entries[0]?.etag || "", { startDate, endDate }) }),
@@ -163,7 +164,7 @@ export async function POST(request: Request) {
           startDate,
           endDate,
           note,
-          updatedBy: AUTHORIZED_EMAIL,
+          updatedBy: actorEmail,
           createdAt: existing?.createdAt,
           createdBy: existing?.createdBy,
         });
