@@ -7,6 +7,7 @@ import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
 import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
+import { bookingsForStaff, caseCountsByDate, isStaffUnavailableOn, staffMonthSummary } from "./lib/month-staff-filter";
 import BottomNav from "./BottomNav";
 import CaseDetailDialog from "./CaseDetailDialog";
 import ConfirmDialog from "./ConfirmDialog";
@@ -293,10 +294,14 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
   const selectedSummaries = summariesByDate.get(selectedDate) || [];
   const selectedClosure = closuresByDate.get(selectedDate);
   const selectedCount = selectedSummaries.reduce((total, day) => total + day.count, 0);
-  const selectedBookings = bookings
+  const [staffFilter, setStaffFilter] = useState("");
+  const visibleBookings = bookingsForStaff(bookings, staffFilter);
+  const staffCounts = caseCountsByDate(bookings, staffFilter);
+  const staffSummary = staffFilter ? staffMonthSummary(bookings, staffUnavailability, month, staffFilter) : null;
+  const selectedBookings = visibleBookings
     .filter((booking) => booking.scheduleDate === selectedDate)
     .sort((a, b) => a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1);
-  const clashDates = new Set(bookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0).map((booking) => booking.scheduleDate));
+  const clashDates = new Set(visibleBookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0).map((booking) => booking.scheduleDate));
   const selectedUnavailableStaff = unavailableStaffOn(staffUnavailability, selectedDate, STAFF);
   const selectedClashBookings = selectedBookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0);
   const today = bangkokToday();
@@ -315,28 +320,36 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
         <strong>{displayMonth(month)}</strong>
         <button type="button" onClick={() => changeMonth(1)} disabled={month >= lastMonth} aria-label="เดือนถัดไป">›</button>
       </div>
+      <div className="month-staff-filter" role="group" aria-label="กรองตามอาจารย์">
+        {["", ...STAFF].map((name) => (
+          <button type="button" key={name || "all"} className={staffFilter === name ? "active" : ""} aria-pressed={staffFilter === name} onClick={() => setStaffFilter(name)}>{name || "ทั้งหมด"}</button>
+        ))}
+      </div>
+      {staffSummary && <p className="month-staff-summary" aria-live="polite"><b>{staffFilter}</b> · เดือนนี้ {staffSummary.cases} เคส · ไม่ว่าง {staffSummary.unavailableDays} วัน</p>}
       <div className="month-grid" role="grid" aria-label={`ปฏิทิน ${displayMonth(month)}`}>
         {['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'].map((label) => <span className="month-weekday" key={label}>{label}</span>)}
         {cells.map((date, index) => {
           if (!date) return <span className="month-blank" key={`blank-${index}`} />;
           const summaries = summariesByDate.get(date) || [];
-          const count = summaries.reduce((total, day) => total + day.count, 0);
+          const count = staffFilter ? staffCounts.get(date) || 0 : summaries.reduce((total, day) => total + day.count, 0);
+          const staffOff = staffFilter ? isStaffUnavailableOn(staffUnavailability, staffFilter, date) : false;
           const hasExtra = summaries.some((day) => day.queueType === "EXTRA");
           const closure = closuresByDate.get(date);
           const outsideHorizon = date < horizonStart || date > horizonEnd;
           return (
             <button
               type="button"
-              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""} ${clashDates.has(date) ? "has-clash" : ""}`}
+              className={`month-day ${date === selectedDate ? "selected" : ""} ${date === today ? "today" : ""} ${hasExtra ? "has-extra" : ""} ${closure ? "closed" : ""} ${clashDates.has(date) ? "has-clash" : ""} ${staffOff ? "staff-off" : ""}`}
               key={date}
               onClick={() => onSelectDate(date)}
               disabled={Boolean(closure) || outsideHorizon}
               title={closure ? `${closure.name}${closure.note ? ` — ${closure.note}` : ""}` : undefined}
-              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${count} เคส${clashDates.has(date) ? " มีเคสควรย้ายวัน" : ""}`}
+              aria-label={closure ? `${displayDate(date)} ปิดรับคิว ${closure.name}` : `${displayDate(date)} ${staffFilter ? `${staffFilter} ` : ""}${count} เคส${staffOff ? ` ${staffFilter} ไม่ว่าง` : ""}${clashDates.has(date) ? " มีเคสควรย้ายวัน" : ""}`}
               aria-pressed={date === selectedDate}
             >
               <span>{Number(date.slice(-2))}</span>
               {closure ? <em>ปิด</em> : null}
+              {staffOff && !closure ? <em className="staff-off-flag">✕</em> : null}
               {count > 0 ? <b>{count}</b> : summaries.length > 0 ? <i aria-label="เปิดรับคิว" /> : null}
               {clashDates.has(date) ? <em className="clash-flag">ย้าย</em> : null}
             </button>
@@ -348,6 +361,9 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
           <span>{displayDate(selectedDate)}</span>
           <strong>{selectedCount} เคส</strong>
         </div>
+        {staffFilter && !selectedClosure && (
+          <p className="month-staff-day"><b>{staffFilter}</b><span>{isStaffUnavailableOn(staffUnavailability, staffFilter, selectedDate) ? "ไม่ว่างวันนี้" : `วันนี้ ${selectedBookings.length} เคส`}</span></p>
+        )}
         {selectedClosure ? <div className="month-closure-summary"><b>ปิดรับคิว · {selectedClosure.name}</b><span>{selectedClosure.note || "ไม่มีหมายเหตุ"}</span></div>
           : selectedSummaries.length > 0 ? selectedSummaries.map((day) => (
           <p key={`${day.date}:${day.queueType}`}>
@@ -376,7 +392,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
               <div key={booking.id} className="case-tap" role="button" tabIndex={0} aria-label={`ดูรายละเอียด ${booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #${booking.slotNo} ${booking.operation}`} onClick={(event) => onOpenCase(booking, event.currentTarget)} onKeyDown={(event) => caseRowKeyDown(event, () => onOpenCase(booking, event.currentTarget))}>
                 <div className={`month-booking-slot ${booking.isCancer ? "cancer" : ""}`}>
                   <strong>#{booking.slotNo}</strong>
-                  <small>{displaySlotTime(booking.slotNo)}</small>
+                  <small className="month-booking-time">{displaySlotTime(booking.slotNo).split("–").map((part, index) => <span key={index}>{index ? `–${part}` : part}</span>)}</small>
                 </div>
                 <div className="month-booking-detail">
                   <strong>{booking.operation}</strong>
@@ -388,7 +404,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
               </div>
             ))}
           </div>
-        ) : <p className="month-bookings-empty">ยังไม่มีเคสลงคิวในวันที่เลือก</p>}
+        ) : <p className="month-bookings-empty">{staffFilter ? `${staffFilter} ไม่มีเคสในวันที่เลือก` : "ยังไม่มีเคสลงคิวในวันที่เลือก"}</p>}
       </section>
       <p className="month-legend"><span /> วันที่มี OR Extra <em>ปิด</em> วันปิดรับคิว <b>ตัวเลขในวงกลม = จำนวนเคส</b></p>
     </div>
