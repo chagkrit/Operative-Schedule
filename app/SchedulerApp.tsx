@@ -344,6 +344,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
           <p key={`${day.date}:${day.queueType}`}>
             <b>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</b>
             <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}{day.minutesEnforced ? ` · ใช้ไป ${day.bookedMinutes}/${DAILY_MINUTES_LIMIT} นาที` : ""}</span>
+            {day.offSchedule && <span className="warning-line">เคสถูกย้ายวันใน Google Calendar มาวันที่ไม่มี OR 17 · กรุณาสลับวันให้ถูกต้องผ่านเว็บ</span>}
           </p>
         )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
         {selectedUnavailableStaff.length > 0 && (

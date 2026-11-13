@@ -35,5 +35,7 @@ test("schedule builds off-schedule room-days as full, flagged, and the list show
   assert.match(queue, /offSchedule: true/);
   assert.match(queue, /summary\.offSchedule\) summary\.capacity = summary\.count/);
   assert.match(app, /day\.offSchedule && <p className="warning-line">/);
+  // Month view too: a case dragged weeks ahead is outside the 8-day list.
+  assert.match(app, /day\.offSchedule && <span className="warning-line">/);
   assert.equal(OFF_SCHEDULE_NOTE, "ย้ายใน Google Calendar • นอกวันปกติ");
 });
