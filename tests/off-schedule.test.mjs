@@ -39,3 +39,15 @@ test("schedule builds off-schedule room-days as full, flagged, and the list show
   assert.match(app, /day\.offSchedule && <span className="warning-line">/);
   assert.equal(OFF_SCHEDULE_NOTE, "ย้ายใน Google Calendar • นอกวันปกติ");
 });
+
+test("an EXTRA booking on a day OR Extra can never run (not Mon/Thu) is off-schedule", async () => {
+  const { extraDayIsOffSchedule } = await import("../app/lib/off-schedule.ts");
+  assert.equal(extraDayIsOffSchedule("2026-11-18"), true); // Wednesday
+  assert.equal(extraDayIsOffSchedule("2026-11-17"), true); // Tuesday
+  assert.equal(extraDayIsOffSchedule("2026-11-16"), false); // Monday
+  assert.equal(extraDayIsOffSchedule("2026-11-19"), false); // Thursday
+  const queue = await read("app/lib/queue.ts");
+  assert.match(queue, /const offSchedule = extraDayIsOffSchedule\(date\)/);
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /มาวันที่ไม่มี \{day\.queueType === "EXTRA" \? "OR Extra" : "OR 17"\}/);
+});

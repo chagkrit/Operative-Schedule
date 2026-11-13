@@ -344,7 +344,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
           <p key={`${day.date}:${day.queueType}`}>
             <b>{day.queueType === "EXTRA" ? "OR Extra" : "OR 17"}</b>
             <span>ลงแล้ว {day.count}/{day.capacity} เคส · ว่าง {Math.max(0, day.capacity - day.count)}{day.minutesEnforced ? ` · ใช้ไป ${day.bookedMinutes}/${DAILY_MINUTES_LIMIT} นาที` : ""}</span>
-            {day.offSchedule && <span className="warning-line">เคสถูกย้ายวันใน Google Calendar มาวันที่ไม่มี OR 17 · กรุณาสลับวันให้ถูกต้องผ่านเว็บ</span>}
+            {day.offSchedule && <span className="warning-line">เคสถูกย้ายวันใน Google Calendar มาวันที่ไม่มี {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · กรุณาสลับวันให้ถูกต้องผ่านเว็บ</span>}
           </p>
         )) : <small>วันนี้ไม่มีห้องผ่าตัดที่เปิดรับคิวในระบบ</small>}
         {selectedUnavailableStaff.length > 0 && (
@@ -1996,7 +1996,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     {day.minutesEnforced && <p className="minutes-line">ใช้ไป {day.bookedMinutes}/{DAILY_MINUTES_LIMIT} นาที</p>}
                     <div className="capacity-bar"><i style={{ width: `${Math.min(100, (day.count / day.capacity) * 100)}%` }} /></div>
                     {day.closed && <p className="closure-line">ปิดรับคิว · {day.closureName}{day.closureNote ? ` — ${day.closureNote}` : ""}</p>}
-                    {day.offSchedule && <p className="warning-line">เคสถูกย้ายวันใน Google Calendar มาวันที่ไม่มี OR 17 · กรุณาสลับวันให้ถูกต้องผ่านเว็บ</p>}
+                    {day.offSchedule && <p className="warning-line">เคสถูกย้ายวันใน Google Calendar มาวันที่ไม่มี {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · กรุณาสลับวันให้ถูกต้องผ่านเว็บ</p>}
                     {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                     {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
                     {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}{row.durationMinutes !== null ? ` · ${durationText(row.durationMinutes)}` : ""}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}

@@ -1,6 +1,6 @@
 import { listCalendarData, type CalendarBooking, type QueueType } from "./calendar";
 import { roomDayMinutes } from "./minutes";
-import { OFF_SCHEDULE_NOTE, offScheduleRoomDays } from "./off-schedule";
+import { extraDayIsOffSchedule, OFF_SCHEDULE_NOTE, offScheduleRoomDays } from "./off-schedule";
 import { addDays, isNormalDay, STAFF_OPTIONS } from "./schedule";
 import { unavailableStaffOn } from "./staff-unavailability";
 
@@ -65,11 +65,12 @@ export async function getSchedule(request: Request, from: string, to: string) {
     }
   }
   for (const date of legacyExtraCounts.keys()) {
+    const offSchedule = extraDayIsOffSchedule(date);
     summaries.set(`${date}:EXTRA`, {
       date,
       queueType: "EXTRA",
       capacity: 4,
-      note: "นำเข้าจาก Google Calendar",
+      note: offSchedule ? OFF_SCHEDULE_NOTE : "นำเข้าจาก Google Calendar",
       count: 0,
       cancerCount: 0,
       bookedMinutes: 0,
@@ -78,6 +79,7 @@ export async function getSchedule(request: Request, from: string, to: string) {
       closureName: closuresByDate.get(date)?.name || "",
       closureNote: closuresByDate.get(date)?.note || "",
       unavailableStaff: unavailableStaffOn(staffUnavailability, date, STAFF_OPTIONS),
+      ...(offSchedule ? { offSchedule: true } : {}),
     });
   }
   for (const { date, queueType } of offScheduleRoomDays(bookings, new Set(summaries.keys()))) {
