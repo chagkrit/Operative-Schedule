@@ -1,5 +1,6 @@
-import { getToken } from "next-auth/jwt";
 import { AUTHORIZED_EMAIL } from "../../auth";
+import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail } from "./session";
+import { userStore } from "./user-store";
 import { addDays, daysBetween, orderedStaffMembers } from "./schedule";
 import { parseDurationMinutes } from "./minutes";
 import { calendarEventDate, calendarTimestampDate, parseLegacyCalendarEvent, type LegacyCalendarEvent } from "./legacy-calendar";
@@ -166,14 +167,13 @@ async function serverAccessToken(refreshToken: string) {
   return inflightServerToken;
 }
 
+// The single chokepoint for every Calendar API call: verified session + allowlist (cached ≤30 s,
+// so a removed/deactivated user loses API access within ~30 s). A deny only rejects this request.
 async function authorizedAccessToken(request: Request) {
-  const token = await getToken({
-    req: request,
-    secret: process.env.AUTH_SECRET,
-    secureCookie: new URL(request.url).protocol === "https:",
-  });
-  if (token?.email?.toLowerCase() !== AUTHORIZED_EMAIL) {
-    throw withStatus("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail.com", 401);
+  const token = await requestToken(request);
+  const email = tokenEmail(token);
+  if (!token || !email || !(await userStore.getAccess(email)).allowed) {
+    throw withStatus(SIGN_IN_REQUIRED_MESSAGE, 401);
   }
   if (process.env.GOOGLE_REFRESH_TOKEN) {
     if (!process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {

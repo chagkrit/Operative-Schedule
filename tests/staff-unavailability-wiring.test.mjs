@@ -223,7 +223,9 @@ test("final wave: overlap error tells the user to edit the existing entry", asyn
 
 test("unauthenticated Calendar calls answer 401 instead of 500", async () => {
   const calendar = await read("app/lib/calendar.ts");
-  assert.match(calendar, /withStatus\("กรุณาเข้าสู่ระบบด้วย hnbcmu@gmail\.com", 401\)/);
+  const session = await read("app/lib/session.ts");
+  assert.match(calendar, /withStatus\(SIGN_IN_REQUIRED_MESSAGE, 401\)/);
+  assert.match(session, /SIGN_IN_REQUIRED_MESSAGE = "กรุณาเข้าสู่ระบบด้วยบัญชีที่ได้รับอนุญาต"/);
   assert.match(calendar, /withStatus\("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่", 401\)/);
   assert.doesNotMatch(calendar, /throw new Error\("กรุณาเข้าสู่ระบบด้วย/);
 });

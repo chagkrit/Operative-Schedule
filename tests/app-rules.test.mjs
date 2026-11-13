@@ -4,11 +4,12 @@ import test from "node:test";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("protects the app with the exact authorized Google account", async () => {
+test("protects the app with the allowlist of verified Google accounts", async () => {
   const auth = await read("auth.ts");
   const signIn = await read("app/signin/page.tsx");
   assert.match(auth, /AUTHORIZED_EMAIL = "hnbcmu@gmail\.com"/);
-  assert.match(auth, /profile\.email\?\.toLowerCase\(\) === AUTHORIZED_EMAIL/);
+  assert.match(auth, /profile\?\.email_verified/);
+  assert.match(auth, /userStore\.getAccess\(profile\.email\)\)\.allowed/);
   assert.match(auth, /calendar\.events/);
   assert.doesNotMatch(signIn, /อนุญาตเฉพาะบัญชี/);
   assert.doesNotMatch(signIn, /hnbcmu@gmail\.com/);
@@ -30,7 +31,9 @@ test("keeps the clinical queue safeguards in the server API", async () => {
 test("supports direct Google Calendar sync and secure production cookies", async () => {
   const calendar = await read("app/lib/calendar.ts");
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(calendar, /secureCookie: new URL\(request\.url\)\.protocol === "https:"/);
+  // The JWT is read in app/lib/session.ts (shared with requestUserEmail).
+  assert.match(calendar, /await requestToken\(request\)/);
+  assert.match(await read("app/lib/session.ts"), /secureCookie: new URL\(request\.url\)\.protocol === "https:"/);
   assert.match(app, /Sync ทันที/);
   assert.match(app, /CA breast, CA thyroid/);
   assert.match(app, /cancerSchedulingMode === "specific"/);
@@ -375,8 +378,8 @@ test("uses one server-held Calendar refresh token when GOOGLE_REFRESH_TOKEN is s
   assert.match(auth, /SERVER_CALENDAR_TOKEN\s*\?\s*\{\}/);
   assert.match(auth, /account && !SERVER_CALENDAR_TOKEN/);
   // The session identity check stays in front of every Calendar call.
-  assert.match(calendar, /token\?\.email\?\.toLowerCase\(\) !== AUTHORIZED_EMAIL/);
-  assert.ok(calendar.indexOf("AUTHORIZED_EMAIL) {") < calendar.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
+  assert.match(calendar, /!\(await userStore\.getAccess\(email\)\)\.allowed/);
+  assert.ok(calendar.indexOf("userStore.getAccess(email)") < calendar.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
   assert.match(calendar, /cachedServerToken/);
   // A dead server token is an admin problem (503), not a "sign in again" 401 that would loop.
   assert.match(calendar, /ผู้ดูแลระบบต้องต่ออายุ[\s\S]{0,200}503/);

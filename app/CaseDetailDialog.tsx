@@ -13,6 +13,7 @@ export type CaseDetail = {
   staff: string;
   duration: string;
   note: string;
+  bookedBy: string;
   clash: string;
   synced: boolean;
 };
@@ -40,6 +41,7 @@ export default function CaseDetailDialog({ detail, closeRef, onClose, onManage }
     ["Staff", detail.staff],
     ["ระยะเวลา", detail.duration || "ไม่ระบุ"],
     ["หมายเหตุ", detail.note || "-"],
+    ["ลงโดย", detail.bookedBy || "ไม่ระบุ"],
   ];
   return (
     <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>

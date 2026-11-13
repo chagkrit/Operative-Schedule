@@ -1,4 +1,5 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
+import { requestUserEmail } from "../../lib/session";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot, roomDayDurations, staffBlockedOn } from "../../lib/queue";
 import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../lib/minutes";
@@ -46,6 +47,7 @@ export async function GET(request: Request) {
           staffMembers: booking.staffMembers,
           durationMinutes: booking.durationMinutes,
           calendarSyncStatus: "synced" as const,
+          bookedByEmail: booking.bookedByEmail,
         })),
       recentMoves: recentMoves.map((booking) => ({
         id: booking.id,
@@ -68,6 +70,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    // The signed-in booker (401 via statusFor when not allowed); stored as booked_by.
+    const bookedByEmail = await requestUserEmail(request);
     const payload = (await request.json()) as Record<string, unknown>;
     const diagnosis = String(payload.diagnosis || "").trim();
     const hn = String(payload.hn || "").trim();
@@ -231,7 +235,7 @@ export async function POST(request: Request) {
       note,
       staffMembers,
       durationMinutes,
-      bookedByEmail: AUTHORIZED_EMAIL,
+      bookedByEmail,
     });
     const verified = await getSchedule(request, selected.date, selected.date);
     const verifiedDay = verified.days.find((day) => day.date === selected.date && day.queueType === selected.queueType);

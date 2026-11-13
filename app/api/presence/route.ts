@@ -1,4 +1,4 @@
-import { auth, AUTHORIZED_EMAIL } from "../../../auth";
+import { requestUserEmail } from "../../lib/session";
 
 const PRESENCE_TTL_MS = 90_000;
 
@@ -15,8 +15,9 @@ function prunePresence(now = Date.now()) {
 }
 
 export async function POST(request: Request) {
-  const session = await auth();
-  if (session?.user?.email?.toLowerCase() !== AUTHORIZED_EMAIL) {
+  try {
+    await requestUserEmail(request);
+  } catch {
     return Response.json({ error: "ไม่ได้รับอนุญาต" }, { status: 401 });
   }
 

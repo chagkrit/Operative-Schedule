@@ -125,7 +125,8 @@
   .topbar .topbar-actions .sync-button,
   .topbar .topbar-actions .guide-button,
   .topbar .topbar-actions .export-button,
-  .topbar .topbar-actions .signout-button { min-height: 44px; height: auto; font-size: 14px; }
+  .topbar .topbar-actions .signout-button,
+  .topbar .topbar-actions .admin-link { min-height: 44px; height: auto; font-size: 14px; }
   .topbar .topbar-actions form { display: flex; }
   .topbar .topbar-actions form .signout-button { flex: 1; }
 }
@@ -164,7 +165,8 @@
   .unavailability-form > label span, .unavailability-list > strong, .unavailability-list > p,
   .unavailability-detail strong, .unavailability-detail span, .unavailability-detail small,
   .unavailability-row-actions button, .unavailability-actions button,
-  .month-staff-filter button, .month-staff-summary, .month-staff-day, .month-booking-time {
+  .month-staff-filter button, .month-staff-summary, .month-staff-day, .month-booking-time,
+  .admin-note, .admin-summary {
     font-size: 12px;
   }
 
@@ -179,7 +181,8 @@
   .schedule-tabs button, .staff-queue-preference button, .date-entry-toggle button, .extra-form button,
   .wait-time-export button, .month-toolbar button, .closure-form-actions button,
   .closure-row-actions button, .closure-confirm-actions button, .case-search-form button,
-  .move-form button, .delete-confirm-actions button, .queue-suggestion-list > button {
+  .move-form button, .delete-confirm-actions button, .queue-suggestion-list > button,
+  .admin-link, .admin-back, .admin-reload, .admin-row button, .admin-add-form button {
     min-height: 44px;
     font-size: 12px;
     line-height: 1.2;
@@ -192,7 +195,8 @@
   .field input, .field textarea, .field select, .extra-form input, .wait-time-export input,
   .closure-form input, .closure-form textarea, .closure-list-toolbar input, .case-search-form input,
   .move-form select, .delete-hn-form input, .unavailability-form input[type="date"],
-  .unavailability-form textarea {
+  .unavailability-form textarea, .admin-add-form input, .admin-add-form select,
+  .admin-row select {
     min-height: 44px;
     font-size: 16px;
   }

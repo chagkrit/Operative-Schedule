@@ -24,7 +24,7 @@ test("tapping a case in the queue list or the month view opens its detail dialog
 test("detail dialog shows the full case and offers the existing move/delete flow", async () => {
   const dialog = await read("app/CaseDetailDialog.tsx");
   assert.match(dialog, /role="dialog" aria-modal="true" aria-labelledby="case-detail-title"/);
-  for (const label of ["ผ่าตัด", "ผู้ป่วย", "HN", "Diagnosis", "Neoadjuvant", "Staff", "ระยะเวลา", "หมายเหตุ"]) {
+  for (const label of ["ผ่าตัด", "ผู้ป่วย", "HN", "Diagnosis", "Neoadjuvant", "Staff", "ระยะเวลา", "หมายเหตุ", "ลงโดย"]) {
     assert.ok(dialog.includes(`"${label}"`), `missing field ${label}`);
   }
   assert.match(dialog, /สลับวัน \/ แก้ไข \/ ลบ/);
@@ -32,6 +32,19 @@ test("detail dialog shows the full case and offers the existing move/delete flow
   // The handoff runs a live search by HN, so a case changed on another device is shown as it is now.
   assert.match(app, /void searchCases\(undefined, \{ query: booking\.hn, selectId: booking\.id \}\)/);
   assert.match(app, /if \(searchId !== latestSearchRef\.current\) return;/);
+});
+
+test("detail dialog shows who booked the case (ลงโดย) from the schedule payload", async () => {
+  const dialog = await read("app/CaseDetailDialog.tsx");
+  assert.match(dialog, /bookedBy: string;/);
+  assert.match(dialog, /\["ลงโดย", detail\.bookedBy \|\| "ไม่ระบุ"\]/);
+  const route = await read("app/api/schedule/route.ts");
+  const get = route.slice(route.indexOf("export async function GET"), route.indexOf("export async function POST"));
+  assert.match(get, /bookedByEmail: booking\.bookedByEmail,/);
+  const app = await read("app/SchedulerApp.tsx");
+  const bookingType = app.slice(app.indexOf("type Booking = {"), app.indexOf("};", app.indexOf("type Booking = {")));
+  assert.match(bookingType, /bookedByEmail: string;/);
+  assert.match(app, /bookedBy: detailCase\.bookedByEmail,/);
 });
 
 test("case rows show a pointer and a visible keyboard focus ring", async () => {
