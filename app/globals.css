@@ -299,12 +299,21 @@ button { cursor: pointer; }
 .month-bookings-heading strong { color: #49373f; font-size: 11px; }
 .month-bookings-heading span { padding: 4px 8px; border-radius: 999px; color: var(--rose); background: var(--rose-soft); font-size: 8px; font-weight: 900; }
 .month-booking-list { display: grid; max-height: 330px; overflow-y: auto; }
-.month-booking-list > div { display: grid; grid-template-columns: 64px minmax(0, 1fr) 8px; align-items: center; gap: 10px; padding: 11px 13px; border-bottom: 1px dashed #ece3e5; }
+.month-booking-list > div { display: grid; grid-template-columns: 72px minmax(0, 1fr) 8px; align-items: center; gap: 10px; padding: 11px 13px; border-bottom: 1px dashed #ece3e5; }
 .month-booking-list > div:last-child { border-bottom: 0; }
 .month-booking-slot { display: grid; place-items: center; gap: 2px; min-height: 46px; padding: 5px; border-radius: 10px; color: #6d5962; background: #f2edef; }
 .month-booking-slot.cancer { color: #fff; background: var(--rose); }
 .month-booking-slot strong { font-size: 10px; }
 .month-booking-slot small { font-size: 7px; white-space: nowrap; }
+.month-booking-time { display: grid; justify-items: center; line-height: 1.25; }
+.month-booking-time span { display: block; white-space: nowrap; }
+.month-staff-filter { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 6px; scrollbar-width: none; }
+.month-staff-filter::-webkit-scrollbar { display: none; }
+.month-staff-filter button { flex: 0 0 auto; min-height: 40px; padding: 0 12px; border: 1px solid #e4d7da; border-radius: 999px; color: #5f4d55; background: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.month-staff-filter button.active { border-color: var(--rose); color: #fff; background: var(--rose); }
+.month-staff-summary { margin: 0; color: #49373f; font-size: 11px; }
+.month-staff-day { display: flex; justify-content: space-between; gap: 10px; margin: 9px 0 0; font-size: 10px; }
+.month-day .staff-off-flag { color: #922f2a; text-shadow: 0 0 3px #fff; font-size: 10px; font-style: normal; font-weight: 900; }
 .month-booking-detail { min-width: 0; display: grid; gap: 2px; }
 .month-booking-detail strong, .month-booking-detail span, .month-booking-detail small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .month-booking-detail strong { color: #3f3036; font-size: 10px; }

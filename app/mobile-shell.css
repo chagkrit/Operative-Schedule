@@ -163,13 +163,14 @@
   .unavailability-staff label, .unavailability-orphan, .unavailability-orphan-tag,
   .unavailability-form > label span, .unavailability-list > strong, .unavailability-list > p,
   .unavailability-detail strong, .unavailability-detail span, .unavailability-detail small,
-  .unavailability-row-actions button, .unavailability-actions button {
+  .unavailability-row-actions button, .unavailability-actions button,
+  .month-staff-filter button, .month-staff-summary, .month-staff-day, .month-booking-time {
     font-size: 12px;
   }
 
   /* Calendar cells are ~44px wide: micro-labels keep a 10px floor. */
   .manual-date-weekday, .manual-date-day, .manual-date-day small, .month-weekday, .month-day b,
-  .month-day.closed em, .month-day .clash-flag, .month-legend em {
+  .month-day.closed em, .month-day .clash-flag, .month-day .staff-off-flag, .month-legend em {
     font-size: 10px;
   }
 
