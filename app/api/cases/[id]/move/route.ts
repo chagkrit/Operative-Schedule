@@ -4,7 +4,8 @@ import {
   restoreCalendarBooking,
   type QueueType,
 } from "../../../../lib/calendar";
-import { destinationError, getSchedule, nextAvailableSlot, roomDayDurations, staffBlockedOn } from "../../../../lib/queue";
+import { destinationError, getSchedule, roomDayDurations, staffBlockedOn } from "../../../../lib/queue";
+import { appendSlot } from "../../../../lib/slots";
 import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../../../lib/minutes";
 import { staffUnavailableMessage } from "../../../../lib/staff-unavailability";
 import { patientDisplayName } from "../../../../lib/privacy";
@@ -61,7 +62,7 @@ export async function PATCH(
     const move = await moveCalendarBooking(request, id, {
       date,
       queueType: queueType!,
-      slotNo: nextAvailableSlot(bookings, date, queueType!, destination!.capacity),
+      slotNo: appendSlot(bookings, date, queueType!, destination!.capacity),
       ...(suppliedDuration !== null ? { durationMinutes: suppliedDuration } : {}),
     });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { signOutAction } from "./actions";
@@ -8,6 +8,7 @@ import { diagnosisIsCancer } from "./lib/schedule";
 import { DAILY_MINUTES_LIMIT, durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes, type MinutesRefusal } from "./lib/minutes";
 import { caseStaffStatus, staffUnavailableMessage, unavailableStaffOn } from "./lib/staff-unavailability";
 import BottomNav from "./BottomNav";
+import CaseDetailDialog from "./CaseDetailDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
@@ -263,9 +264,17 @@ type MonthlyCalendarProps = {
   selectedDate: string;
   onMonthChange: (value: string) => void;
   onSelectDate: (value: string) => void;
+  onOpenCase: (booking: Booking, trigger: HTMLElement) => void;
 };
 
-function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate }: MonthlyCalendarProps) {
+// Enter / Space on a tappable case row opens it, like a button.
+function caseRowKeyDown(event: ReactKeyboardEvent<HTMLElement>, open: () => void) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  open();
+}
+
+function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizonStart, horizonEnd, month, selectedDate, onMonthChange, onSelectDate, onOpenCase }: MonthlyCalendarProps) {
   const firstMonth = horizonStart.slice(0, 7);
   const lastMonth = horizonEnd.slice(0, 7);
   const [year, monthNumber] = month.split("-").map(Number);
@@ -364,7 +373,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
         {selectedBookings.length > 0 ? (
           <div className="month-booking-list">
             {selectedBookings.map((booking) => (
-              <article key={booking.id}>
+              <div key={booking.id} className="case-tap" role="button" tabIndex={0} aria-label={`ดูรายละเอียด ${booking.queueType === "EXTRA" ? "OR Extra" : "OR 17"} #${booking.slotNo} ${booking.operation}`} onClick={(event) => onOpenCase(booking, event.currentTarget)} onKeyDown={(event) => caseRowKeyDown(event, () => onOpenCase(booking, event.currentTarget))}>
                 <div className={`month-booking-slot ${booking.isCancer ? "cancer" : ""}`}>
                   <strong>#{booking.slotNo}</strong>
                   <small>{displaySlotTime(booking.slotNo)}</small>
@@ -376,7 +385,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
                   <ClashBadge booking={booking} entries={staffUnavailability} />
                 </div>
                 <StatusDot synced={booking.calendarSyncStatus === "synced"} />
-              </article>
+              </div>
             ))}
           </div>
         ) : <p className="month-bookings-empty">ยังไม่มีเคสลงคิวในวันที่เลือก</p>}
@@ -568,6 +577,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const [unavailabilityForm, setUnavailabilityForm] = useState(EMPTY_UNAVAILABILITY_FORM);
   const [unavailabilitySaving, setUnavailabilitySaving] = useState(false);
   const [pendingUnavailability, setPendingUnavailability] = useState<{ bookings: AffectedBooking[]; message: string } | null>(null);
+  const [detailCase, setDetailCase] = useState<Booking | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; action: () => Promise<void> } | null>(null);
   const [exportRange, setExportRange] = useState(() => {
     const today = bangkokToday();
@@ -628,6 +638,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const detailCloseRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async ({ showSuccess = false, quiet = false }: { showSuccess?: boolean; quiet?: boolean } = {}) => {
     const loadId = ++latestLoadRef.current;
@@ -688,7 +700,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   useEffect(() => {
     refreshGuardRef.current = {
       busy: loading || saving || moving || deleting || editSaving || closureSaving || unavailabilitySaving || syncing || exporting,
-      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || confirmDialog),
+      dialogOpen: Boolean(bookingConflict || pendingClosure || pendingUnavailability || deleteDialog || editDialog || confirmDialog || detailCase),
     };
   });
 
@@ -725,7 +737,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   }, [loadSchedule]);
 
   useEffect(() => {
-    if (!bookingConflict && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog && !confirmDialog) return;
+    if (!bookingConflict && !pendingClosure && !pendingUnavailability && !deleteDialog && !editDialog && !confirmDialog && !detailCase) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !deleting && !editSaving && !(confirmDialog && (closureSaving || unavailabilitySaving))) {
@@ -738,6 +750,8 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
         setPendingUnavailability(null);
         setDeleteDialog(null);
         if (deleteDialog) requestAnimationFrame(() => deleteTriggerRef.current?.focus());
+        setDetailCase(null);
+        if (detailCase) requestAnimationFrame(() => detailTriggerRef.current?.focus());
       }
       if (event.key === "Tab") {
         // Every dialog here is modal and only one is open at a time: keep Tab inside it.
@@ -765,7 +779,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       }
     };
     document.body.style.overflow = "hidden";
-    (confirmDialog ? confirmCancelRef.current : deleteDialog
+    (detailCase ? detailCloseRef.current : confirmDialog ? confirmCancelRef.current : deleteDialog
       ? deleteDialog.step === "verify" ? deleteHnRef.current : deleteConfirmRef.current
       : editDialog ? editInputRef.current : bookingConflict ? conflictCloseRef.current : pendingClosure ? closureConfirmRef.current : pendingUnavailability ? unavailabilityConfirmRef.current : null)?.focus();
     window.addEventListener("keydown", closeOnEscape);
@@ -773,7 +787,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [bookingConflict, closureSaving, confirmDialog, deleteDialog, deleting, editDialog, editSaving, pendingClosure, pendingUnavailability, unavailabilitySaving]);
+  }, [bookingConflict, closureSaving, confirmDialog, deleteDialog, deleting, detailCase, editDialog, editSaving, pendingClosure, pendingUnavailability, unavailabilitySaving]);
 
   useEffect(() => {
     const storageKey = "or-queue-device-id";
@@ -1393,6 +1407,45 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     }
   }
 
+  function openCaseDetail(booking: Booking, trigger: HTMLElement) {
+    detailTriggerRef.current = trigger;
+    setDetailCase(booking);
+  }
+
+  function closeCaseDetail() {
+    setDetailCase(null);
+    requestAnimationFrame(() => detailTriggerRef.current?.focus());
+  }
+
+  // Hand the tapped case to the search screen's existing move / edit / delete flow.
+  function manageFromDetail(booking: Booking) {
+    const result: SearchResult = {
+      id: booking.id,
+      hn: booking.hn,
+      patientName: booking.patientName,
+      diagnosis: booking.diagnosis,
+      isCancer: booking.isCancer,
+      neoadjuvantTreatment: booking.neoadjuvantTreatment,
+      operation: booking.operation,
+      staffMembers: booking.staffMembers,
+      scheduleDate: booking.scheduleDate,
+      queueType: booking.queueType,
+      slotNo: booking.slotNo,
+      durationMinutes: booking.durationMinutes ?? null,
+    };
+    setDetailCase(null);
+    setSearchQuery(booking.hn);
+    setSearched(true);
+    setSearchResults([result]);
+    // The case came from the loaded schedule, so it is exactly as fresh as that load.
+    setSearchedAt(lastSyncedAt?.getTime() ?? Date.now());
+    setSelectedCase(result);
+    setMoveTarget("");
+    setMoveDuration("");
+    setDeleteDialog(null);
+    selectTab("search");
+  }
+
   async function searchCases(event?: FormEvent) {
     event?.preventDefault();
     const query = searchQuery.trim();
@@ -1669,6 +1722,33 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             )}
           </section>
         </div>
+      )}
+
+      {detailCase && (
+        <CaseDetailDialog
+          detail={{
+            roomLabel: detailCase.queueType === "EXTRA" ? "OR Extra" : "OR 17",
+            slotNo: detailCase.slotNo,
+            when: `${displayDate(detailCase.scheduleDate)} · ${displaySlotTime(detailCase.slotNo)}`,
+            operation: detailCase.operation,
+            patientName: detailCase.patientName,
+            hn: detailCase.hn,
+            diagnosis: detailCase.diagnosis,
+            isCancer: detailCase.isCancer,
+            neoadjuvantTreatment: detailCase.neoadjuvantTreatment,
+            staff: staffLabel(detailCase.staffMembers),
+            duration: durationText(detailCase.durationMinutes),
+            note: detailCase.note,
+            clash: (() => {
+              const names = clashStaffFor(detailCase, data?.staffUnavailability || []);
+              return names.length ? `${names.join(", ")} ไม่ว่างวันนี้ · ควรย้ายวัน` : "";
+            })(),
+            synced: detailCase.calendarSyncStatus === "synced",
+          }}
+          closeRef={detailCloseRef}
+          onClose={closeCaseDetail}
+          onManage={() => manageFromDetail(detailCase)}
+        />
       )}
 
       {confirmDialog && (
@@ -1999,7 +2079,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
                     {day.offSchedule && <p className="warning-line">เคสถูกย้ายวันใน Google Calendar มาวันที่ไม่มี {day.queueType === "EXTRA" ? "OR Extra" : "OR 17"} · กรุณาสลับวันให้ถูกต้องผ่านเว็บ</p>}
                     {needsCancer && <p className="warning-line">ช่องสุดท้ายรับ Cancer เท่านั้น</p>}
                     {day.queueType === "EXTRA" && <p className="extra-line">รับเฉพาะ Diagnosis ที่ระบุ Cancer · สูงสุด 4 เคส</p>}
-                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}{row.durationMinutes !== null ? ` · ${durationText(row.durationMinutes)}` : ""}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
+                    {rows.length > 0 && <div className="mini-bookings">{rows.map((row) => <div key={row.id} className="case-tap" role="button" tabIndex={0} aria-label={`ดูรายละเอียด #${row.slotNo} ${row.operation}`} onClick={(event) => openCaseDetail(row, event.currentTarget)} onKeyDown={(event) => caseRowKeyDown(event, () => openCaseDetail(row, event.currentTarget))}><span className={row.isCancer ? "cancer-mark" : ""}>#{row.slotNo}</span><p><strong>{row.operation}</strong><small>{displaySlotTime(row.slotNo)} · HN ••••{row.hn.slice(-4)} · {staffLabel(row.staffMembers)}{row.durationMinutes !== null ? ` · ${durationText(row.durationMinutes)}` : ""}</small><ClashBadge booking={row} entries={data?.staffUnavailability || []} /></p><StatusDot synced={row.calendarSyncStatus === "synced"} /></div>)}</div>}
                     {remaining <= 0 && <span className="full-label">คิวเต็ม</span>}
                   </div>
                 </article>;
@@ -2007,7 +2087,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             </div>
           ) : scheduleView === "month" ? (
             <div role="tabpanel" aria-label="ปฏิทินผ่าตัดรายเดือน">
-              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} staffUnavailability={data?.staffUnavailability || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} />
+              <MonthlyCalendar days={data?.days || []} bookings={data?.bookings || []} closures={data?.closures || []} staffUnavailability={data?.staffUnavailability || []} horizonStart={data?.horizonStart || bangkokToday()} horizonEnd={data?.horizonEnd || bangkokToday()} month={calendarMonth} selectedDate={selectedCalendarDate} onMonthChange={setCalendarMonth} onSelectDate={setSelectedCalendarDate} onOpenCase={openCaseDetail} />
             </div>
           ) : (
             <div className="closure-manager" role="tabpanel" aria-label="ตั้งค่าวันปิดรับคิว">
