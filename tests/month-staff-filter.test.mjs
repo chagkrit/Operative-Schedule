@@ -43,6 +43,15 @@ test("month summary clips a range that crosses the month boundary", () => {
   assert.deepEqual(staffMonthSummary(bookings, entries, "2026-12", "อ กีรติ"), { cases: 1, unavailableDays: 2 });
 });
 
+test("fromDate skips earlier unavailable days (bookings only load from today)", () => {
+  assert.deepEqual(staffMonthSummary(bookings, entries, "2026-11", "อ กีรติ", "2026-11-30"), { cases: 2, unavailableDays: 1 });
+});
+
+test("clash block uses unfiltered bookings so it never says no clash while another staff has one", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.match(app, /const selectedClashBookings = bookings\.filter\(\(booking\) => booking\.scheduleDate === selectedDate\)/);
+});
+
 test("monthly calendar wires the staff filter and two-line slot time", async () => {
   const app = await read("app/SchedulerApp.tsx");
   assert.match(app, /from "\.\/lib\/month-staff-filter"/);

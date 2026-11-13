@@ -297,13 +297,13 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
   const [staffFilter, setStaffFilter] = useState("");
   const visibleBookings = bookingsForStaff(bookings, staffFilter);
   const staffCounts = caseCountsByDate(bookings, staffFilter);
-  const staffSummary = staffFilter ? staffMonthSummary(bookings, staffUnavailability, month, staffFilter) : null;
+  const staffSummary = staffFilter ? staffMonthSummary(bookings, staffUnavailability, month, staffFilter, bangkokToday()) : null;
   const selectedBookings = visibleBookings
     .filter((booking) => booking.scheduleDate === selectedDate)
     .sort((a, b) => a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1);
   const clashDates = new Set(visibleBookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0).map((booking) => booking.scheduleDate));
   const selectedUnavailableStaff = unavailableStaffOn(staffUnavailability, selectedDate, STAFF);
-  const selectedClashBookings = selectedBookings.filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0);
+  const selectedClashBookings = bookings.filter((booking) => booking.scheduleDate === selectedDate).sort((a, b) => a.queueType === b.queueType ? a.slotNo - b.slotNo : a.queueType === "OR17" ? -1 : 1).filter((booking) => clashStaffFor(booking, staffUnavailability).length > 0);
   const today = bangkokToday();
 
   function changeMonth(direction: -1 | 1) {
@@ -362,7 +362,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
           <strong>{selectedCount} เคส</strong>
         </div>
         {staffFilter && !selectedClosure && (
-          <p className="month-staff-day"><b>{staffFilter}</b><span>{isStaffUnavailableOn(staffUnavailability, staffFilter, selectedDate) ? "ไม่ว่างวันนี้" : `วันนี้ ${selectedBookings.length} เคส`}</span></p>
+          <p className="month-staff-day"><b>{staffFilter}</b><span>{isStaffUnavailableOn(staffUnavailability, staffFilter, selectedDate) ? "ไม่ว่างวันนี้" : "ว่างวันนี้"} · {selectedBookings.length} เคส</span></p>
         )}
         {selectedClosure ? <div className="month-closure-summary"><b>ปิดรับคิว · {selectedClosure.name}</b><span>{selectedClosure.note || "ไม่มีหมายเหตุ"}</span></div>
           : selectedSummaries.length > 0 ? selectedSummaries.map((day) => (

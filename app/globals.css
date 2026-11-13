@@ -309,12 +309,11 @@ button { cursor: pointer; }
 .month-booking-time span { display: block; white-space: nowrap; }
 .month-staff-filter { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 6px; scrollbar-width: none; }
 .month-staff-filter::-webkit-scrollbar { display: none; }
-.month-staff-filter button { flex: 0 0 auto; min-height: 34px; padding: 0 12px; border: 1px solid #e4d7da; border-radius: 999px; color: #5f4d55; background: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.month-staff-filter button { flex: 0 0 auto; min-height: 40px; padding: 0 12px; border: 1px solid #e4d7da; border-radius: 999px; color: #5f4d55; background: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .month-staff-filter button.active { border-color: var(--rose); color: #fff; background: var(--rose); }
 .month-staff-summary { margin: 0; color: #49373f; font-size: 11px; }
 .month-staff-day { display: flex; justify-content: space-between; gap: 10px; margin: 9px 0 0; font-size: 10px; }
-.month-day.staff-off { background: repeating-linear-gradient(135deg, #f4eef0, #f4eef0 6px, #ece3e6 6px, #ece3e6 12px); }
-.month-day .staff-off-flag { color: #922f2a; font-size: 10px; font-style: normal; font-weight: 900; }
+.month-day .staff-off-flag { color: #922f2a; text-shadow: 0 0 3px #fff; font-size: 10px; font-style: normal; font-weight: 900; }
 .month-booking-detail { min-width: 0; display: grid; gap: 2px; }
 .month-booking-detail strong, .month-booking-detail span, .month-booking-detail small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .month-booking-detail strong { color: #3f3036; font-size: 10px; }

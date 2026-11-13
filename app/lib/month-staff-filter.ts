@@ -21,18 +21,21 @@ export function isStaffUnavailableOn(entries: readonly UnavailableLike[], staff:
   return entries.some((entry) => entry.staff === staff && entry.startDate <= date && date <= entry.endDate);
 }
 
-// Month summary for one staff member. `month` is "YYYY-MM".
+// Month summary for one staff member. `month` is "YYYY-MM". `fromDate` (ISO) skips earlier days, e.g. today:
+// bookings are only loaded from today on, so both numbers then cover the same period.
 export function staffMonthSummary(
   bookings: readonly CaseLike[],
   entries: readonly UnavailableLike[],
   month: string,
   staff: string,
+  fromDate = "",
 ): { cases: number; unavailableDays: number } {
   const [year, monthNumber] = month.split("-").map(Number);
   const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
   let unavailableDays = 0;
   for (let day = 1; day <= daysInMonth; day += 1) {
-    if (isStaffUnavailableOn(entries, staff, `${month}-${String(day).padStart(2, "0")}`)) unavailableDays += 1;
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    if (date >= fromDate && isStaffUnavailableOn(entries, staff, date)) unavailableDays += 1;
   }
   const cases = bookingsForStaff(bookings, staff).filter((booking) => booking.scheduleDate.startsWith(`${month}-`)).length;
   return { cases, unavailableDays };
