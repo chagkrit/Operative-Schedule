@@ -29,8 +29,9 @@ test("detail dialog shows the full case and offers the existing move/delete flow
   }
   assert.match(dialog, /สลับวัน \/ แก้ไข \/ ลบ/);
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(app, /function manageFromDetail\(/);
-  assert.match(app, /selectTab\("search"\)/);
+  // The handoff runs a live search by HN, so a case changed on another device is shown as it is now.
+  assert.match(app, /void searchCases\(undefined, \{ query: booking\.hn, selectId: booking\.id \}\)/);
+  assert.match(app, /if \(searchId !== latestSearchRef\.current\) return;/);
 });
 
 test("case rows show a pointer and a visible keyboard focus ring", async () => {

@@ -385,7 +385,7 @@ button[aria-busy="true"]::before {
 
 /* Tappable case rows (queue list + month view) open the case detail dialog. */
 .case-tap { cursor: pointer; transition: background-color .15s ease; }
-.case-tap:hover { background-color: var(--rose-soft); }
+@media (hover: hover) { .case-tap:hover { background-color: var(--rose-soft); } }
 .case-tap:focus-visible { outline: 2px solid var(--focus) !important; outline-offset: 2px; border-radius: 14px; }
 .case-detail-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .case-detail-heading h3 { margin: 0; color: var(--ink); font-size: 20px; }

@@ -639,6 +639,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
   const confirmTriggerRef = useRef<HTMLButtonElement | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const latestSearchRef = useRef(0);
   const detailCloseRef = useRef<HTMLButtonElement>(null);
 
   const loadSchedule = useCallback(async ({ showSuccess = false, quiet = false }: { showSuccess?: boolean; quiet?: boolean } = {}) => {
@@ -1417,58 +1418,49 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
     requestAnimationFrame(() => detailTriggerRef.current?.focus());
   }
 
-  // Hand the tapped case to the search screen's existing move / edit / delete flow.
+  // Hand the tapped case to the search screen's existing move / edit / delete flow. A live search by HN
+  // (not the loaded schedule) feeds it, so a case changed on another device is shown as it is now.
   function manageFromDetail(booking: Booking) {
-    const result: SearchResult = {
-      id: booking.id,
-      hn: booking.hn,
-      patientName: booking.patientName,
-      diagnosis: booking.diagnosis,
-      isCancer: booking.isCancer,
-      neoadjuvantTreatment: booking.neoadjuvantTreatment,
-      operation: booking.operation,
-      staffMembers: booking.staffMembers,
-      scheduleDate: booking.scheduleDate,
-      queueType: booking.queueType,
-      slotNo: booking.slotNo,
-      durationMinutes: booking.durationMinutes ?? null,
-    };
     setDetailCase(null);
-    setSearchQuery(booking.hn);
-    setSearched(true);
-    setSearchResults([result]);
-    // The case came from the loaded schedule, so it is exactly as fresh as that load.
-    setSearchedAt(lastSyncedAt?.getTime() ?? Date.now());
-    setSelectedCase(result);
-    setMoveTarget("");
-    setMoveDuration("");
-    setDeleteDialog(null);
     selectTab("search");
+    setSearchQuery(booking.hn);
+    void searchCases(undefined, { query: booking.hn, selectId: booking.id });
   }
 
-  async function searchCases(event?: FormEvent) {
+  async function searchCases(event?: FormEvent, handoff?: { query: string; selectId: string }) {
     event?.preventDefault();
-    const query = searchQuery.trim();
+    const query = (handoff?.query ?? searchQuery).trim();
     if (query.length < 2) {
       setNotice({ type: "error", text: "กรุณาพิมพ์ HN ชื่อ หรือสกุล อย่างน้อย 2 ตัวอักษร" });
       return;
     }
+    // Only the newest search may fill the results, so an older one still in flight cannot replace them.
+    const searchId = ++latestSearchRef.current;
     setSearching(true);
     setSearched(true);
     setSelectedCase(null);
     setMoveTarget("");
+    setMoveDuration("");
     setDeleteDialog(null);
     try {
       const response = await fetch(`/api/cases/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
       const payload = (await response.json()) as { results?: SearchResult[]; error?: string };
       if (!response.ok) throw new Error(payload.error || "ค้นหาไม่สำเร็จ");
-      setSearchResults(payload.results || []);
+      if (searchId !== latestSearchRef.current) return;
+      const results = payload.results || [];
+      setSearchResults(results);
       setSearchedAt(Date.now());
+      if (handoff) {
+        const match = results.find((result) => result.id === handoff.selectId);
+        if (match) setSelectedCase(match);
+        else setNotice({ type: "error", text: "ไม่พบเคสนี้แล้ว อาจถูกลบหรือแก้จากอีกเครื่อง" });
+      }
     } catch (error) {
+      if (searchId !== latestSearchRef.current) return;
       setSearchResults([]);
       setNotice({ type: "error", text: error instanceof Error ? error.message : "ค้นหาไม่สำเร็จ" });
     } finally {
-      setSearching(false);
+      if (searchId === latestSearchRef.current) setSearching(false);
     }
   }
 
