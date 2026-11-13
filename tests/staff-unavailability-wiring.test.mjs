@@ -43,7 +43,8 @@ test("queue enforces staff unavailability in destinationError", async () => {
   assert.match(queue, /staffUnavailability/);
   assert.match(queue, /unavailableStaffOn\(/);
   assert.match(queue, /export \{ destinationError, staffBlockedOn \} from "\.\/destination"/);
-  assert.equal((queue.match(/unavailableStaff: unavailableStaffOn\(/g) || []).length, 3);
+  // One per room-day builder: OR 17, OR Extra, legacy Extra, off-schedule OR 17.
+  assert.equal((queue.match(/unavailableStaff: unavailableStaffOn\(/g) || []).length, 4);
   assert.match(rules, /export function staffBlockedOn/);
   assert.match(rules, /export function destinationError\([\s\S]*?staffMembers\?:/);
   // destination.ts must stay free of Calendar/auth imports so tests can load it
