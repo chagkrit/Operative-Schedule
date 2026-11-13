@@ -1,5 +1,6 @@
 import { listCalendarData, type CalendarBooking, type QueueType } from "./calendar";
 import { roomDayMinutes } from "./minutes";
+import { extraDayIsOffSchedule, OFF_SCHEDULE_NOTE, offScheduleRoomDays } from "./off-schedule";
 import { addDays, isNormalDay, STAFF_OPTIONS } from "./schedule";
 import { unavailableStaffOn } from "./staff-unavailability";
 
@@ -16,6 +17,7 @@ export type DaySummary = {
   closureName: string;
   closureNote: string;
   unavailableStaff: string[];
+  offSchedule?: boolean;
 };
 
 export async function getSchedule(request: Request, from: string, to: string) {
@@ -63,11 +65,12 @@ export async function getSchedule(request: Request, from: string, to: string) {
     }
   }
   for (const date of legacyExtraCounts.keys()) {
+    const offSchedule = extraDayIsOffSchedule(date);
     summaries.set(`${date}:EXTRA`, {
       date,
       queueType: "EXTRA",
       capacity: 4,
-      note: "นำเข้าจาก Google Calendar",
+      note: offSchedule ? OFF_SCHEDULE_NOTE : "นำเข้าจาก Google Calendar",
       count: 0,
       cancerCount: 0,
       bookedMinutes: 0,
@@ -76,6 +79,24 @@ export async function getSchedule(request: Request, from: string, to: string) {
       closureName: closuresByDate.get(date)?.name || "",
       closureNote: closuresByDate.get(date)?.note || "",
       unavailableStaff: unavailableStaffOn(staffUnavailability, date, STAFF_OPTIONS),
+      ...(offSchedule ? { offSchedule: true } : {}),
+    });
+  }
+  for (const { date, queueType } of offScheduleRoomDays(bookings, new Set(summaries.keys()))) {
+    summaries.set(`${date}:${queueType}`, {
+      date,
+      queueType,
+      capacity: 0,
+      note: OFF_SCHEDULE_NOTE,
+      count: 0,
+      cancerCount: 0,
+      bookedMinutes: 0,
+      minutesEnforced: false,
+      closed: closuresByDate.has(date),
+      closureName: closuresByDate.get(date)?.name || "",
+      closureNote: closuresByDate.get(date)?.note || "",
+      unavailableStaff: unavailableStaffOn(staffUnavailability, date, STAFF_OPTIONS),
+      offSchedule: true,
     });
   }
   for (const booking of bookings) {
@@ -84,6 +105,10 @@ export async function getSchedule(request: Request, from: string, to: string) {
       summary.count += 1;
       if (booking.isCancer) summary.cancerCount += 1;
     }
+  }
+  // Off-schedule room-days only hold the cases already there: always full, never offered.
+  for (const summary of summaries.values()) {
+    if (summary.offSchedule) summary.capacity = summary.count;
   }
   for (const summary of summaries.values()) {
     const { enforced, bookedMinutes } = roomDayMinutes(roomDayDurations(bookings, summary.date, summary.queueType));
