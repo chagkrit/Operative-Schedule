@@ -184,7 +184,7 @@ export default function AdminUsers({ initialUsers, currentEmail }: { initialUser
                     type="button"
                     role="switch"
                     aria-checked={user.active}
-                    aria-label={`สถานะของ ${user.email}: ${user.active ? "ใช้งาน" : "ปิดชั่วคราว"}`}
+                    aria-label={`ใช้งานบัญชี ${user.email}`}
                     onClick={() => toggleActive(user)}
                     disabled={locked || busy}
                   >

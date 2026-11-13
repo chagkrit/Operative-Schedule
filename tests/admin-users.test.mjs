@@ -34,9 +34,10 @@ function memory(initial = BASE) {
   return { state, store: createUserStore(storage) };
 }
 
-async function call(store, method, { as, body, raw } = {}) {
+async function call(store, method, { as, body, raw, contentType = "application/json" } = {}) {
   process.env.AUTH_SECRET = SECRET;
-  const headers = { "content-type": "application/json" };
+  const headers = {};
+  if (contentType !== null) headers["content-type"] = contentType;
   if (as) headers.cookie = `${COOKIE}=${await encode({ token: { email: as }, secret: SECRET, salt: COOKIE })}`;
   const init = { method, headers };
   if (method === "GET") {
@@ -100,7 +101,7 @@ test("parseAdminUsersBody validates shape and types per method, with Thai 400 me
   assert.match(p("PATCH", { email: "a@x.com", active: "no" }).error, /สถานะไม่ถูกต้อง/);
 });
 
-test("applyAdminAction: self-removal/demotion/deactivation and the last active admin are rejected in Thai", () => {
+test("applyAdminAction: self-removal/demotion/deactivation and bootstrap edits are refused in Thai; a stale actor is refused", () => {
   const list = [u("a@x.com", "admin"), u("b@x.com", "admin", false), u("c@x.com")];
   const apply = api.applyAdminAction;
   assert.match(apply(list, { kind: "remove", email: "a@x.com" }, "a@x.com").error, /ลบบัญชีของตัวเองไม่ได้/);
@@ -134,7 +135,7 @@ test("rule errors map to sensible HTTP statuses", () => {
 
 // ---- the handler with a real Auth.js JWT and an in-memory store ----
 
-test("unauthenticated → 401, non-admin or inactive → 403, on every method, never touching storage", async () => {
+test("unauthenticated, unknown or inactive → 401, active non-admin → 403, on every method, never writing", async () => {
   for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
     const { state, store } = memory();
     const body = { email: "new@x.com", role: "user" };
@@ -144,6 +145,10 @@ test("unauthenticated → 401, non-admin or inactive → 403, on every method, n
     assert.equal(anon.cacheControl, "no-store");
     const stranger = await call(store, method, { as: "stranger@x.com", body });
     assert.equal(stranger.status, 401, method);
+    const inactive = await call(store, method, { as: "off@x.com", body });
+    assert.equal(inactive.status, 401, method);
+    assert.match(inactive.json.error, /เข้าสู่ระบบ/);
+    assert.equal(inactive.cacheControl, "no-store");
     const user = await call(store, method, { as: HN, body });
     assert.equal(user.status, 403, method);
     assert.equal(user.json.error, api.ADMIN_ONLY_MESSAGE);
@@ -182,6 +187,34 @@ test("POST adds a trimmed, lower-cased user; duplicates (any case) 409; invalid 
   const writes = state.writes;
   await call(store, "POST", { as: ADMIN, body: { email: "x@x.com", role: "root" } });
   assert.equal(state.writes, writes, "a rejected request writes nothing");
+});
+
+test("POST/PATCH/DELETE need a JSON Content-Type (415, Thai, no-store) after the 401/403 checks; GET does not", async () => {
+  const bodies = { POST: { email: "new@x.com", role: "user" }, PATCH: { email: HN, active: false }, DELETE: { email: HN } };
+  for (const method of ["POST", "PATCH", "DELETE"]) {
+    const { state, store } = memory();
+    const body = bodies[method];
+    const plain = await call(store, method, { as: ADMIN, body, contentType: "text/plain" });
+    assert.equal(plain.status, 415, `${method} text/plain`);
+    assert.match(plain.json.error, /[฀-๿]/);
+    assert.equal(plain.cacheControl, "no-store");
+    // A Uint8Array body gets no default content-type, so the header is really absent.
+    const missing = await call(store, method, { as: ADMIN, raw: new TextEncoder().encode(JSON.stringify(body)), contentType: null });
+    assert.equal(missing.status, 415, `${method} no content-type`);
+    assert.equal(missing.cacheControl, "no-store");
+    const formish = await call(store, method, { as: ADMIN, body, contentType: "application/jsonx" });
+    assert.equal(formish.status, 415, `${method} application/jsonx`);
+    assert.equal(state.writes, 0, "a 415 writes nothing");
+    // Auth comes first: anonymous → 401, active non-admin → 403, even with a wrong type.
+    assert.equal((await call(store, method, { body, contentType: "text/plain" })).status, 401);
+    assert.equal((await call(store, method, { as: HN, body, contentType: "text/plain" })).status, 403);
+    // A JSON type (any case, with a charset) is unchanged.
+    const ok = await call(store, method, { as: ADMIN, body, contentType: "Application/JSON; charset=utf-8" });
+    assert.equal(ok.status, 200, `${method} JSON with charset`);
+  }
+  const { store } = memory();
+  const get = await call(store, "GET", { as: ADMIN, contentType: null });
+  assert.equal(get.status, 200);
 });
 
 test("DELETE/PATCH on yourself or the bootstrap admin are refused with Thai 409; unknown email 404", async () => {
@@ -293,6 +326,9 @@ test("AdminUsers renders from API responses, confirms deletes, locks bootstrap a
   assert.match(ui, /ปิดชั่วคราว/);
   assert.match(ui, /disabled=\{locked \|\| busy\}/);
   assert.match(ui, /event\.key === "Escape"/);
+  // The switch's name is static; aria-checked carries the on/off state.
+  assert.match(ui, /role="switch"\s+aria-checked=\{user\.active\}\s+aria-label=\{`ใช้งานบัญชี \$\{user\.email\}`\}/);
+  assert.doesNotMatch(ui, /สถานะของ \$\{user\.email\}/);
 });
 
 test("menu shows จัดการผู้ใช้ only to admins", async () => {
@@ -309,7 +345,8 @@ test("/signin explains a denied account without signing it out", async () => {
   assert.match(signin, /if \(await sessionAccess\(\)\) redirect\("\/"\);/);
   assert.match(signin, /await sessionEmail\(\)/);
   assert.match(signin, /error === "AccessDenied"/);
-  assert.ok(signin.includes("บัญชีนี้ยังไม่ได้รับอนุญาตหรือถูกปิดการใช้งาน กรุณาติดต่อผู้ดูแลระบบ"));
+  // Also covers a temporary outage of the permission check (the store fails closed).
+  assert.ok(signin.includes("บัญชีนี้ยังไม่ได้รับอนุญาต ถูกปิดการใช้งาน หรือระบบตรวจสิทธิ์ขัดข้องชั่วคราว กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ"));
   assert.ok(signin.indexOf("signin-denied") < signin.indexOf("google-button"), "notice above the sign-in button");
   assert.doesNotMatch(signin, /signOut/);
   const session = await read("app/lib/session.ts");

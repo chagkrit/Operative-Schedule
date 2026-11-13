@@ -4,8 +4,16 @@ import "./ts-resolve.mjs";
 import { BOOTSTRAP_ADMIN, SEED_USERS, addUser, removeUser } from "../app/lib/users.ts";
 
 // Dynamic import so the ts-resolve hook is active when user-store.ts resolves "./users".
-const { CACHE_TTL_MS, USERS_BLOB_PATH, blobPutOptions, createUserStore, parseUsersJson, storageReadKind } =
-  await import("../app/lib/user-store.ts");
+const {
+  BLOB_TIMEOUT_MS,
+  CACHE_TTL_MS,
+  USERS_BLOB_PATH,
+  blobPutOptions,
+  blobTimeoutSignal,
+  createUserStore,
+  parseUsersJson,
+  storageReadKind,
+} = await import("../app/lib/user-store.ts");
 
 const u = (email, role = "user", active = true) => ({ email, role, active });
 const ADMIN = BOOTSTRAP_ADMIN;
@@ -84,6 +92,48 @@ test("read error: non-bootstrap denied, bootstrap allowed, nothing written", asy
   await assert.rejects(store.list(), /blob 500/);
   await assert.rejects(store.mutate((list) => addUser(list, "a@x.com", "user")), /blob 500/);
   assert.equal(storage.writes.length, 0);
+});
+
+test("a corrupt file is logged by error name only: no email text reaches the console", async (t) => {
+  const logged = [];
+  t.mock.method(console, "error", (...args) => logged.push(args.map(String).join(" ")));
+  const storage = memoryStorage([]);
+  // A real JSON.parse error quotes the file content, which can contain emails.
+  storage.read = async () => parseUsersJson("secret.person@x.com, hnbcmu@gmail.com");
+  const store = createUserStore(storage, fakeClock().now);
+  assert.deepEqual(await store.getAccess(HN), DENIED);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /SyntaxError/);
+  assert.doesNotMatch(logged[0], /@|secret|hnbcmu/);
+  assert.equal(storage.writes.length, 0);
+});
+
+test("a Blob timeout (aborted read or write) fails closed: nothing cached, nothing written", async (t) => {
+  silenceErrors(t);
+  const aborted = () => new DOMException("This operation was aborted", "AbortError");
+  const storage = memoryStorage(aborted());
+  const store = createUserStore(storage, fakeClock().now);
+  assert.deepEqual(await store.getAccess(HN), DENIED);
+  assert.deepEqual(await store.getAccess(ADMIN), ALLOWED_ADMIN);
+  await assert.rejects(store.mutate((list) => addUser(list, "a@x.com", "user")), { name: "AbortError" });
+  assert.equal(storage.writes.length, 0);
+  storage.data = [u(HN)]; // the next read works: the timeout was not cached
+  assert.deepEqual(await store.getAccess(HN), ALLOWED_USER);
+  storage.write = async () => {
+    throw aborted();
+  };
+  await assert.rejects(store.mutate((list) => removeUser(list, HN, ADMIN)), { name: "AbortError" });
+  storage.data = [u(HN, "user", false)];
+  assert.deepEqual(await store.getAccess(HN), DENIED); // cache dropped after the failed write
+});
+
+test("blobTimeoutSignal: 5 s, aborts with an AbortError (the Blob SDK retries a TimeoutError with backoff)", async () => {
+  assert.equal(BLOB_TIMEOUT_MS, 5_000);
+  const signal = blobTimeoutSignal(10);
+  assert.equal(signal.aborted, false);
+  await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason.name, "AbortError");
 });
 
 test("read errors are not cached: recovery is picked up on the next call", async (t) => {

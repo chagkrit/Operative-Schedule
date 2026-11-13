@@ -7,7 +7,8 @@
 //   PATCH  { email, role?, active? }  → { users }   both changes or neither
 //   DELETE { email }                  → { users }
 //   errors → { error: Thai }  400 bad body · 401 not signed in/allowed · 403 not admin ·
-//                             404 unknown email · 409 rule refused / concurrent edit · 500 storage
+//                             404 unknown email · 409 rule refused / concurrent edit ·
+//                             415 POST/PATCH/DELETE without a JSON Content-Type · 500 storage
 //
 // Mutation responses carry the list returned by `store.mutate` (fresh read → change → write),
 // never a separate list() that a stale cache could answer.
@@ -43,6 +44,7 @@ export const BAD_REQUEST_MESSAGE = "ข้อมูลที่ส่งมา�
 export const NOTHING_TO_CHANGE_MESSAGE = "กรุณาระบุสิทธิ์หรือสถานะที่ต้องการเปลี่ยน";
 export const LOAD_FAILED_MESSAGE = "อ่านรายชื่อผู้ใช้ไม่สำเร็จ กรุณาลองใหม่";
 export const SAVE_FAILED_MESSAGE = "บันทึกรายชื่อผู้ใช้ไม่สำเร็จ กรุณาลองใหม่";
+export const JSON_REQUIRED_MESSAGE = "รูปแบบคำขอไม่ถูกต้อง ต้องส่งข้อมูลเป็น JSON";
 
 // Longer than any valid email (254), so a legacy malformed entry can still be removed.
 const MAX_TARGET_LENGTH = 320;
@@ -106,6 +108,11 @@ export function ruleErrorStatus(error: string): number {
   return 409;
 }
 
+// "application/json", any case, optionally with parameters such as "; charset=utf-8".
+export function isJsonContentType(value: string | null): boolean {
+  return (value ?? "").split(";")[0].trim().toLowerCase() === "application/json";
+}
+
 function json(body: unknown, status = 200) {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
@@ -133,6 +140,9 @@ export async function handleAdminUsers(request: Request, method: AdminUsersMetho
       return storageFailure(err, LOAD_FAILED_MESSAGE);
     }
   }
+
+  // After the auth checks (an anonymous caller still gets 401), before reading the body.
+  if (!isJsonContentType(request.headers.get("content-type"))) return json({ error: JSON_REQUIRED_MESSAGE }, 415);
 
   const body: unknown = await request.json().catch(() => undefined);
   const parsed = parseAdminUsersBody(method, body);

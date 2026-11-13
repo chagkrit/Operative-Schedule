@@ -108,7 +108,15 @@ test("user-store write computes its put options before awaiting the SDK import",
   const store = await read("app/lib/user-store.ts");
   const write = block(store, "async write(users)");
   assert.match(write, /^async write\(users\) \{\n(?:\s*\/\/.*\n)*\s*const opts = blobPutOptions\(etag\);\n\s*const \{ put \} = await import\("@vercel\/blob"\);/);
-  assert.match(write, /put\(pathname, JSON\.stringify\(users, null, 2\), opts\)/);
+  assert.match(write, /put\(pathname, JSON\.stringify\(users, null, 2\), \{ \.\.\.opts, abortSignal: blobTimeoutSignal\(\) \}\)/);
+});
+
+test("user-store Blob get and put carry a per-call timeout signal", async () => {
+  const store = await read("app/lib/user-store.ts");
+  assert.match(block(store, "async read()"), /get\(pathname, \{ access: "private", useCache: false, abortSignal: blobTimeoutSignal\(\) \}\)/);
+  assert.match(block(store, "async write(users)"), /abortSignal: blobTimeoutSignal\(\)/);
+  // Not AbortSignal.timeout(): its TimeoutError is retried by the SDK with backoff (minutes).
+  assert.doesNotMatch(store, /AbortSignal\.timeout\(/);
 });
 
 // ---- behavior: session helpers with a real Auth.js JWT and an in-memory store ----

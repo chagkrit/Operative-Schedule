@@ -20,6 +20,7 @@ import {
 
 export const USERS_BLOB_PATH = "or-queue/users.json";
 export const CACHE_TTL_MS = 30_000;
+export const BLOB_TIMEOUT_MS = 5_000;
 
 // read() resolves "missing" only for a 404 and throws on every other error.
 export type UserStorage = {
@@ -35,10 +36,6 @@ export type UserStore = {
 
 function copyList(list: readonly UserRecord[]): UserRecord[] {
   return list.map((r) => ({ email: r.email, role: r.role, active: r.active }));
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export function createUserStore(storage: UserStorage, now: () => number = Date.now): UserStore {
@@ -95,7 +92,8 @@ export function createUserStore(storage: UserStorage, now: () => number = Date.n
       try {
         return findAccess(await current(), email);
       } catch (err) {
-        console.error("[user-store] user list unreadable; access fails closed:", errorMessage(err));
+        // Log the kind only: a JSON.parse message quotes the file (emails), SDK messages carry store ids.
+        console.error("[user-store] user list unreadable; access fails closed:", err instanceof Error ? err.name : typeof err);
         if (normalizeEmail(email) === BOOTSTRAP_ADMIN) return { allowed: true, role: "admin" };
         return { allowed: false, role: null };
       }
@@ -172,6 +170,17 @@ export function blobPutOptions(etag: string | null) {
   return etag ? { ...base, ifMatch: etag } : { ...base, allowOverwrite: false };
 }
 
+// Per-call timeout for Blob requests. Aborts with an AbortError on purpose: the SDK's put()
+// bails at once on an AbortError but retries a TimeoutError (AbortSignal.timeout) with
+// exponential backoff, which would hang a write for minutes. A timeout is a read/write error
+// like any other (fail closed: nothing cached, nothing written).
+export function blobTimeoutSignal(ms: number = BLOB_TIMEOUT_MS): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("Blob request timed out", "AbortError")), ms);
+  (timer as { unref?: () => void }).unref?.();
+  return controller.signal;
+}
+
 // Keeps the etag of the last read/write. Known limit: a cache refresh that lands between a
 // mutate's read and write advances this etag, so a write by another instance in that gap
 // could be overwritten (single admin in practice).
@@ -180,7 +189,7 @@ export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
   return {
     async read() {
       const { get } = await import("@vercel/blob");
-      const result = await get(pathname, { access: "private", useCache: false });
+      const result = await get(pathname, { access: "private", useCache: false, abortSignal: blobTimeoutSignal() });
       if (storageReadKind(result) === "missing") {
         etag = null;
         return "missing";
@@ -196,7 +205,7 @@ export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
       // not one a concurrent read() sets while the SDK import is awaited (a seed must stay create-only).
       const opts = blobPutOptions(etag);
       const { put } = await import("@vercel/blob");
-      const saved = await put(pathname, JSON.stringify(users, null, 2), opts);
+      const saved = await put(pathname, JSON.stringify(users, null, 2), { ...opts, abortSignal: blobTimeoutSignal() });
       etag = saved.etag || null;
     },
   };

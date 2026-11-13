@@ -4,7 +4,8 @@ import { redirect } from "next/navigation";
 import { signInWithGoogle } from "./actions";
 import { sessionAccess, sessionEmail } from "../lib/session";
 
-const DENIED_MESSAGE = "บัญชีนี้ยังไม่ได้รับอนุญาตหรือถูกปิดการใช้งาน กรุณาติดต่อผู้ดูแลระบบ";
+// Also shown while the permission check is temporarily down (the user store fails closed).
+const DENIED_MESSAGE = "บัญชีนี้ยังไม่ได้รับอนุญาต ถูกปิดการใช้งาน หรือระบบตรวจสิทธิ์ขัดข้องชั่วคราว กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ";
 
 export default async function SignInPage({ searchParams }: { searchParams: Promise<{ [key: string]: string | string[] | undefined }> }) {
   if (await sessionAccess()) redirect("/");
