@@ -14,7 +14,8 @@ export const SEED_USERS: UserRecord[] = [
   { email: "hnbcmu@gmail.com", role: "user", active: true },
 ];
 
-const ERR = {
+// Thai messages of every rule failure (the admin API maps them to HTTP statuses).
+export const USER_ERRORS = {
   invalidEmail: "รูปแบบอีเมลไม่ถูกต้อง",
   invalidRole: "สิทธิ์ไม่ถูกต้อง (ต้องเป็น user หรือ admin)",
   invalidActive: "สถานะไม่ถูกต้อง",
@@ -26,7 +27,12 @@ const ERR = {
   selfDeactivate: "ปิดการใช้งานบัญชีของตัวเองไม่ได้",
   lastAdmin: "ต้องมีผู้ดูแลระบบที่ใช้งานอยู่อย่างน้อย 1 คน",
 } as const;
+const ERR = USER_ERRORS;
 
+export const MAX_EMAIL_LENGTH = 254;
+// Local part: RFC 5322 dot-atom characters only (printable ASCII; no spaces, control or
+// zero-width characters, no "<" or ">"), dots not leading, trailing or doubled. "+" tags allowed.
+const LOCAL_PART = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/;
 const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
 export function normalizeEmail(v: string): string {
@@ -35,11 +41,11 @@ export function normalizeEmail(v: string): string {
 
 export function isValidEmail(v: string): boolean {
   const email = normalizeEmail(v);
-  if (!email || /\s/.test(email)) return false;
+  if (!email || email.length > MAX_EMAIL_LENGTH || /\s/.test(email)) return false;
   const parts = email.split("@");
   if (parts.length !== 2) return false;
   const [local, domain] = parts;
-  if (!local) return false;
+  if (!local || local.length > 64 || !LOCAL_PART.test(local)) return false;
   const labels = domain.split(".");
   if (labels.length < 2) return false;
   if (!labels.every((label) => DOMAIN_LABEL.test(label))) return false;
@@ -103,6 +109,7 @@ export function addUser(list: readonly UserRecord[], email: string, role: Role):
 
 export function removeUser(list: readonly UserRecord[], email: string, actor: string): Result {
   const target = normalizeEmail(email);
+  if (!target) return { ok: false, error: ERR.invalidEmail };
   if (target === BOOTSTRAP_ADMIN) return { ok: false, error: ERR.bootstrap };
   if (target === normalizeEmail(actor)) return { ok: false, error: ERR.selfRemove };
   const index = indexOf(list, target);
@@ -114,6 +121,7 @@ export function removeUser(list: readonly UserRecord[], email: string, actor: st
 export function setRole(list: readonly UserRecord[], email: string, role: Role, actor: string): Result {
   if (!isRole(role)) return { ok: false, error: ERR.invalidRole };
   const target = normalizeEmail(email);
+  if (!target) return { ok: false, error: ERR.invalidEmail };
   const demoting = role !== "admin";
   if (demoting && target === BOOTSTRAP_ADMIN) return { ok: false, error: ERR.bootstrap };
   if (demoting && target === normalizeEmail(actor)) return { ok: false, error: ERR.selfDemote };
@@ -128,6 +136,7 @@ export function setRole(list: readonly UserRecord[], email: string, role: Role, 
 export function setActive(list: readonly UserRecord[], email: string, active: boolean, actor: string): Result {
   if (typeof active !== "boolean") return { ok: false, error: ERR.invalidActive };
   const target = normalizeEmail(email);
+  if (!target) return { ok: false, error: ERR.invalidEmail };
   if (!active && target === BOOTSTRAP_ADMIN) return { ok: false, error: ERR.bootstrap };
   if (!active && target === normalizeEmail(actor)) return { ok: false, error: ERR.selfDeactivate };
   const index = indexOf(list, target);

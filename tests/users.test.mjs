@@ -46,6 +46,48 @@ test("isValidEmail accepts any domain with a valid format", () => {
   }
 });
 
+test("isValidEmail: 254-char limit, printable-ASCII local part, plus-addressing still allowed", () => {
+  const domain = "@example.com"; // 12 chars
+  assert.equal(isValidEmail(`${"a".repeat(60)}.${"b".repeat(3)}${domain}`), true);
+  // 254 total is the limit (after normalizing: surrounding spaces do not count).
+  const label = "d".repeat(60);
+  const longDomain = `${label}.${label}.${label}.${"e".repeat(40)}.com`; // 227 chars
+  const at254 = `${"x".repeat(254 - longDomain.length - 1)}@${longDomain}`;
+  assert.equal(at254.length, 254);
+  assert.equal(isValidEmail(at254), true);
+  assert.equal(isValidEmail(`  ${at254.toUpperCase()}  `), true);
+  assert.equal(isValidEmail(`x${at254}`), false);
+  for (const ok of ["first.last+tag@sub.example.org", "o'brien@x.com", "a_b-c@x.co", "a+b+c@gmail.com"]) {
+    assert.equal(isValidEmail(ok), true, ok);
+  }
+  for (const bad of [
+    "​a@x.com", // zero-width space survives trim()
+    "a​@x.com",
+    "a‍@x.com",
+    "a\u0000b@x.com",
+    "a\tb@x.com",
+    "<a@x.com",
+    "a>@x.com",
+    "<a>@x.com",
+    "ก@x.com",
+    "é@x.com",
+    "a b@x.com",
+  ]) {
+    assert.equal(isValidEmail(bad), false, JSON.stringify(bad));
+  }
+});
+
+test("remove/setRole/setActive reject an empty target before the self-action check", () => {
+  const list = frozen([u(ADMIN, "admin"), u(HN)]);
+  for (const target of ["", "   "]) {
+    for (const actor of ["", ADMIN]) {
+      expectError(removeUser(list, target, actor), /รูปแบบอีเมลไม่ถูกต้อง/);
+      expectError(setRole(list, target, "user", actor), /รูปแบบอีเมลไม่ถูกต้อง/);
+      expectError(setActive(list, target, false, actor), /รูปแบบอีเมลไม่ถูกต้อง/);
+    }
+  }
+});
+
 test("withBootstrap forces bootstrap admin active, dedupes case-insensitively, keeps order", () => {
   assert.deepEqual(withBootstrap([]), [u(ADMIN, "admin")]);
   const input = frozen([u("B@x.com", "user", false), u("nansurg7@GMAIL.com", "user", false), u("b@x.com", "admin")]);

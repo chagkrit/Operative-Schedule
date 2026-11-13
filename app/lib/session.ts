@@ -51,9 +51,15 @@ export async function requestUserEmail(request: Request, store: AccessSource = u
   return access.email;
 }
 
-// Server components: the signed-in, allowed user, or null (caller redirects to /signin).
-export async function sessionAccess(): Promise<SessionAccess | null> {
+// Server components: the lower-cased email of the Auth.js session, allowed or not ("" when none).
+// Used by /signin to explain a denied account; never an access check on its own.
+export async function sessionEmail(): Promise<string> {
   const { auth } = await import("../../auth");
   const session = await auth();
-  return emailAccess(session?.user?.email);
+  return normalizeEmail(session?.user?.email || "");
+}
+
+// Server components: the signed-in, allowed user, or null (caller redirects to /signin).
+export async function sessionAccess(): Promise<SessionAccess | null> {
+  return emailAccess(await sessionEmail());
 }

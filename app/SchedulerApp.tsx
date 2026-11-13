@@ -2,6 +2,7 @@
 
 import { FormEvent, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { signOutAction } from "./actions";
 import { diagnosisIsCancer } from "./lib/schedule";
@@ -71,6 +72,7 @@ type Booking = {
   staffMembers: string[];
   durationMinutes: number | null;
   calendarSyncStatus: "pending" | "synced" | "failed";
+  bookedByEmail: string;
 };
 
 type ScheduleResponse = {
@@ -547,7 +549,7 @@ function StatusDot({ synced }: { synced: boolean }) {
 }
 
 // isAdmin: allowlist role of the signed-in user (from app/page.tsx), for the admin-only menu link.
-export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: string; isAdmin: boolean }) {
+export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedEmail: string; isAdmin: boolean }) {
   const [data, setData] = useState<ScheduleResponse | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
@@ -1658,6 +1660,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
           <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} aria-busy={syncing} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           <button className="guide-button" type="button" onClick={() => { selectTab("guide"); if (window.matchMedia("(min-width: 1001px)").matches) document.getElementById("screen-guide")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>คู่มือ</button>
           <button className="export-button" type="button" onClick={() => { setMenuOpen(false); void exportWaitingTime(); }} disabled={exporting || loading}>{exporting ? "กำลัง Export…" : "Export Excel"}</button>
+          {isAdmin && <Link className="admin-link" href="/admin" onClick={() => setMenuOpen(false)}>จัดการผู้ใช้</Link>}
           <form action={signOutAction}><button className="signout-button" type="submit">ออกจากระบบ</button></form>
         </div>
       </header>
@@ -1748,6 +1751,7 @@ export default function SchedulerApp({ authorizedEmail }: { authorizedEmail: str
             staff: staffLabel(detailCase.staffMembers),
             duration: durationText(detailCase.durationMinutes),
             note: detailCase.note,
+            bookedBy: detailCase.bookedByEmail,
             clash: (() => {
               const names = clashStaffFor(detailCase, data?.staffUnavailability || []);
               return names.length ? `${names.join(", ")} ไม่ว่างวันนี้ · ควรย้ายวัน` : "";

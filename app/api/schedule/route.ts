@@ -47,6 +47,7 @@ export async function GET(request: Request) {
           staffMembers: booking.staffMembers,
           durationMinutes: booking.durationMinutes,
           calendarSyncStatus: "synced" as const,
+          bookedByEmail: booking.bookedByEmail,
         })),
       recentMoves: recentMoves.map((booking) => ({
         id: booking.id,
