@@ -44,6 +44,7 @@ export async function GET(request: Request) {
           operation: booking.operation,
           note: booking.note,
           staffMembers: booking.staffMembers,
+          durationMinutes: booking.durationMinutes,
           calendarSyncStatus: "synced" as const,
         })),
       recentMoves: recentMoves.map((booking) => ({

@@ -115,7 +115,7 @@ test("stale notes only judge a selection against data loaded after it", async ()
   const caseStart = app.indexOf("const selectedCaseStale = ");
   const caseExpr = app.slice(caseStart, app.indexOf(");", caseStart));
   assert.match(caseExpr, /searchedAt !== null && lastSyncedAt && lastSyncedAt\.getTime\(\) > searchedAt/);
-  assert.match(app, /setSearchResults\(payload\.results \|\| \[\]\);\s*setSearchedAt\(Date\.now\(\)\);/);
+  assert.match(app, /setSearchResults\(results\);\s*setSearchedAt\(Date\.now\(\)\);/);
   // Every way of picking a date stamps the pick time: cancer list, OR17 list, manual calendar, 409 suggestion.
   for (const fn of ["chooseCancerDate", "chooseListDate", "chooseManualDate", "chooseSuggestedQueue"]) {
     const s = app.indexOf(`function ${fn}(`);

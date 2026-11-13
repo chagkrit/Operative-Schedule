@@ -382,3 +382,22 @@ button[aria-busy="true"]::before {
 @media (prefers-reduced-motion: reduce) {
   button[aria-busy="true"]::before { animation: none; border-right-color: currentColor !important; opacity: 0.6; }
 }
+
+/* Tappable case rows (queue list + month view) open the case detail dialog. */
+.case-tap { cursor: pointer; transition: background-color .15s ease; }
+@media (hover: hover) { .case-tap:hover { background-color: var(--rose-soft); } }
+.case-tap:focus-visible { outline: 2px solid var(--focus) !important; outline-offset: 2px; border-radius: 14px; }
+.case-detail-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.case-detail-heading h3 { margin: 0; color: var(--ink); font-size: 20px; }
+.case-detail-heading p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+.case-detail-slot { display: grid; place-items: center; flex: none; width: 48px; height: 48px; border-radius: 14px; color: var(--muted); background: var(--glass-strong); box-shadow: var(--pressed); font-weight: 800; }
+.case-detail-slot.cancer { color: #fff; background: var(--rose); }
+.case-detail-list { display: grid; gap: 0; margin: 0; }
+.case-detail-list > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-bottom: 1px dashed rgba(167, 25, 85, .18) !important; }
+.case-detail-list > div:last-child { border-bottom: 0 !important; }
+.case-detail-list dt { color: var(--muted); font-size: 13px; font-weight: 700; }
+.case-detail-list dd { margin: 0; color: var(--ink); font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.case-detail-sync { display: block; margin-top: 10px; color: var(--muted); font-size: 12px; }
+.case-detail-actions { display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; margin-top: 16px; }
+.case-detail-actions button { min-height: 44px; border-radius: 999px; font-weight: 800; color: var(--rose); background: var(--glass-strong); box-shadow: var(--glass-highlight), inset 0 0 0 1px var(--rose) !important; }
+.case-detail-actions button:last-child { color: var(--on-rose) !important; background: var(--grad) !important; box-shadow: var(--shadow-glow) !important; }
