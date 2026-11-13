@@ -9,7 +9,7 @@ import "./aurora.css";
 const anuphan = Anuphan({ subsets: ["thai", "latin"], weight: ["400", "500", "600", "700"], variable: "--font-anuphan", display: "swap" });
 const plexThai = IBM_Plex_Sans_Thai({ subsets: ["thai", "latin"], weight: ["400", "500", "600", "700"], variable: "--font-plex-thai", display: "swap" });
 
-export const viewport: Viewport = { viewportFit: "cover" };
+export const viewport: Viewport = { viewportFit: "cover", themeColor: "#a71955" };
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -21,7 +21,8 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase: new URL(origin),
     title: "OR Queue | Breast & Endocrine Surgery CMU",
     description,
-    icons: { icon: "/unit-logo.jpg", shortcut: "/unit-logo.jpg" },
+    icons: { icon: "/unit-logo.jpg", shortcut: "/unit-logo.jpg", apple: "/icons/apple-touch-icon-180.png" },
+    appleWebApp: { capable: true, title: "OR Queue", statusBarStyle: "default" },
     openGraph: {
       title: "OR Queue",
       description,
