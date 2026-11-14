@@ -203,7 +203,11 @@ test("final wave: editing an unavailability entry focuses the form", async () =>
   assert.match(app, /unavailabilityStartRef\.current\?\.focus\(/);
 });
 
-test("final wave: STAFF in the client equals STAFF_OPTIONS", async () => {
+// "อ อารีวรรณ" is hidden from the client list on purpose (owner, 2026-11-14) but stays in STAFF_OPTIONS
+// so old bookings/calendar events that name her still parse.
+const HIDDEN_IN_CLIENT = ["อ อารีวรรณ"];
+
+test("final wave: STAFF in the client equals STAFF_OPTIONS (minus deliberately hidden)", async () => {
   const names = (source, marker) => {
     const start = source.indexOf(marker);
     assert.notEqual(start, -1, `${marker} not found`);
@@ -213,7 +217,8 @@ test("final wave: STAFF in the client equals STAFF_OPTIONS", async () => {
   const client = names(await read("app/SchedulerApp.tsx"), "const STAFF = [");
   const lib = names(await read("app/lib/schedule.ts"), "export const STAFF_OPTIONS = [");
   assert.ok(client.length > 0);
-  assert.deepEqual(client, lib);
+  assert.deepEqual(client, lib.filter((n) => !HIDDEN_IN_CLIENT.includes(n)));
+  for (const n of HIDDEN_IN_CLIENT) assert.ok(lib.includes(n), `${n} must stay server-side`);
 });
 
 test("final wave: overlap error tells the user to edit the existing entry", async () => {
