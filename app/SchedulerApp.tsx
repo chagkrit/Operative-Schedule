@@ -149,8 +149,8 @@ type AffectedBooking = Pick<Booking, "id" | "hn" | "patientName" | "operation" |
 const EMPTY_CLOSURE_FORM = { id: "", date: "", name: "", note: "" };
 const EMPTY_UNAVAILABILITY_FORM = { id: "", staff: [] as string[], startDate: "", endDate: "", note: "" };
 
+// UI list only: "อ อารีวรรณ" removed 2026-11-14 (owner). Server-side STAFF_OPTIONS keeps her so old bookings still parse.
 const STAFF = [
-  "อ อารีวรรณ",
   "อ กีรติ",
   "อ ปัญจพร",
   "อ จักรกริช",
@@ -352,7 +352,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
               <span>{Number(date.slice(-2))}</span>
               {closure ? <em>ปิด</em> : null}
               {staffOff && !closure ? <em className="staff-off-flag">✕</em> : null}
-              {count > 0 ? <b>{count}</b> : summaries.length > 0 ? <i aria-label="เปิดรับคิว" /> : null}
+              {count > 0 ? <b>{count}</b> : summaries.length > 0 && !staffFilter ? <i aria-label="เปิดรับคิว" /> : null}
               {clashDates.has(date) ? <em className="clash-flag">ย้าย</em> : null}
             </button>
           );
