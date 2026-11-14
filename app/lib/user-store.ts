@@ -22,6 +22,30 @@ export const USERS_BLOB_PATH = "or-queue/users.json";
 export const CACHE_TTL_MS = 30_000;
 export const BLOB_TIMEOUT_MS = 5_000;
 
+// Thrown by this module's own checks. Its message is fixed text we wrote (no emails, no ids),
+// so it is safe to log in full.
+export class UserStoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UserStoreError";
+  }
+}
+
+// Log-safe description of a storage failure: error name, plus our own fixed messages, plus a
+// short HTTP status / error code when the SDK sets one, plus the cause's name. Never the raw
+// message of a foreign error (JSON.parse quotes the file's emails; SDK messages carry store ids).
+export function describeStoreError(err: unknown): string {
+  if (!(err instanceof Error)) return typeof err;
+  const parts = [err.name];
+  if (err instanceof UserStoreError) parts.push(err.message);
+  const e = err as { status?: unknown; statusCode?: unknown; code?: unknown; cause?: unknown };
+  for (const [label, v] of [["status", e.status], ["statusCode", e.statusCode], ["code", e.code]] as const) {
+    if (typeof v === "number" || (typeof v === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(v))) parts.push(`${label}=${v}`);
+  }
+  if (e.cause instanceof Error) parts.push(`cause=${e.cause.name}`);
+  return parts.join(" ");
+}
+
 // read() resolves "missing" only for a 404 and throws on every other error.
 export type UserStorage = {
   read(): Promise<UserRecord[] | "missing">;
@@ -92,8 +116,8 @@ export function createUserStore(storage: UserStorage, now: () => number = Date.n
       try {
         return findAccess(await current(), email);
       } catch (err) {
-        // Log the kind only: a JSON.parse message quotes the file (emails), SDK messages carry store ids.
-        console.error("[user-store] user list unreadable; access fails closed:", err instanceof Error ? err.name : typeof err);
+        // Log a safe description only (see describeStoreError): never a foreign error message.
+        console.error("[user-store] user list unreadable; access fails closed:", describeStoreError(err));
         if (normalizeEmail(email) === BOOTSTRAP_ADMIN) return { allowed: true, role: "admin" };
         return { allowed: false, role: null };
       }
@@ -138,10 +162,10 @@ export function createUserStore(storage: UserStorage, now: () => number = Date.n
 // counts as missing and is never reseeded.
 export function parseUsersJson(text: string): UserRecord[] {
   const data: unknown = JSON.parse(text);
-  if (!Array.isArray(data)) throw new Error("users.json is not an array");
+  if (!Array.isArray(data)) throw new UserStoreError("users.json is not an array");
   return data.map((item: unknown, i) => {
     if (!item || typeof item !== "object" || typeof (item as { email?: unknown }).email !== "string") {
-      throw new Error(`users.json item ${i} has no email`);
+      throw new UserStoreError(`users.json item ${i} has no email`);
     }
     const r = item as { email: string; role?: unknown; active?: unknown };
     return { email: r.email, role: r.role as UserRecord["role"], active: r.active as boolean };
@@ -153,7 +177,7 @@ export function parseUsersJson(text: string): UserRecord[] {
 export function storageReadKind(result: { statusCode: number } | null | undefined): "missing" | "found" {
   if (result === null) return "missing";
   if (!result || result.statusCode !== 200) {
-    throw new Error(`unexpected blob read result: ${result ? result.statusCode : String(result)}`);
+    throw new UserStoreError(`unexpected blob read result: ${result ? result.statusCode : String(result)}`);
   }
   return "found";
 }
@@ -194,7 +218,7 @@ export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
         etag = null;
         return "missing";
       }
-      if (!result || result.statusCode !== 200) throw new Error("unexpected blob read result"); // narrows the type
+      if (!result || result.statusCode !== 200) throw new UserStoreError("unexpected blob read result"); // narrows the type
       const text = await new Response(result.stream as unknown as ReadableStream<Uint8Array>).text();
       const users = parseUsersJson(text);
       etag = result.blob.etag || null;

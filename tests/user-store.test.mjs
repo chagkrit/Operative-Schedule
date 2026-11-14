@@ -10,7 +10,9 @@ const {
   USERS_BLOB_PATH,
   blobPutOptions,
   blobTimeoutSignal,
+  UserStoreError,
   createUserStore,
+  describeStoreError,
   parseUsersJson,
   storageReadKind,
 } = await import("../app/lib/user-store.ts");
@@ -329,4 +331,24 @@ test("blobPutOptions: private, fixed path; create-only without etag, ifMatch wit
   assert.equal(update.addRandomSuffix, false);
   assert.equal(update.ifMatch, '"etag-1"');
   assert.equal(update.contentType, "application/json");
+});
+
+test("describeStoreError: name + status/code + cause name, never a foreign message", () => {
+  const plain = new Error("token abc store_123 hnbcmu@gmail.com");
+  assert.equal(describeStoreError(plain), "Error");
+  const sdk = Object.assign(new Error("secret store id store_1"), { name: "BlobAccessError", status: 403 });
+  assert.equal(describeStoreError(sdk), "BlobAccessError status=403");
+  const withCause = Object.assign(new Error("x"), { code: "ENOTFOUND", cause: new TypeError("fetch failed hnbcmu@gmail.com") });
+  assert.equal(describeStoreError(withCause), "Error code=ENOTFOUND cause=TypeError");
+  const parse = (() => { try { JSON.parse('[{"email":"hnbcmu@gmail.com"'); } catch (e) { return e; } })();
+  assert.equal(describeStoreError(parse), "SyntaxError");
+  assert.equal(describeStoreError("boom"), "string");
+  assert.ok(!describeStoreError(Object.assign(new Error("x"), { code: "has spaces and @ chars" })).includes("@"));
+});
+
+test("describeStoreError: our own UserStoreError message is included (fixed text, no emails)", () => {
+  assert.equal(describeStoreError(new UserStoreError("unexpected blob read result: 403")), "UserStoreError unexpected blob read result: 403");
+  assert.throws(() => parseUsersJson("{}"), (e) => e instanceof UserStoreError && /not an array/.test(e.message));
+  assert.throws(() => parseUsersJson("[1]"), (e) => e instanceof UserStoreError);
+  assert.throws(() => storageReadKind({ statusCode: 304 }), (e) => e instanceof UserStoreError && /304/.test(e.message));
 });

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { sessionAccess } from "../lib/session";
-import { userStore } from "../lib/user-store";
+import { describeStoreError, userStore } from "../lib/user-store";
 import type { UserRecord } from "../lib/users";
 import AdminUsers from "./AdminUsers";
 
@@ -21,7 +21,7 @@ export default async function AdminPage() {
   try {
     users = await userStore.list();
   } catch (err) {
-    console.error("[admin] user list unreadable:", err instanceof Error ? err.name : typeof err);
+    console.error("[admin] user list unreadable:", describeStoreError(err));
   }
 
   return (
