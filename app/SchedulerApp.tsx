@@ -364,7 +364,7 @@ function MonthlyCalendar({ days, bookings, closures, staffUnavailability, horizo
           <strong>{selectedCount} เคส</strong>
         </div>
         {staffFilter && !selectedClosure && (
-          <p className="month-staff-day"><b>{staffFilter}</b><span>{isStaffUnavailableOn(staffUnavailability, staffFilter, selectedDate) ? "ไม่ว่างวันนี้" : "ว่างวันนี้"} · {selectedBookings.length} เคส</span></p>
+          <p className="month-staff-day"><b>{staffFilter}</b><span>{isStaffUnavailableOn(staffUnavailability, staffFilter, selectedDate) ? "ไม่ว่างวันนี้" : selectedBookings.length > 0 ? "มีเคสวันนี้" : "ไม่มีเคสวันนี้"} · {selectedBookings.length} เคส</span></p>
         )}
         {selectedClosure ? <div className="month-closure-summary"><b>ปิดรับคิว · {selectedClosure.name}</b><span>{selectedClosure.note || "ไม่มีหมายเหตุ"}</span></div>
           : selectedSummaries.length > 0 ? selectedSummaries.map((day) => (
