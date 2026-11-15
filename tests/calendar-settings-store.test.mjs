@@ -203,3 +203,60 @@ test("cache expiry is measured from when the read started", async () => {
   st.pending[1]({ master: target("a") });
   await again;
 });
+
+// ---- never write an empty {} file: "missing" deletes, invalid values are refused ----
+function removable(initial) {
+  const st = memoryStorage(initial);
+  st.removes = 0;
+  st.remove = async () => {
+    if (st.failRemove) throw st.failRemove;
+    st.removes += 1;
+    st.data = "missing";
+  };
+  return st;
+}
+
+test('mutate returning "missing" on an existing file deletes the blob instead of writing {}', async () => {
+  const st = removable({ lock: { since: 1, by: "x" } });
+  const store = createCalendarSettingsStore(st, clock().now);
+  const r = await store.mutate(() => "missing");
+  assert.equal(r, "missing");
+  assert.equal(st.removes, 1);
+  assert.equal(st.writes.length, 0);
+  assert.equal(st.data, "missing");
+  assert.equal(await store.read({ allowCached: true }), "missing");
+});
+
+test('mutate returning "missing" when the file is already missing touches nothing', async () => {
+  const st = removable("missing");
+  const store = createCalendarSettingsStore(st);
+  assert.equal(await store.mutate(() => "missing"), "missing");
+  assert.equal(st.removes, 0);
+  assert.equal(st.writes.length, 0);
+});
+
+test("mutate refuses to write a value parseSettingsJson would reject (e.g. {})", async () => {
+  const st = removable({ lock: { since: 1, by: "x" } });
+  const store = createCalendarSettingsStore(st);
+  await assert.rejects(() => store.mutate(() => ({})));
+  await assert.rejects(() => store.mutate(() => ({ master: { email: "a" } })));
+  assert.equal(st.writes.length, 0);
+  assert.equal(st.removes, 0);
+  assert.deepEqual(st.data, { lock: { since: 1, by: "x" } });
+});
+
+test("a failing delete propagates and leaves the cache as it was", async () => {
+  const st = removable({ lock: { since: 1, by: "x" } });
+  st.failRemove = new Error("del failed");
+  const store = createCalendarSettingsStore(st);
+  await assert.rejects(() => store.mutate(() => "missing"), /del failed/);
+  assert.deepEqual(st.data, { lock: { since: 1, by: "x" } });
+});
+
+test("blob delete is conditional on the etag of the last read (never an unconditional delete)", async () => {
+  const { blobDeleteOptions } = await import("../app/lib/user-store.ts");
+  const opts = blobDeleteOptions("etag-1");
+  assert.equal(opts.ifMatch, "etag-1");
+  assert.throws(() => blobDeleteOptions(null));
+  assert.throws(() => blobDeleteOptions(""));
+});

@@ -76,3 +76,10 @@ test("promoteCandidate without a master seeds previousMaster from envMaster", ()
   assert.deepEqual(promoteCandidate({ master: t("a"), candidate: t("b") }, t("env")).previousMaster, t("a"));
   assert.throws(() => promoteCandidate({ lock: { since: 1, by: "x" } }, t("env")));
 });
+
+test("withoutLock on a lock-only file yields \"missing\" (never an empty {} file); \"missing\" stays missing", () => {
+  assert.equal(withoutLock({ lock: { since: 1, by: "x" } }), "missing");
+  assert.equal(withoutLock("missing"), "missing");
+  assert.deepEqual(withoutLock({ lock: { since: 1, by: "x" }, previousMaster: t("p") }), { previousMaster: t("p") });
+  assert.deepEqual(withoutLock({ master: t("a") }), { master: t("a") });
+});

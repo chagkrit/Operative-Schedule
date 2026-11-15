@@ -12,13 +12,16 @@ export { BLOB_TIMEOUT_MS };
 export type CalendarSettingsStorage = {
   read(): Promise<CalendarSettings | "missing">;
   write(settings: CalendarSettings): Promise<void>;
+  // Deletes the file (etag-conditional in the Blob adapter). Called only when a mutate yields "missing".
+  remove(): Promise<void>;
 };
 
 export const SETTINGS_CACHE_TTL_MS = 30_000;
 
 export type CalendarSettingsStore = {
   read(opts?: { allowCached?: boolean }): Promise<CalendarSettings | "missing">;
-  mutate(fn: (s: CalendarSettings | "missing") => CalendarSettings): Promise<CalendarSettings>;
+  // fn may return "missing" to mean "no settings file" (the file is deleted, never written as {}).
+  mutate(fn: (s: CalendarSettings | "missing") => CalendarSettings | "missing"): Promise<CalendarSettings | "missing">;
 };
 
 function parseTarget(v: unknown, label: string): CalendarTarget {
@@ -82,10 +85,18 @@ export function createCalendarSettingsStore(
     },
     // Serialized per instance: fresh read -> fn -> etag-guarded write. A write failure
     // (including a stale-etag precondition failure) propagates. The cache is replaced with what was written.
+    // A "missing" result deletes the file (nothing to do when it is already missing); a value the parser
+    // would reject (e.g. {}) is refused before anything is written, so a write can never brick later reads.
     mutate(fn) {
-      const run = async (): Promise<CalendarSettings> => {
-        const next = fn(await storage.read());
-        await storage.write(next);
+      const run = async (): Promise<CalendarSettings | "missing"> => {
+        const current = await storage.read();
+        const next = fn(current);
+        if (next === "missing") {
+          if (current !== "missing") await storage.remove();
+        } else {
+          parseSettingsJson(JSON.stringify(next));
+          await storage.write(next);
+        }
         generation += 1;
         setCache(next, now());
         return next;

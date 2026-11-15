@@ -23,10 +23,13 @@ export function withLock(settings: CalendarSettings | "missing", by: string, now
   return { ...(settings === "missing" ? {} : settings), lock: { since: now, by } };
 }
 
-export function withoutLock(settings: CalendarSettings): CalendarSettings {
+// A file that held only a lock becomes "missing" (the store then deletes it): an empty {} file is
+// corrupt to the parser and would fail every read closed.
+export function withoutLock(settings: CalendarSettings | "missing"): CalendarSettings | "missing" {
+  if (settings === "missing") return "missing";
   const rest = { ...settings };
   delete rest.lock;
-  return rest;
+  return rest.master || rest.previousMaster || rest.candidate ? rest : "missing";
 }
 
 export function setCandidate(settings: CalendarSettings | "missing", target: CalendarTarget): CalendarSettings {

@@ -194,6 +194,13 @@ export function blobPutOptions(etag: string | null) {
   return etag ? { ...base, ifMatch: etag } : { ...base, allowOverwrite: false };
 }
 
+// A delete is only ever conditional on the etag of the last read, so it can never remove a file
+// another instance has rewritten since (stale etag => BlobPreconditionFailedError).
+export function blobDeleteOptions(etag: string | null) {
+  if (!etag) throw new UserStoreError("refusing to delete a blob without a known etag");
+  return { ifMatch: etag };
+}
+
 // Per-call timeout for Blob requests. Aborts with an AbortError on purpose: the SDK's put()
 // bails at once on an AbortError but retries a TimeoutError (AbortSignal.timeout) with
 // exponential backoff, which would hang a write for minutes. A timeout is a read/write error
@@ -213,7 +220,7 @@ export function blobJsonStorage<T>(
   pathname: string,
   parse: (text: string) => T,
   serialize: (value: T) => string,
-): { read(): Promise<T | "missing">; write(value: T): Promise<void> } {
+): { read(): Promise<T | "missing">; write(value: T): Promise<void>; remove(): Promise<void> } {
   let etag: string | null = null;
   return {
     async read() {
@@ -236,6 +243,13 @@ export function blobJsonStorage<T>(
       const { put } = await import("@vercel/blob");
       const saved = await put(pathname, serialize(value), { ...opts, abortSignal: blobTimeoutSignal() });
       etag = saved.etag || null;
+    },
+    // Used only by the calendar-settings store (the users store never deletes its file).
+    async remove() {
+      const opts = blobDeleteOptions(etag);
+      const { del } = await import("@vercel/blob");
+      await del(pathname, { ...opts, abortSignal: blobTimeoutSignal() });
+      etag = null;
     },
   };
 }
