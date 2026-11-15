@@ -139,7 +139,7 @@ function fakeCalendar(name, log, events = []) {
       log.push(`${name}.upsert`);
       if (c.failOnUpsert === n) {
         c.upserts.push({ id: e.id, result: "error" });
-        throw new Error(`SYNTH google insert failed token=${name}-SECRET`);
+        throw c.upsertFailure ? c.upsertFailure() : new Error(`SYNTH google insert failed token=${name}-SECRET`);
       }
       const result = c.events.has(e.id) ? "updated" : "created";
       c.events.set(e.id, structuredClone(e));
@@ -2224,4 +2224,99 @@ test("minor 2: a far cancel neither sent this press nor listed cancelled at veri
   assert.equal(r.step, "verify", JSON.stringify(r));
   assert.ok(!h.target.instanceOps.slice(ops).some((o) => o.id === farCxl.id), "not sent this press");
   assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+});
+
+// ==== copy-failure diagnostics (safe: classes, counts, masked id shapes only) ====
+const googleError = (status, reason, name = "GoogleCalendarError") => Object.assign(new Error(`calendar insert failed (HTTP ${status}) SYNTH-SECRET`), { name, status, reason });
+
+test("diag: an upsert failure reports kind, error class, HTTP status, Google reason, counts and the first failed item's class + masked id shape", async () => {
+  const h = harness({ sourceEvents: [...ALL(), structuredClone(BAD_LEGACY)] });
+  h.target.failOnUpsert = 3;
+  h.target.upsertFailure = () => googleError(400, "invalid");
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "copy");
+  const d = r.diag;
+  assert.equal(d.kind, "upsert");
+  assert.equal(d.errorClass, "GoogleCalendarError");
+  assert.equal(d.httpStatus, 400);
+  assert.equal(d.reason, "invalid");
+  assert.equal(d.failed, 1);
+  assert.equal(d.attempted, d.succeeded + d.failed);
+  assert.ok(d.attempted >= 3);
+  const failedId = h.target.upserts.find((u) => u.result === "error").id;
+  assert.equal(d.firstFailed.idShape, sw.maskIdShape(failedId));
+  assert.ok(["legacy", "tagged", "recurring master"].includes(d.firstFailed.eventClass));
+  const text = JSON.stringify(r);
+  for (const leak of ["SECRET", failedId, "SYNTH", "ทดสอบ", "1234567", BAD_ID]) assert.ok(!text.includes(leak), leak);
+});
+
+test("diag: event classes (tagged / legacy / recurring master) of the first failed upsert", async () => {
+  for (const [events, cls] of [[[structuredClone(BOOKING)], "tagged"], [[structuredClone(LEGACY)], "legacy"], [[structuredClone(R_MASTER)], "recurring master"]]) {
+    const h = harness({ sourceEvents: events });
+    h.target.failOnUpsert = 1;
+    const r = await sw.runSwitch(h.deps);
+    assert.equal(r.diag.firstFailed.eventClass, cls);
+    assert.equal(r.diag.kind, "upsert");
+  }
+});
+
+test("diag: unsafe reason strings and odd error class names are dropped", async () => {
+  const h = harness();
+  h.target.failOnUpsert = 1;
+  h.target.upsertFailure = () => googleError(403, "bad reason with spaces SYNTH-HN-1", "Weird Name!");
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.diag.reason, undefined);
+  assert.equal(r.diag.errorClass, "Error");
+  assert.equal(r.diag.httpStatus, 403);
+  assert.ok(!JSON.stringify(r).includes("SYNTH"));
+  // a plain error: class name only, no status
+  const h2 = harness();
+  h2.target.failOnUpsert = 1;
+  const r2 = await sw.runSwitch(h2.deps);
+  assert.equal(r2.diag.errorClass, "Error");
+  assert.equal(r2.diag.httpStatus, undefined);
+});
+
+test("diag: an exception write failure is kind exception with the masked instance id shape", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h.target.missingInstances.add("rm0001aa_20261210");
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.diag.kind, "exception");
+  assert.equal(r.diag.firstFailed.eventClass, "exception");
+  assert.equal(r.diag.firstFailed.idShape, sw.maskIdShape("rm0001aa_20261210"));
+  assert.ok(!JSON.stringify(r).includes("rm0001aa"));
+});
+
+test("diag: a budget stop is kind budget (no failed item)", async () => {
+  const h = harness({ sourceEvents: extras(30, "gg"), advancing: true });
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e) => { h.clock.t += 20_000; return realUpsert(e); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(r.diag.kind, "budget");
+  assert.equal(r.diag.failed, 0);
+  assert.equal(r.diag.firstFailed, undefined);
+  assert.ok(r.diag.succeeded > 0);
+});
+
+test("diag: a failed source read is kind read; success carries no diag", async () => {
+  const h = harness();
+  h.source.failList = (n) => n === 1;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "read");
+  assert.equal(r.diag.kind, "read");
+  assert.equal(r.diag.attempted, 0);
+  const ok = await sw.runSwitch(harness().deps);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.diag, undefined);
+});
+
+test("google client: a failed insert carries Google's error reason only when it is a plain word; the message stays fixed text", async () => {
+  let reason = "invalid";
+  const { fetchFn } = fakeGoogle((url, init) => (init.method === "POST" ? Response.json({ error: { code: 400, message: "SYNTH-GOOGLE-TEXT", errors: [{ domain: "calendar", reason, message: "SYNTH-GOOGLE-TEXT" }] } }, { status: 400 }) : new Response("{}", { status: 500 })));
+  const client = sw.createGoogleCalendarClient({ calendarId: "c", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }), (err) => err.status === 400 && err.reason === "invalid" && !err.message.includes("SYNTH"));
+  reason = "not a word SYNTH";
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }), (err) => err.status === 400 && err.reason === undefined);
 });

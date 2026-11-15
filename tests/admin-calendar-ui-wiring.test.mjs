@@ -426,3 +426,22 @@ test("AdminCalendar renders diagnostics in a closed <details> via parseDiagnosti
   const block = COMPONENT.slice(COMPONENT.indexOf("admin-calendar-diagnostics"));
   assert.doesNotMatch(block.slice(0, 4000), /#[0-9a-fA-F]{3,8}\b|rgba?\(/, "no colour literals");
 });
+
+// ---- copy-failure diagnostics line ----
+test("describeSwitchOutcome turns a safe diag into a developer line; unsafe fields are dropped; decideAfterSwitch keeps it", () => {
+  const result = { status: 502, ok: false, nonJson: false, body: { error: "คัดลอกข้อมูลไปปฏิทินใหม่ไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน กดเปลี่ยนอีกครั้งเพื่อคัดลอกต่อได้", step: "copy", switched: false, diag: { kind: "upsert", errorClass: "GoogleCalendarError", httpStatus: 400, reason: "invalid", attempted: 7, succeeded: 6, failed: 1, firstFailed: { eventClass: "legacy", idShape: "_l58" } } } };
+  const o = ui.describeSwitchOutcome(result);
+  assert.equal(o.kind, "error");
+  assert.equal(o.dev, "สำหรับนักพัฒนา: upsert · GoogleCalendarError · HTTP 400 · invalid · ลอง 7 สำเร็จ 6 ล้มเหลว 1 · รายการแรกที่ล้มเหลว: legacy _l58");
+  const evil = ui.describeSwitchOutcome({ ...result, body: { ...result.body, diag: { kind: "drop table", errorClass: "<img>", httpStatus: "400x", reason: "SYNTH HN 1234567", attempted: -1, succeeded: "x", failed: 1, firstFailed: { eventClass: "summary text", idShape: "สมชาย 1234567" } } } });
+  assert.ok(!/drop|img|SYNTH|1234567|สมชาย|summary/.test(evil.dev ?? ""), evil.dev);
+  assert.equal(ui.describeSwitchOutcome({ ...result, body: { ...result.body, diag: undefined } }).dev, undefined);
+  const status = { master: { email: "a@x.com", calendarId: "a", source: "settings" }, candidate: { email: "b@x.com", calendarId: "b" }, locked: false, keyConfigured: true };
+  const decision = ui.decideAfterSwitch(o, status, { email: "b@x.com", calendarId: "b" });
+  assert.equal(decision.notice.dev, o.dev);
+});
+
+test("AdminCalendar renders the developer line of a notice", () => {
+  assert.match(COMPONENT, /notice\?\.dev/);
+  assert.match(COMPONENT, /admin-calendar-dev/);
+});

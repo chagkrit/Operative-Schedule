@@ -43,7 +43,34 @@ export type SwitchOutcome = {
   hint?: string;
   // Always re-read the status afterwards when the outcome may not match what the screen believes.
   reload: boolean;
+  // one developer line built from the server's safe `diag` (re-validated here), or undefined
+  dev?: string;
 };
+
+const DIAG_KINDS = ["upsert", "exception", "budget", "lock", "read"];
+const DIAG_CLASSES = ["legacy", "tagged", "recurring master", "exception"];
+const WORD = /^[a-zA-Z]{1,40}$/;
+const SHAPE = /^[A-Za-z0-9?\-_.:@/+=…]{1,49}$/;
+const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
+
+// "สำหรับนักพัฒนา: upsert · GoogleCalendarError · HTTP 400 · invalid · ลอง 7 สำเร็จ 6 ล้มเหลว 1 · รายการแรกที่ล้มเหลว: legacy _l58"
+// Every field is re-checked against a whitelist or pattern; anything else is left out.
+export function formatCopyDiag(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const d = raw as Record<string, unknown>;
+  if (typeof d.kind !== "string" || !DIAG_KINDS.includes(d.kind)) return undefined;
+  const parts: string[] = [d.kind];
+  if (typeof d.errorClass === "string" && WORD.test(d.errorClass)) parts.push(d.errorClass);
+  if (typeof d.httpStatus === "number" && Number.isInteger(d.httpStatus) && d.httpStatus >= 100 && d.httpStatus <= 599) parts.push(`HTTP ${d.httpStatus}`);
+  if (typeof d.reason === "string" && WORD.test(d.reason)) parts.push(d.reason);
+  const [attempted, succeeded, failed] = [count(d.attempted), count(d.succeeded), count(d.failed)];
+  if (attempted !== null && succeeded !== null && failed !== null) parts.push(`ลอง ${attempted} สำเร็จ ${succeeded} ล้มเหลว ${failed}`);
+  const first = typeof d.firstFailed === "object" && d.firstFailed !== null ? (d.firstFailed as Record<string, unknown>) : null;
+  if (first && typeof first.eventClass === "string" && DIAG_CLASSES.includes(first.eventClass) && typeof first.idShape === "string" && SHAPE.test(first.idShape)) {
+    parts.push(`รายการแรกที่ล้มเหลว: ${first.eventClass} ${first.idShape}`);
+  }
+  return `สำหรับนักพัฒนา: ${parts.join(" · ")}`;
+}
 
 const RESUMABLE_PATTERN = /กดเปลี่ยนอีกครั้ง/;
 
@@ -67,7 +94,7 @@ export function describeSwitchOutcome(result: ApiResult): SwitchOutcome {
   }
   if (body?.switched === true) return { kind: "switched-with-error", text, resumable: false, reload: true };
   const resumable = body?.step === "copy" && RESUMABLE_PATTERN.test(text);
-  return { kind: "error", text, resumable, hint: resumable ? RESUME_HINT : undefined, reload: true };
+  return { kind: "error", text, resumable, hint: resumable ? RESUME_HINT : undefined, reload: true, dev: formatCopyDiag(body?.diag) };
 }
 
 type Pub = { email: string; calendarId: string };
@@ -94,7 +121,7 @@ export function isStatus(value: unknown): value is CalendarStatus {
   return typeof v.master === "object" && v.master !== null && typeof v.locked === "boolean";
 }
 
-export type SwitchNotice = { type: "success" | "error"; text: string; hint?: string };
+export type SwitchNotice = { type: "success" | "error"; text: string; hint?: string; dev?: string };
 
 const samePub = same;
 
@@ -126,7 +153,7 @@ export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus 
   }
   const text = outcome.kind === "unknown" ? `${outcome.text} (สถานะล่าสุด: ยังไม่ได้เปลี่ยนปฏิทิน)` : outcome.text;
   const hint = outcome.kind === "unknown" ? "กดสลับอีกครั้งเพื่อทำต่อ" : outcome.hint;
-  return { notice: { type: "error", text, hint: candidateUnchanged ? hint : undefined }, keepPreview: candidateUnchanged };
+  return { notice: { type: "error", text, hint: candidateUnchanged ? hint : undefined, dev: outcome.dev }, keepPreview: candidateUnchanged };
 }
 
 // Why the previewed switch must not run (the server refuses the same cases before taking the lock), or null.
