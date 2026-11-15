@@ -99,20 +99,28 @@ export type SwitchNotice = { type: "success" | "error"; text: string; hint?: str
 const samePub = same;
 
 // What to show and whether the preview survives, from the switch answer and the RELOADED status.
+// A switch or token renewal LANDED only when the candidate is gone or replaced: both success paths remove it
+// server-side. "Master equals candidate" proves nothing (token-only renewal starts in that state), and a definite
+// error is never success. A live lock is checked first so it is never hidden.
 export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus | null, former: Pub): { notice: SwitchNotice; keepPreview: boolean } {
   if (!fresh) return { notice: { type: "error", text: STATUS_UNKNOWN_MESSAGE }, keepPreview: true };
-  const verdict = reconcileAfterSwitch(former, fresh);
-  if (verdict === "switched") {
+  const candidateUnchanged = !!fresh.candidate && samePub(fresh.candidate, former);
+  const landed = !candidateUnchanged;
+  if (fresh.locked) {
+    if (outcome.kind === "success" && landed) {
+      return { notice: { type: "success", text: `${outcome.text} (ระบบยังล็อกอยู่ชั่วครู่หลังสลับ)` }, keepPreview: false };
+    }
+    return { notice: { type: "error", text: LOCKED_NOW_MESSAGE }, keepPreview: true };
+  }
+  if (outcome.kind !== "error" && landed) {
     const text = outcome.kind === "success"
       ? outcome.text
       : "เปลี่ยนปฏิทินหลักเรียบร้อยแล้ว (ตรวจจากสถานะล่าสุด) ห้ามแก้ไขใน Google Calendar โดยตรง แก้ผ่านแอปเท่านั้น";
     return { notice: { type: "success", text }, keepPreview: false };
   }
-  if (verdict === "locked") return { notice: { type: "error", text: LOCKED_NOW_MESSAGE }, keepPreview: true };
-  const candidateChanged = !fresh.candidate || !samePub(fresh.candidate, former);
   const text = outcome.kind === "unknown" ? `${outcome.text} (สถานะล่าสุด: ยังไม่ได้เปลี่ยนปฏิทิน)` : outcome.text;
   const hint = outcome.kind === "unknown" ? "กดสลับอีกครั้งเพื่อทำต่อ" : outcome.hint;
-  return { notice: { type: "error", text, hint }, keepPreview: !candidateChanged };
+  return { notice: { type: "error", text, hint }, keepPreview: candidateUnchanged };
 }
 
 // The switch button is usable only with a candidate, a preview of it, and no lock.

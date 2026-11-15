@@ -124,7 +124,7 @@ test("decideAfterSwitch: landed clears the preview with a success notice", () =>
   const r = ui.decideAfterSwitch(ok, st({ master: { ...FORMER, source: "settings" }, candidate: undefined }), FORMER);
   assert.equal(r.keepPreview, false);
   assert.equal(r.notice.type, "success");
-  const viaTimeout = ui.decideAfterSwitch(out(null, 504, true), st({ master: { ...FORMER, source: "settings" } }), FORMER);
+  const viaTimeout = ui.decideAfterSwitch(out(null, 504, true), st({ master: { ...FORMER, source: "settings" }, candidate: undefined }), FORMER);
   assert.equal(viaTimeout.keepPreview, false);
   assert.equal(viaTimeout.notice.type, "success");
 });
@@ -164,6 +164,61 @@ test("decideAfterSwitch: locked never offers 'press again'; reload failure keeps
   assert.equal(failed.notice.type, "error");
   assert.match(failed.notice.text, /โหลดสถานะใหม่/);
   assert.equal(ui.canSwitchNow(st(), { tokenOnly: false }), true);
+});
+
+// ---- fix round 2: landed = candidate gone/changed, never "master equals candidate" ----
+const TOKEN_ONLY_STATUS = (o = {}) => st({ master: { ...FORMER, source: "settings" }, candidate: FORMER, ...o });
+const errOut = (body, status) => out(body, status);
+
+test("token-only failures (master==candidate before and after) are never success", () => {
+  const cases = [
+    errOut({ error: "มีการแก้ไขการตั้งค่าปฏิทินพร้อมกัน กรุณาลองใหม่" }, 409),
+    errOut({ error: "บันทึกการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่" }, 500),
+    out({ error: ui.NETWORK_MESSAGE }, 0),
+    out(null, 504, true),
+  ];
+  for (const outcome of cases) {
+    const r = ui.decideAfterSwitch(outcome, TOKEN_ONLY_STATUS(), FORMER);
+    assert.equal(r.notice.type, "error", outcome.text);
+    assert.equal(r.keepPreview, true);
+    assert.ok(ui.canSwitchNow(TOKEN_ONLY_STATUS(), { tokenOnly: true }));
+  }
+  const conc = ui.decideAfterSwitch(cases[0], TOKEN_ONLY_STATUS(), FORMER);
+  assert.match(conc.notice.text, /พร้อมกัน/);
+});
+
+test("409 LOCKED with a locked fresh status shows the lock, not success", () => {
+  const lockedOut = errOut({ error: "ระบบกำลังเปลี่ยนปฏิทิน กรุณาลองใหม่ในอีกสักครู่" }, 409);
+  const r = ui.decideAfterSwitch(lockedOut, TOKEN_ONLY_STATUS({ locked: true, lockedSince: 1 }), FORMER);
+  assert.equal(r.notice.type, "error");
+  assert.equal(r.notice.text, ui.LOCKED_NOW_MESSAGE);
+  assert.equal(r.keepPreview, true);
+  // even if the candidate is gone, a live lock is shown first
+  const r2 = ui.decideAfterSwitch(out(null, 504, true), st({ candidate: undefined, locked: true, lockedSince: 1 }), FORMER);
+  assert.equal(r2.notice.type, "error");
+  assert.doesNotMatch(JSON.stringify(r2.notice), /กดสลับอีกครั้ง/);
+});
+
+test("token-only success and normal copy success (candidate gone after reload) clear the preview", () => {
+  const tokenOk = ui.decideAfterSwitch(out({ mode: "token", status: {} }, 200), TOKEN_ONLY_STATUS({ candidate: undefined }), FORMER);
+  assert.equal(tokenOk.notice.type, "success");
+  assert.equal(tokenOk.keepPreview, false);
+  const copyOk = ui.decideAfterSwitch(out({ mode: "copy", copied: 2 }, 200), st({ master: { ...FORMER, source: "settings" }, candidate: undefined }), FORMER);
+  assert.equal(copyOk.notice.type, "success");
+  assert.equal(copyOk.keepPreview, false);
+});
+
+test("definite errors never become success; candidate unchanged keeps preview, candidate changed clears it", () => {
+  const keep = ui.decideAfterSwitch(RESUMABLE, st(), FORMER);
+  assert.equal(keep.notice.type, "error");
+  assert.equal(keep.keepPreview, true);
+  const flipFalse = out({ error: "x", step: "flip", switched: false }, 500);
+  const gone = ui.decideAfterSwitch(flipFalse, st({ candidate: undefined }), FORMER);
+  assert.equal(gone.notice.type, "error");
+  assert.equal(gone.keepPreview, false);
+  const changed = ui.decideAfterSwitch(RESUMABLE, st({ candidate: { email: "other@x.com", calendarId: "o" } }), FORMER);
+  assert.equal(changed.notice.type, "error");
+  assert.equal(changed.keepPreview, false);
 });
 
 // ---- source wiring ----
