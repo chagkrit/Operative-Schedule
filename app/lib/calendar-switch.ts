@@ -414,6 +414,12 @@ export const TARGET_TIME_ZONE_MESSAGE =
 export const TARGET_TIME_ZONE_UNKNOWN_MESSAGE =
   "อ่าน time zone ของปฏิทินใหม่ไม่ได้ (Google ไม่ส่งค่ามา) จึงยังไม่ได้เปลี่ยนปฏิทิน ตรวจว่าปฏิทินใหม่ตั้ง time zone เป็น (GMT+07:00) Bangkok แล้วกดตรวจตัวอย่างใหม่ ถ้ายังขึ้นข้อความนี้ให้ติดต่อผู้พัฒนา";
 
+// The app reads the CURRENT master in that calendar's own zone today; the copy keeps instants, so a master
+// outside APP_TIME_ZONE (or one whose zone cannot be confirmed) would shift timed bookings after the switch.
+// The admin must not change the live master's zone (that would shift them right away): developer case.
+export const SOURCE_TIME_ZONE_MESSAGE =
+  "ปฏิทินหลักปัจจุบันไม่ได้อยู่ในเวลาไทย (GMT+07:00) Bangkok หรือตรวจ time zone ของปฏิทินนี้ไม่ได้ จึงไม่ให้สลับ เพื่อไม่ให้วันหรือเวลาของคิวเลื่อนหรือหายไป ยังไม่ได้เปลี่ยนปฏิทิน ห้ามแก้ไขปฏิทินหลักปัจจุบันเอง และติดต่อผู้พัฒนา";
+
 export const UNCOVERED_OCCURRENCES_MESSAGE =
   "ปฏิทินหลักปัจจุบันมีรายการที่แอปแสดงอยู่แต่ไม่อยู่ในแผนคัดลอก จึงยังไม่ได้เปลี่ยนปฏิทิน ให้หยุดตรงนี้ ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
 
@@ -668,14 +674,16 @@ function targetConflictCount(plan: CopyPlan, targetEvents: GoogleEventLike[]): n
 // calendar without such entries can be the target) and a plan refusal. invalidIds (remapped ids) and
 // exceptions are informational.
 // expanded = the source's app view (singleEvents=true over `window`), read without writes.
-// targetTimeZone = the target calendar's own zone (null = Google sent none; undefined = not checked). A zone
-// other than APP_TIME_ZONE, or none, is refused; that refusal wins (the admin can fix it in the settings).
+// targetTimeZone / sourceTimeZone = each calendar's own zone (null = Google sent none or the read failed;
+// undefined = not checked). Anything other than APP_TIME_ZONE is refused (fail safe). The source refusal
+// comes first (developer case), then the target's (the admin can fix it in the settings), then the plan's.
 export function switchPreflight(
   sourceEvents: GoogleEventLike[],
   targetEvents: GoogleEventLike[],
   expanded?: GoogleEventLike[],
   viewWindow: ExpansionWindow = expansionWindow(),
   targetTimeZone?: string | null,
+  sourceTimeZone?: string | null,
 ): {
   targetConflicts: number;
   invalidIds: number;
@@ -692,11 +700,13 @@ export function switchPreflight(
     uncoveredOccurrences: plan.uncoveredOccurrences,
     orphanedExceptions: plan.diagnostics.orphanedExceptions,
     refusal:
-      targetTimeZone === undefined || targetTimeZone === APP_TIME_ZONE
-        ? plan.refusal
-        : targetTimeZone === null
-          ? TARGET_TIME_ZONE_UNKNOWN_MESSAGE
-          : TARGET_TIME_ZONE_MESSAGE,
+      sourceTimeZone !== undefined && sourceTimeZone !== APP_TIME_ZONE
+        ? SOURCE_TIME_ZONE_MESSAGE
+        : targetTimeZone === undefined || targetTimeZone === APP_TIME_ZONE
+          ? plan.refusal
+          : targetTimeZone === null
+            ? TARGET_TIME_ZONE_UNKNOWN_MESSAGE
+            : TARGET_TIME_ZONE_MESSAGE,
   };
   return out;
 }

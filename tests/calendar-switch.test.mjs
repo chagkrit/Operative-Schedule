@@ -2181,10 +2181,47 @@ test("google client: calendarTimeZone reads the events.list top-level timeZone (
   const q = new URL(seen.filter((x) => x.url.includes("/events")).at(-1).url).searchParams;
   assert.equal(q.get("fields"), "timeZone");
   assert.equal(q.get("maxResults"), "1");
+  assert.equal(q.get("timeZone"), null, "the zone read must not ask for a rendering zone");
   body = { items: [] };
   assert.equal(await client.calendarTimeZone(), null);
   body = { timeZone: 5 };
   assert.equal(await client.calendarTimeZone(), null);
   body = "error";
   await assert.rejects(() => client.calendarTimeZone(), (err) => !String(err.message).includes("SYNTH-GOOGLE-TEXT"));
+});
+
+// ==== step 2 fix round 4 ====
+test("switchPreflight refuses a SOURCE zone other than Asia/Bangkok or one that could not be read (contact the developer)", () => {
+  const ev = { ...structuredClone(EXTRA) };
+  const pre = (target, source) => sw.switchPreflight([ev], [], undefined, undefined, target, source).refusal;
+  assert.equal(pre("Asia/Bangkok", "Asia/Bangkok"), null);
+  assert.equal(pre("Asia/Bangkok", "UTC"), sw.SOURCE_TIME_ZONE_MESSAGE);
+  assert.equal(pre("Asia/Bangkok", null), sw.SOURCE_TIME_ZONE_MESSAGE);
+  assert.equal(pre("Asia/Bangkok", undefined), null, "undefined = not checked");
+  assert.match(sw.SOURCE_TIME_ZONE_MESSAGE, /ติดต่อผู้พัฒนา/);
+  assert.match(sw.SOURCE_TIME_ZONE_MESSAGE, /ยังไม่ได้เปลี่ยนปฏิทิน/);
+  assert.doesNotMatch(sw.SOURCE_TIME_ZONE_MESSAGE, /Settings|ตั้งเป็น/, "never tells the admin to change the live master's zone");
+  assert.doesNotMatch(sw.SOURCE_TIME_ZONE_MESSAGE, /กดเปลี่ยนอีกครั้ง/);
+});
+
+test("minor 2: a far cancel neither sent this press nor listed cancelled at verify fails verify", async () => {
+  const farCxl = { id: "rm0001aa_20991231", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2099-12-31" } };
+  const h = harness({ sourceEvents: [...ALL(), ...REC(), farCxl] });
+  // a first press copied everything (master included); pretend the flip did not happen
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  const ops = h.target.instanceOps.length;
+  const real = h.target.listEvents;
+  let plain = 0;
+  h.target.listEvents = async (opts) => {
+    const events = await real(opts);
+    if (opts?.expand) return events;
+    plain += 1;
+    // the before-copy read lists it cancelled (so it is skipped as already done); the verify read does not
+    return plain === 1 ? events : events.filter((e) => e.id !== farCxl.id);
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "verify", JSON.stringify(r));
+  assert.ok(!h.target.instanceOps.slice(ops).some((o) => o.id === farCxl.id), "not sent this press");
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
 });

@@ -208,3 +208,9 @@ test("docs (fix round 3): the time-zone refusal; booking horizon worded as the c
   assert.ok(runbook.includes("สิ้นเดือนที่ห่างจากเดือนปัจจุบัน 12 เดือน"));
   assert.ok(runbook.includes("ไม่จำกัดวัน"), "the staff schedule reads upcoming bookings with no end date");
 });
+
+test("runbook (round 4): check the CURRENT master's time zone; a non-Bangkok master blocks and means contact the developer", async () => {
+  const runbook = await read(RUNBOOK);
+  assert.ok(runbook.includes("time zone ของปฏิทินหลักปัจจุบัน"), "names the current master's zone");
+  assert.ok(runbook.includes("ห้ามเปลี่ยน time zone ของปฏิทินหลักปัจจุบันเอง"), "never change the live master's zone");
+});

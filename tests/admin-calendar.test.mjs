@@ -55,6 +55,7 @@ function fakeCalendars(initial = {}, zones = {}) {
     const events = cals.get(calendarId);
     return {
       async calendarTimeZone() {
+        if (zones[calendarId] === "THROW") throw new Error("SYNTH zone read failed");
         return Object.hasOwn(zones, calendarId) ? zones[calendarId] : "Asia/Bangkok";
       },
       async listEvents(opts) {
@@ -1000,12 +1001,27 @@ test("a target calendar whose time zone Google does not report is refused (fail 
   for (const m of [sw.TARGET_TIME_ZONE_MESSAGE, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE]) assert.doesNotMatch(m, /กดเปลี่ยนอีกครั้ง/);
 });
 
-test("a Bangkok target passes; the SOURCE's zone is reported only (never blocks)", async () => {
-  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "hnbcmu@gmail.com": "America/New_York" } });
-  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
-  assert.equal(p.json.targetTimeZoneOk, true);
-  assert.equal(p.json.sourceTimeZoneOk, false);
+test("round 4: the SOURCE calendar's zone blocks too: not Bangkok, not reported or a failed read → refused before the lock; Bangkok passes", async () => {
+  for (const zone of ["America/New_York", null, "THROW"]) {
+    const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "hnbcmu@gmail.com": zone } });
+    const seen = countUpserts(h);
+    const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+    assert.equal(p.status, 200, String(zone));
+    assert.equal(p.json.targetTimeZoneOk, true);
+    assert.equal(p.json.sourceTimeZoneOk, false);
+    assert.equal(p.json.planBlocked, sw.SOURCE_TIME_ZONE_MESSAGE);
+    assert.ok(!p.text.includes("America"), "no zone value in the output");
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.json.step, "preflight");
+    assert.equal(r.json.error, sw.SOURCE_TIME_ZONE_MESSAGE);
+    assert.equal(h.state.writes, 0);
+    assert.equal(h.state.data.lock, undefined);
+    assert.equal(Object.keys(seen.upserts).length, 0);
+  }
+  const ok = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const p = await call(ok, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.sourceTimeZoneOk, true);
   assert.equal(p.json.planBlocked, null);
-  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
-  assert.equal(r.status, 200, r.text);
+  assert.equal((await call(ok, "POST", { as: ADMIN, body: { action: "switch" } })).status, 200);
 });
