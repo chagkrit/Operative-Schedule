@@ -130,7 +130,7 @@ function fakeCalendar(name, log, events = []) {
 }
 
 function memoryStore(initial, log) {
-  const st = { data: structuredClone(initial), writes: [], removes: 0, failWriteWhen: null, landThenThrowWhen: null, failReads: 0 };
+  const st = { data: structuredClone(initial), writes: [], removes: 0, failWriteWhen: null, landThenThrowWhen: null, failReads: 0, lateCommitWhen: null, pendingCommit: null, onWrite: null };
   const storage = {
     async read() {
       if (st.failReads > 0) {
@@ -140,7 +140,14 @@ function memoryStore(initial, log) {
       return st.data === "missing" ? "missing" : structuredClone(st.data);
     },
     async write(v) {
+      if (st.onWrite) st.onWrite(v);
       if (st.failWriteWhen && st.failWriteWhen(v, st.writes.length + 1)) throw new Error("SYNTH blob write failed");
+      // the real Blob failure mode: the 5 s abort fires first, the put commits a moment LATER
+      // (applied by the harness during the settings settle sleep, i.e. after any immediate read-back)
+      if (st.lateCommitWhen && st.lateCommitWhen(v)) {
+        st.pendingCommit = structuredClone(v);
+        throw new Error("SYNTH abort fired; put still in flight");
+      }
       st.writes.push(structuredClone(v));
       log.push(v.lock ? "settings.write+lock" : "settings.write-nolock");
       st.data = structuredClone(v);
@@ -159,7 +166,7 @@ function memoryStore(initial, log) {
 const MASTER = t("old", "v1.OLDSEALED.x.y");
 const CANDIDATE = t("new", "v1.NEWSEALED.x.y");
 
-function harness({ settings = { master: MASTER, candidate: CANDIDATE }, sourceEvents = ALL(), targetEvents = [], envMaster, master = settings.master, advancing = false } = {}) {
+function harness({ settings = { master: MASTER, candidate: CANDIDATE }, sourceEvents = ALL(), targetEvents = [], envMaster, master = settings.master, advancing = false, copyBudgetMs } = {}) {
   const log = [];
   const clock = { t: 5_000_000 };
   const sleeps = [];
@@ -180,7 +187,14 @@ function harness({ settings = { master: MASTER, candidate: CANDIDATE }, sourceEv
       sleeps.push({ ms, at: clock.t, data: structuredClone(mem.st.data) });
       log.push(`sleep:${ms}`);
       clock.t += ms;
+      if (mem.st.pendingCommit) {
+        // the late put lands while the switch waits
+        mem.st.writes.push(mem.st.pendingCommit);
+        mem.st.data = mem.st.pendingCommit;
+        mem.st.pendingCommit = null;
+      }
     },
+    copyBudgetMs,
   };
   return { log, clock, sleeps, mem, source, target, deps };
 }
@@ -237,7 +251,7 @@ test("failure at copy (3rd upsert throws): master unchanged, lock cleared, step 
   assert.equal(lockStates(h).at(-1), false);
   assert.equal(h.sleeps.length, 0);
 
-  // re-run completes with no duplicate ids; every id copied by the first run reports "updated"
+  // re-run completes with no duplicate ids; ids the first run already copied are skipped (unchanged)
   // (with 5 concurrent upserts, the ones already in flight when the 3rd failed also landed)
   const copiedFirst = new Set(h.target.events.keys());
   assert.ok(copiedFirst.size >= 2 && copiedFirst.size < 5);
@@ -246,8 +260,9 @@ test("failure at copy (3rd upsert throws): master unchanged, lock cleared, step 
   const r2 = await sw.runSwitch(h.deps);
   assert.equal(r2.ok, true, JSON.stringify(r2));
   const second = h.target.upserts.slice(before);
-  for (const u of second) assert.equal(u.result, copiedFirst.has(u.id) ? "updated" : "created", u.id);
-  assert.equal(r2.updated, copiedFirst.size);
+  for (const u of second) assert.ok(!copiedFirst.has(u.id), `${u.id} already matched and must not be re-sent`);
+  assert.equal(r2.unchanged, copiedFirst.size);
+  assert.equal(r2.updated, 0);
   assert.equal(r2.created, 5 - copiedFirst.size);
   assert.equal(h.target.events.size, 5);
   assert.equal(new Set([...h.target.events.keys()]).size, 5);
@@ -386,7 +401,7 @@ test("lock clear failing after the flip still reports ok with lockCleared false"
 
 test("a long copy renews the lock so it never expires mid-copy", async () => {
   const many = Array.from({ length: 30 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}bb`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
-  const h = harness({ sourceEvents: many });
+  const h = harness({ sourceEvents: many, copyBudgetMs: 3 * 60 * 60_000 });
   const realUpsert = h.target.upsertEvent;
   h.target.upsertEvent = async (e) => {
     h.clock.t += 60_000; // one minute per event: 30 minutes total, longer than the 20 min lock TTL
@@ -576,7 +591,7 @@ test("lock write lands but reports an error (advancing clock): the run recognise
 
 test("renew write lands but reports an error: the copy continues and the lock is still released", async () => {
   const many = Array.from({ length: 12 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}cc`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
-  const h = harness({ sourceEvents: many, advancing: true });
+  const h = harness({ sourceEvents: many, advancing: true, copyBudgetMs: 3 * 60 * 60_000 });
   const realUpsert = h.target.upsertEvent;
   h.target.upsertEvent = async (e) => { h.clock.t += 60_000; return realUpsert(e); };
   let lockWrites = 0;
@@ -679,7 +694,7 @@ test("copy runs at most 5 upserts at once and verify starts only after all of th
 
 test("lock renewal is serialized while 5 workers copy (never two renewals at once)", async () => {
   const many = Array.from({ length: 40 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}ee`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
-  const h = harness({ sourceEvents: many });
+  const h = harness({ sourceEvents: many, copyBudgetMs: 3 * 60 * 60_000 });
   const realUpsert = h.target.upsertEvent;
   h.target.upsertEvent = async (e) => { h.clock.t += 60_000; await new Promise((r) => setTimeout(r, 1)); return realUpsert(e); };
   const realMutate = h.deps.settings.mutate.bind(h.deps.settings);
@@ -772,4 +787,163 @@ test("calendar.ts readers use the orig-aware helpers; closure/leave edits clear 
     const privateBlock = src.slice(at, src.indexOf("} }", at));
     assert.match(privateBlock, /orig_updated: ""/, tag);
   }
+});
+
+// ---- fix round 2: late-committing settings writes, run budget, cheap re-runs -------------------------
+const extras = (n, tag) => Array.from({ length: n }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}${tag}`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
+
+test("SETTINGS_SETTLE_MS is exported (8 s) and COPY_PHASE_BUDGET_MS is 150 s", () => {
+  assert.equal(sw.SETTINGS_SETTLE_MS, 8_000);
+  assert.equal(sw.COPY_PHASE_BUDGET_MS, 150_000);
+});
+
+test("lock put that commits LATE (after the abort): the run waits SETTINGS_SETTLE_MS, sees its lock, completes", async () => {
+  const h = harness({ advancing: true });
+  let first = true;
+  h.mem.st.lateCommitWhen = (v) => { if (first && v.lock) { first = false; return true; } return false; };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.sleeps[0].ms, sw.SETTINGS_SETTLE_MS);
+  assert.deepEqual(h.mem.st.data, { master: CANDIDATE, previousMaster: MASTER });
+});
+
+test("lock put that never commits: after the settle re-read the run fails at lock, no lock left behind", async () => {
+  const h = harness({ advancing: true });
+  h.mem.st.failWriteWhen = (v, n) => n === 1 && !!v.lock;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "lock");
+  assert.ok(h.sleeps.some((x) => x.ms === sw.SETTINGS_SETTLE_MS));
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.source.listCalls, 0);
+});
+
+test("a refusal thrown by the mutate callback (already locked) is not a storage error: no settle wait", async () => {
+  const other = { since: 5_000_000 - 1000, by: "other@example.com" };
+  const h = harness({ settings: { master: MASTER, candidate: CANDIDATE, lock: other } });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "lock");
+  assert.equal(h.sleeps.length, 0);
+  assert.deepEqual(h.mem.st.data.lock, other);
+});
+
+test("renewal put that commits LATE: the copy continues and the lock is released at the end", async () => {
+  const h = harness({ sourceEvents: extras(12, "ff"), advancing: true, copyBudgetMs: 3 * 60 * 60_000 });
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e) => { h.clock.t += 60_000; return realUpsert(e); };
+  let lockWrites = 0;
+  h.mem.st.lateCommitWhen = (v) => !!v.lock && v.master?.calendarId === MASTER.calendarId && ++lockWrites === 2; // first renewal
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(h.sleeps.some((x) => x.ms === sw.SETTINGS_SETTLE_MS));
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.mem.st.data.master.calendarId, CANDIDATE.calendarId);
+});
+
+test("flip put that commits LATE: reported as switched (never 'not switched'), lock released after the hold", async () => {
+  const h = harness({ advancing: true });
+  h.mem.st.lateCommitWhen = (v) => v.master?.calendarId === CANDIDATE.calendarId && !!v.lock;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.lockCleared, true);
+  assert.deepEqual(h.mem.st.data, { master: CANDIDATE, previousMaster: MASTER });
+  const settleAt = h.sleeps.findIndex((x) => x.ms === sw.SETTINGS_SETTLE_MS);
+  const holdAt = h.sleeps.findIndex((x) => x.ms === sw.LOCK_HOLD_AFTER_FLIP_MS);
+  assert.ok(settleAt !== -1 && holdAt > settleAt);
+});
+
+test("SETTLE_MS is measured from when the lock write was CONFIRMED, not from the stamped since", async () => {
+  const h = harness({ advancing: true });
+  let slowed = false;
+  h.mem.st.onWrite = (v) => { if (!slowed && v.lock) { slowed = true; h.clock.t += 10_000; } }; // a 10 s put
+  const at = [];
+  h.source.onList = () => at.push(h.clock.t);
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true);
+  const since = h.mem.st.writes[0].lock.since;
+  assert.ok(at[1] >= since + 10_000 + sw.SETTLE_MS, `second read at +${at[1] - since} ms`);
+});
+
+test("copy budget hit mid-copy (advancing clock) ⇒ step copy, resumable message, lock released, master unchanged; re-run completes without duplicates", async () => {
+  const h = harness({ sourceEvents: extras(30, "gg"), advancing: true });
+  const realUpsert = h.target.upsertEvent;
+  let slow = true;
+  h.target.upsertEvent = async (e) => { if (slow) h.clock.t += 20_000; return realUpsert(e); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.match(r.error, /กดเปลี่ยนอีกครั้ง/);
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  const firstCopied = h.target.events.size;
+  assert.ok(firstCopied > 0 && firstCopied < 30);
+
+  slow = false;
+  const before = h.target.upserts.length;
+  const r2 = await sw.runSwitch(h.deps);
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(h.target.upserts.length - before, 30 - firstCopied, "only the missing events are sent");
+  assert.equal(r2.unchanged, firstCopied);
+  assert.equal(h.target.events.size, 30);
+});
+
+test("re-run skips every event whose target copy already matches the source (zero upserts)", async () => {
+  const h = harness();
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  // pretend the flip never happened: same source, same (complete) target
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  const before = h.target.upserts.length;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.upserts.length, before);
+  assert.equal(r.unchanged, 5);
+  // a changed summary on a legacy event (no private data) is NOT treated as matching
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  h.source.events.get(LEGACY.id).summary = "A ทดสอบ 1234567 SYNTH-op-changed";
+  const r2 = await sw.runSwitch(h.deps);
+  assert.equal(r2.ok, true);
+  assert.deepEqual(h.target.upserts.slice(before).map((u) => u.id), [LEGACY.id]);
+});
+
+test("copy budget is checked before the settle wait", async () => {
+  const h = harness({ sourceEvents: extras(5, "hh") });
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e) => { h.clock.t += 40_000; return realUpsert(e); }; // 5 in parallel: +200 s
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(h.source.listCalls, 1, "no second source read");
+  assert.ok(!h.sleeps.some((x) => x.ms > 0 && x.ms <= sw.SETTLE_MS && x.ms !== sw.SETTINGS_SETTLE_MS), "no settle wait");
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("copy budget is checked before the flip", async () => {
+  const h = harness();
+  const realList = h.target.listEvents;
+  let n = 0;
+  h.target.listEvents = async () => { n += 1; if (n === 2) h.clock.t += 200_000; return realList(); }; // slow verify read
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  assert.ok(!h.mem.st.writes.some((w) => w.master?.calendarId === CANDIDATE.calendarId), "no flip write");
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("google client: one upsert's retries stop within ~30 s in total (429 backoff included)", async () => {
+  let t = 0;
+  let posts = 0;
+  const { fetchFn } = fakeGoogle((url, init) => {
+    if (init.method === "POST") posts += 1;
+    t += 4_000; // each attempt takes 4 s
+    return new Response("{}", { status: 429 });
+  });
+  const client = sw.createGoogleCalendarClient({ calendarId: "c", refreshToken: "r" }, {
+    fetch: fetchFn, clientId: "cid", clientSecret: "cs", now: () => t, sleep: async (ms) => { t += ms; },
+    maxAttempts: 50,
+  });
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }));
+  assert.ok(t <= sw.UPSERT_TIME_BUDGET_MS + 4_000, `gave up after ${t} ms`);
+  assert.ok(posts >= 2, "it did retry");
+  assert.equal(sw.UPSERT_TIME_BUDGET_MS, 30_000);
 });

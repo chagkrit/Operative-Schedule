@@ -331,6 +331,7 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
       copied: result.copied,
       created: result.created,
       updated: result.updated,
+      unchanged: result.unchanged,
       counts: result.counts,
       skipped: result.skipped,
       lockCleared: result.lockCleared,

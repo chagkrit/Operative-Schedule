@@ -194,6 +194,13 @@ export const LOCK_RENEW_MS = 5 * 60_000;
 // lock so such a write has landed (or never will) before the last copy pass.
 export const SETTLE_MS = 45_000;
 export const COPY_CONCURRENCY = 5;
+// A settings put can be aborted (5 s) and still commit a moment later. After a storage error on a lock
+// or flip write the run waits this long before trusting a read-back of the file.
+export const SETTINGS_SETTLE_MS = 8_000;
+// Copy-phase budget inside one request (route maxDuration = 300 s): checked before each upsert, before
+// the settle wait and before the flip; the remaining hold + release fit in what is left.
+export const COPY_PHASE_BUDGET_MS = 150_000;
+export const COPY_BUDGET_MESSAGE = "คัดลอกยังไม่เสร็จในรอบเวลานี้ ยังไม่ได้เปลี่ยนปฏิทิน กดเปลี่ยนอีกครั้งเพื่อคัดลอกส่วนที่เหลือต่อ";
 
 export type SwitchDeps = {
   settings: CalendarSettingsStore;
@@ -208,21 +215,35 @@ export type SwitchDeps = {
   // Sealed env master; passed only when the file has no master, so it becomes previousMaster.
   envMaster?: CalendarTarget;
   sleep?: (ms: number) => Promise<void>;
+  // Tests only; production uses COPY_PHASE_BUDGET_MS.
+  copyBudgetMs?: number;
 };
 
 export type SwitchResult =
-  | { ok: true; copied: number; created: number; updated: number; counts: CopyCounts; skipped: number; lockCleared: boolean }
+  | {
+      ok: true;
+      copied: number;
+      created: number;
+      updated: number;
+      // already in the target exactly as in the source (re-run): not sent again
+      unchanged: number;
+      counts: CopyCounts;
+      skipped: number;
+      lockCleared: boolean;
+    }
   | { ok: false; step: SwitchStep; error: string };
 
 class StepError extends Error {
   readonly step: SwitchStep;
   readonly failure: unknown;
   readonly unknownOutcome: boolean;
-  constructor(step: SwitchStep, failure?: unknown, unknownOutcome = false) {
+  readonly userMessage: string | undefined;
+  constructor(step: SwitchStep, failure?: unknown, unknownOutcome = false, userMessage?: string) {
     super(step);
     this.step = step;
     this.failure = failure;
     this.unknownOutcome = unknownOutcome;
+    this.userMessage = userMessage;
   }
 }
 
@@ -254,6 +275,20 @@ function sameTime(a: GoogleEventLike["start"], b: GoogleEventLike["start"]): boo
   return !a.timeZone || a.timeZone === b.timeZone;
 }
 
+// Verify's comparator: private props (orig_* aside), start and end.
+function sameCore(target: GoogleEventLike, source: GoogleEventLike): boolean {
+  return privateWithoutOrig(target) === privateWithoutOrig(source) && sameTime(source.start, target.start) && sameTime(source.end, target.end);
+}
+
+// Re-run skip test: verify's comparator PLUS every other copied content field, so an event is skipped only
+// when nothing the copy would send differs (stricter than verify on purpose: a false "match" would lose data,
+// a false "mismatch" only costs one upsert). Legacy events keep their data in the summary.
+const CONTENT_FIELDS = ["status", "summary", "description", "location", "colorId", "recurrence", "reminders", "transparency", "visibility"] as const;
+function targetMatchesSource(target: GoogleEventLike | undefined, source: GoogleEventLike): boolean {
+  if (!target || !sameCore(target, source)) return false;
+  return CONTENT_FIELDS.every((k) => JSON.stringify(target[k]) === JSON.stringify(source[k]));
+}
+
 function samePlans(a: CopyPlan, b: CopyPlan): boolean {
   if (a.copy.length !== b.copy.length) return false;
   const bodies = new Map(a.copy.map((e) => [e.id as string, JSON.stringify(e)]));
@@ -274,6 +309,13 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   const mine = new Set<number>();
   let lockSince: number | null = null;
   let lockTakenAt = 0;
+  const runStart = deps.now();
+  const budget = deps.copyBudgetMs ?? COPY_PHASE_BUDGET_MS;
+  const overBudget = () => deps.now() - runStart > budget;
+  const budgetError = () => new StepError("copy", new Error("copy budget exceeded"), false, COPY_BUDGET_MESSAGE);
+  const checkBudget = () => {
+    if (overBudget()) throw budgetError();
+  };
   const ours = (s: CalendarSettings | "missing"): s is CalendarSettings =>
     s !== "missing" && !!s.lock && s.lock.by === deps.by && mine.has(s.lock.since);
 
@@ -293,9 +335,17 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     landed: (s: CalendarSettings | "missing") => boolean,
   ): Promise<void> {
     mine.add(since);
+    let attempted = false; // fn returned a value, so a put may have been sent
     try {
-      await deps.settings.mutate(fn);
+      await deps.settings.mutate((s) => {
+        const next = fn(s); // a refusal thrown here is not a storage error: no write, no settle
+        attempted = true;
+        return next;
+      });
     } catch (err) {
+      if (!attempted) throw err;
+      // Storage error: the put may still commit after its abort. Wait, then trust the read-back.
+      await sleep(SETTINGS_SETTLE_MS);
       let after: CalendarSettings | "missing";
       try {
         after = await deps.settings.read();
@@ -339,6 +389,10 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     let failure: unknown = null;
     const worker = async () => {
       while (failure === null && next < events.length) {
+        if (overBudget()) {
+          if (failure === null) failure = budgetError();
+          return;
+        }
         const event = events[next++];
         try {
           await maybeRenew();
@@ -365,7 +419,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     if (!COPY_KINDS.every((k) => targetPlan.counts[k] === plan.counts[k])) return false;
     return plan.copy.every((e) => {
       const t = targetById.get(e.id as string);
-      return !!t && privateWithoutOrig(t) === privateWithoutOrig(e) && sameTime(e.start, t.start) && sameTime(e.end, t.end);
+      return !!t && sameCore(t, e);
     });
   }
 
@@ -384,6 +438,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     } catch (err) {
       console.error("[calendar-switch] lock release failed:", err instanceof Error ? err.name : typeof err);
       try {
+        await sleep(SETTINGS_SETTLE_MS); // the clear may still commit; report what the file then holds
         return !ours(await deps.settings.read());
       } catch {
         return false;
@@ -409,7 +464,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
         (s) => s !== "missing" && sameTarget(s.candidate, deps.candidate) && sameTarget(s.master, deps.master),
       );
       lockSince = since;
-      lockTakenAt = since;
+      lockTakenAt = deps.now(); // the settle wait counts from the CONFIRMED lock, not the stamped since
     });
 
     // 2. read the source and plan
@@ -420,11 +475,16 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     const planIds1 = new Set(plan1.copy.map((e) => e.id as string));
     if (planCopy(before).copy.some((e) => !planIds1.has(e.id as string))) throw new StepError("verify");
 
-    // 4. copy (same ids; insert or update; 5 at a time)
+    // 4. copy (same ids; insert or update; 5 at a time). Events the target already holds exactly as in
+    //    the source (a re-run after a partial copy) are not sent again.
+    const beforeById = new Map(before.filter((e) => typeof e.id === "string").map((e) => [e.id as string, e]));
+    const toCopy = plan1.copy.filter((e) => !targetMatchesSource(beforeById.get(e.id as string), e));
+    const unchanged = plan1.copy.length - toCopy.length;
     const tally = { created: 0, updated: 0 };
-    await stepRun("copy", () => upsertAll(plan1.copy, tally));
+    await stepRun("copy", () => upsertAll(toCopy, tally));
 
     // 5. settle: any write that passed the lock check before the lock was set has landed by now
+    checkBudget();
     const settle = lockTakenAt + SETTLE_MS - deps.now();
     if (settle > 0) await sleep(settle);
     await maybeRenew();
@@ -441,6 +501,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     const plan3 = planCopy(await stepRun("read", () => deps.source.listEvents()));
     if (!samePlans(plan2, plan3)) throw new StepError("verify");
     await maybeRenew();
+    checkBudget();
 
     // 8. flip the pointer, keeping the lock (fresh since) — only if the lock is still ours and active.
     //    A flip that landed but reported an error counts as flipped; an unreadable outcome is "unknown".
@@ -478,6 +539,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
       copied: plan2.copy.length,
       created: tally.created,
       updated: tally.updated,
+      unchanged,
       counts: plan2.counts,
       skipped: plan2.skipped,
       lockCleared,
@@ -499,7 +561,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     return {
       ok: false,
       step: stepErr.step,
-      error: stepErr.unknownOutcome ? SWITCH_OUTCOME_UNKNOWN_MESSAGE : SWITCH_STEP_MESSAGES[stepErr.step],
+      error: stepErr.unknownOutcome ? SWITCH_OUTCOME_UNKNOWN_MESSAGE : stepErr.userMessage ?? SWITCH_STEP_MESSAGES[stepErr.step],
     };
   }
 }
@@ -511,12 +573,17 @@ export type GoogleClientIO = {
   clientSecret?: string;
   sleep?: (ms: number) => Promise<void>;
   maxPages?: number;
+  now?: () => number;
+  maxAttempts?: number;
 };
 
 const API = "https://www.googleapis.com/calendar/v3";
 const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 4;
 const REQUEST_TIMEOUT_MS = 15_000;
+// Total time one upsert (insert + update fallback) or one list page may spend across attempts and backoff,
+// so one slow event cannot eat the switch's copy budget.
+export const UPSERT_TIME_BUDGET_MS = 30_000;
 export const MAX_LIST_PAGES = 200; // 200 x 2,500 events
 
 // Thrown messages are fixed text plus an HTTP status: never a token, never Google's own error text.
@@ -536,6 +603,8 @@ export function createGoogleCalendarClient(
   const doFetch = io.fetch ?? fetch;
   const sleep = io.sleep ?? defaultSleep;
   const maxPages = io.maxPages ?? MAX_LIST_PAGES;
+  const now = io.now ?? Date.now;
+  const maxAttempts = io.maxAttempts ?? MAX_ATTEMPTS;
   const base = `${API}/calendars/${encodeURIComponent(t.calendarId)}/events`;
   let access: { token: string; expiresAt: number } | null = null;
 
@@ -564,10 +633,13 @@ export function createGoogleCalendarClient(
     return access.token;
   }
 
-  // One Calendar request with bounded retries on 429/5xx/network errors. Returns the response (ok or a
-  // non-retryable status) for the caller to interpret.
-  async function request(url: string, init: RequestInit): Promise<Response> {
+  // One Calendar request with bounded retries on 429/5xx/network errors, inside a time budget that starts
+  // at `startedAt` (shared by an upsert's insert and update). Returns the response (ok or a non-retryable
+  // status) for the caller to interpret.
+  async function request(url: string, init: RequestInit, startedAt: number): Promise<Response> {
     for (let attempt = 1; ; attempt += 1) {
+      const remaining = UPSERT_TIME_BUDGET_MS - (now() - startedAt);
+      if (remaining <= 0) throw new GoogleCalendarError("calendar request took too long");
       let response: Response | null = null;
       try {
         response = await doFetch(url, {
@@ -577,15 +649,20 @@ export function createGoogleCalendarClient(
             ...(init.body ? { "content-type": "application/json" } : {}),
           },
           cache: "no-store",
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
         });
       } catch (err) {
-        if (err instanceof GoogleCalendarError || attempt >= MAX_ATTEMPTS) {
-          throw err instanceof GoogleCalendarError ? err : new GoogleCalendarError("calendar request failed");
-        }
+        if (err instanceof GoogleCalendarError) throw err;
+        if (attempt >= maxAttempts) throw new GoogleCalendarError("calendar request failed");
       }
-      if (response && (!RETRY_STATUSES.has(response.status) || attempt >= MAX_ATTEMPTS)) return response;
-      await sleep(500 * 2 ** (attempt - 1));
+      if (response && !RETRY_STATUSES.has(response.status)) return response;
+      const wait = 500 * 2 ** (attempt - 1);
+      const outOfTime = now() - startedAt + wait >= UPSERT_TIME_BUDGET_MS;
+      if (attempt >= maxAttempts || outOfTime) {
+        if (response) return response;
+        throw new GoogleCalendarError("calendar request failed");
+      }
+      await sleep(wait);
     }
   }
 
@@ -598,7 +675,7 @@ export function createGoogleCalendarClient(
         if (page >= maxPages) throw new GoogleCalendarError("calendar list has too many pages");
         const params = new URLSearchParams({ singleEvents: "false", showDeleted: "false", maxResults: "2500" });
         if (pageToken) params.set("pageToken", pageToken);
-        const response = await request(`${base}?${params.toString()}`, { method: "GET" });
+        const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now());
         if (!response.ok) throw new GoogleCalendarError("calendar list failed", response.status);
         const payload = (await response.json().catch(() => null)) as { items?: unknown; nextPageToken?: unknown } | null;
         if (!payload || (payload.items !== undefined && !Array.isArray(payload.items))) {
@@ -615,10 +692,11 @@ export function createGoogleCalendarClient(
     async upsertEvent(event) {
       if (typeof event.id !== "string" || !event.id) throw new GoogleCalendarError("event has no id");
       const body = JSON.stringify(event);
-      const inserted = await request(`${base}?sendUpdates=none`, { method: "POST", body });
+      const startedAt = now();
+      const inserted = await request(`${base}?sendUpdates=none`, { method: "POST", body }, startedAt);
       if (inserted.ok) return "created";
       if (inserted.status !== 409) throw new GoogleCalendarError("calendar insert failed", inserted.status);
-      const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body });
+      const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body }, startedAt);
       if (updated.ok) return "updated";
       throw new GoogleCalendarError("calendar update failed", updated.status);
     },
