@@ -142,3 +142,13 @@ test("viewport-fit=cover is paired with safe-area insets for the bar, the shell 
   assert.match(css, /\.app-shell \{[^}]*padding-left: max\(14px, env\(safe-area-inset-left\)\);[^}]*padding-right: max\(14px, env\(safe-area-inset-right\)\);/);
   assert.match(css, /\.queue-conflict-backdrop \{[^}]*padding-bottom: max\(10px, env\(safe-area-inset-bottom\)\);/);
 });
+
+test("bottom nav columns follow the number of tabs (viewers see 4, others 5)", async () => {
+  const css = await read("app/mobile-shell.css");
+  // The phone rule (position: fixed) is not the first `.bottom-nav {` block (desktop hides it).
+  const start = css.indexOf("position: fixed;", css.indexOf(".bottom-nav {", css.indexOf(".bottom-nav { display: none;") + 1));
+  const nav = css.slice(css.lastIndexOf(".bottom-nav {", start), css.indexOf("}", start));
+  assert.match(nav, /grid-auto-flow: column;/);
+  assert.match(nav, /grid-auto-columns: minmax\(0, 1fr\);/);
+  assert.doesNotMatch(nav, /grid-template-columns: repeat\(\d+/);
+});
