@@ -4,6 +4,9 @@ import type { CalendarStatus } from "../lib/admin-calendar-api";
 
 export const TIMEOUT_MESSAGE = "คำขอใช้เวลานานเกินไปหรือถูกตัดการเชื่อมต่อ ตรวจสถานะแล้วกดสลับอีกครั้งเพื่อทำต่อ";
 export const NETWORK_MESSAGE = "เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาลองใหม่";
+export const UNKNOWN_MESSAGE = "ไม่ทราบผลการสลับ การสลับอาจยังทำงานอยู่ รอสักครู่แล้วกดโหลดสถานะใหม่";
+export const STATUS_UNKNOWN_MESSAGE = "อ่านสถานะล่าสุดไม่สำเร็จ การสลับอาจยังทำงานอยู่ กดโหลดสถานะใหม่ก่อนทำรายการต่อ";
+export const LOCKED_NOW_MESSAGE = "ระบบยังล็อกอยู่ การสลับอาจยังทำงานอยู่ รอสักครู่แล้วกดโหลดสถานะใหม่ ถ้าค้างนานให้ปลดล็อก";
 export const RESUME_HINT = "กดสลับอีกครั้งเพื่อคัดลอกต่อ";
 export const FRESH_LOCK_MS = 60_000;
 
@@ -47,6 +50,8 @@ const RESUMABLE_PATTERN = /กดเปลี่ยนอีกครั้ง/;
 export function describeSwitchOutcome(result: ApiResult): SwitchOutcome {
   const body = result.body;
   if (result.nonJson) return { kind: "unknown", text: TIMEOUT_MESSAGE, resumable: false, reload: true };
+  // fetch threw (status 0): the request may still be running on the server.
+  if (result.status === 0) return { kind: "unknown", text: UNKNOWN_MESSAGE, resumable: false, reload: true };
   if (result.ok && body?.mode === "copy") {
     const copied = typeof body.copied === "number" ? body.copied : 0;
     return { kind: "success", text: `เปลี่ยนปฏิทินหลักแล้ว คัดลอก ${copied} รายการ`, resumable: false, reload: true };
@@ -56,6 +61,10 @@ export function describeSwitchOutcome(result: ApiResult): SwitchOutcome {
   }
   if (result.ok) return { kind: "unknown", text: TIMEOUT_MESSAGE, resumable: false, reload: true };
   const text = parseApiError(result);
+  // The server could not tell whether the flip landed (no `switched` field), or says so outright.
+  if (/ไม่ทราบผลการเปลี่ยนปฏิทินหลัก/.test(text) || (body?.step === "flip" && typeof body?.switched !== "boolean")) {
+    return { kind: "unknown", text: UNKNOWN_MESSAGE, resumable: false, reload: true };
+  }
   if (body?.switched === true) return { kind: "switched-with-error", text, resumable: false, reload: true };
   const resumable = body?.step === "copy" && RESUMABLE_PATTERN.test(text);
   return { kind: "error", text, resumable, hint: resumable ? RESUME_HINT : undefined, reload: true };
@@ -83,4 +92,30 @@ export function isStatus(value: unknown): value is CalendarStatus {
   if (typeof value !== "object" || value === null) return false;
   const v = value as { master?: unknown; locked?: unknown };
   return typeof v.master === "object" && v.master !== null && typeof v.locked === "boolean";
+}
+
+export type SwitchNotice = { type: "success" | "error"; text: string; hint?: string };
+
+const samePub = same;
+
+// What to show and whether the preview survives, from the switch answer and the RELOADED status.
+export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus | null, former: Pub): { notice: SwitchNotice; keepPreview: boolean } {
+  if (!fresh) return { notice: { type: "error", text: STATUS_UNKNOWN_MESSAGE }, keepPreview: true };
+  const verdict = reconcileAfterSwitch(former, fresh);
+  if (verdict === "switched") {
+    const text = outcome.kind === "success"
+      ? outcome.text
+      : "เปลี่ยนปฏิทินหลักเรียบร้อยแล้ว (ตรวจจากสถานะล่าสุด) ห้ามแก้ไขใน Google Calendar โดยตรง แก้ผ่านแอปเท่านั้น";
+    return { notice: { type: "success", text }, keepPreview: false };
+  }
+  if (verdict === "locked") return { notice: { type: "error", text: LOCKED_NOW_MESSAGE }, keepPreview: true };
+  const candidateChanged = !fresh.candidate || !samePub(fresh.candidate, former);
+  const text = outcome.kind === "unknown" ? `${outcome.text} (สถานะล่าสุด: ยังไม่ได้เปลี่ยนปฏิทิน)` : outcome.text;
+  const hint = outcome.kind === "unknown" ? "กดสลับอีกครั้งเพื่อทำต่อ" : outcome.hint;
+  return { notice: { type: "error", text, hint }, keepPreview: !candidateChanged };
+}
+
+// The switch button is usable only with a candidate, a preview of it, and no lock.
+export function canSwitchNow(status: CalendarStatus | null, preview: unknown): boolean {
+  return !!status?.candidate && !!preview && !status.locked;
 }

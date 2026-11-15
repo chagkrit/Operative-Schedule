@@ -10,7 +10,8 @@ import {
   isStatus,
   parseApiError,
   readApiResponse,
-  reconcileAfterSwitch,
+  decideAfterSwitch,
+  canSwitchNow,
 } from "./calendar-ui";
 
 type Notice = { type: "success" | "error"; text: string; hint?: string } | null;
@@ -170,21 +171,11 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
     const result = await call("switch", { action: "switch" });
     if (!result) return;
     const outcome = describeSwitchOutcome(result);
-    // The answer may be missing (timeout / 502 page) or partial: the status is always re-read from the server.
+    // The answer may be missing (network, timeout, 502 page) or partial: the status is always re-read from the server.
     const fresh = await reloadStatus();
-    setPreview(null);
-    if (outcome.kind === "unknown" || outcome.kind === "switched-with-error") {
-      const verdict = reconcileAfterSwitch(former, fresh);
-      if (verdict === "switched") {
-        setNotice({ type: "success", text: "เปลี่ยนปฏิทินหลักเรียบร้อยแล้ว (ตรวจจากสถานะล่าสุด) ห้ามแก้ไขใน Google Calendar โดยตรง แก้ผ่านแอปเท่านั้น" });
-      } else if (verdict === "locked") {
-        setNotice({ type: "error", text: "ระบบยังล็อกอยู่ การสลับอาจยังทำงานอยู่ รอสักครู่แล้วกด “โหลดสถานะใหม่” ถ้าค้างนานให้ปลดล็อก" });
-      } else {
-        setNotice({ type: "error", text: outcome.text, hint: "กดสลับอีกครั้งเพื่อทำต่อ" });
-      }
-      return;
-    }
-    setNotice({ type: outcome.kind === "success" ? "success" : "error", text: outcome.text, hint: outcome.hint });
+    const decision = decideAfterSwitch(outcome, fresh, former);
+    if (!decision.keepPreview) setPreview(null);
+    setNotice(decision.notice);
   }
 
   async function confirmClearLock() {
@@ -202,7 +193,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
   }
 
   const copying = busy === "switch";
-  const canSwitch = !!status?.candidate && !!preview && !status.locked;
+  const canSwitch = canSwitchNow(status, preview);
   const months = preview ? Object.entries(preview.byMonth).sort(([a], [b]) => a.localeCompare(b)) : [];
 
   return (

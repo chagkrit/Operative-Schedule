@@ -93,6 +93,79 @@ test("isFreshLock: only a numeric lockedSince under 60 s old counts", () => {
   assert.equal(ui.isFreshLock({ locked: false, lockedSince: now - 1 }, now), false);
 });
 
+// ---- fix round 1: classification + decideAfterSwitch ----
+test("describeSwitchOutcome classifies network failure, JSON outcome-unknown and flip-without-switched as unknown", () => {
+  const d = ui.describeSwitchOutcome;
+  const net = d({ status: 0, ok: false, nonJson: false, body: { error: ui.NETWORK_MESSAGE } });
+  assert.equal(net.kind, "unknown");
+  assert.equal(net.reload, true);
+  assert.equal(net.resumable, false);
+  const jsonUnknown = d({ status: 500, ok: false, nonJson: false, body: { error: "ไม่ทราบผลการเปลี่ยนปฏิทินหลัก กรุณาเปิดหน้าสถานะเพื่อตรวจก่อนทำรายการต่อ", step: "flip" } });
+  assert.equal(jsonUnknown.kind, "unknown");
+  const flipNoSwitched = d({ status: 500, ok: false, nonJson: false, body: { error: "ข้อความอื่น", step: "flip" } });
+  assert.equal(flipNoSwitched.kind, "unknown");
+  const flipKnown = d({ status: 500, ok: false, nonJson: false, body: { error: "ข้อความอื่น", step: "flip", switched: false } });
+  assert.equal(flipKnown.kind, "error");
+  const html504 = d({ status: 504, ok: false, nonJson: true, body: null });
+  assert.equal(html504.kind, "unknown");
+  const plain400 = d({ status: 400, ok: false, nonJson: false, body: { error: "ข้อมูลไม่ถูกต้อง" } });
+  assert.equal(plain400.kind, "error");
+  assert.equal(plain400.resumable, false);
+});
+
+const FORMER = { email: "new@x.com", calendarId: "cal-new" };
+const OLD = { email: "old@x.com", calendarId: "cal-old", source: "settings" };
+const st = (o = {}) => ({ master: OLD, candidate: FORMER, locked: false, keyConfigured: true, ...o });
+const out = (body, status = 502, nonJson = false) => ui.describeSwitchOutcome({ status, ok: status < 300, nonJson, body });
+const RESUMABLE = out({ error: "คัดลอกยังไม่เสร็จ ยังไม่ได้เปลี่ยนปฏิทิน กดเปลี่ยนอีกครั้งเพื่อคัดลอกส่วนที่เหลือต่อ", step: "copy", switched: false });
+
+test("decideAfterSwitch: landed clears the preview with a success notice", () => {
+  const ok = out({ mode: "copy", copied: 3 }, 200);
+  const r = ui.decideAfterSwitch(ok, st({ master: { ...FORMER, source: "settings" }, candidate: undefined }), FORMER);
+  assert.equal(r.keepPreview, false);
+  assert.equal(r.notice.type, "success");
+  const viaTimeout = ui.decideAfterSwitch(out(null, 504, true), st({ master: { ...FORMER, source: "settings" } }), FORMER);
+  assert.equal(viaTimeout.keepPreview, false);
+  assert.equal(viaTimeout.notice.type, "success");
+});
+
+test("decideAfterSwitch: resumable copy error keeps the preview, button stays enabled, hint shown", () => {
+  const fresh = st();
+  const r = ui.decideAfterSwitch(RESUMABLE, fresh, FORMER);
+  assert.equal(r.keepPreview, true);
+  assert.equal(r.notice.type, "error");
+  assert.equal(r.notice.hint, "กดสลับอีกครั้งเพื่อคัดลอกต่อ");
+  assert.equal(ui.canSwitchNow(fresh, { tokenOnly: false }), true);
+});
+
+test("decideAfterSwitch: not-switched after unknown keeps preview; candidate changed clears it", () => {
+  const unknown = out(null, 504, true);
+  const keep = ui.decideAfterSwitch(unknown, st(), FORMER);
+  assert.equal(keep.keepPreview, true);
+  assert.ok(keep.notice.hint);
+  const changed = ui.decideAfterSwitch(RESUMABLE, st({ candidate: { email: "other@x.com", calendarId: "other" } }), FORMER);
+  assert.equal(changed.keepPreview, false);
+  const gone = ui.decideAfterSwitch(RESUMABLE, st({ candidate: undefined }), FORMER);
+  assert.equal(gone.keepPreview, false);
+});
+
+test("decideAfterSwitch: locked never offers 'press again'; reload failure keeps preview with status-unknown notice", () => {
+  const net = out({ error: ui.NETWORK_MESSAGE }, 0);
+  const locked = ui.decideAfterSwitch(net, st({ locked: true, lockedSince: 1 }), FORMER);
+  assert.equal(locked.keepPreview, true);
+  assert.equal(locked.notice.hint, undefined);
+  assert.match(locked.notice.text, /การสลับอาจยังทำงานอยู่/);
+  assert.doesNotMatch(JSON.stringify(locked.notice), /กดสลับอีกครั้ง/);
+  const lockedResumable = ui.decideAfterSwitch(RESUMABLE, st({ locked: true }), FORMER);
+  assert.doesNotMatch(JSON.stringify(lockedResumable.notice), /กดสลับอีกครั้ง/);
+  assert.equal(ui.canSwitchNow(st({ locked: true }), { tokenOnly: false }), false);
+  const failed = ui.decideAfterSwitch(net, null, FORMER);
+  assert.equal(failed.keepPreview, true);
+  assert.equal(failed.notice.type, "error");
+  assert.match(failed.notice.text, /โหลดสถานะใหม่/);
+  assert.equal(ui.canSwitchNow(st(), { tokenOnly: false }), true);
+});
+
 // ---- source wiring ----
 const COMPONENT = await read("app/admin/AdminCalendar.tsx");
 const PAGE = await read("app/admin/page.tsx");
@@ -113,7 +186,8 @@ test("AdminCalendar talks to /api/admin/calendar with the four actions and GET r
   assert.match(COMPONENT, /cache: "no-store"/);
   assert.match(COMPONENT, /readApiResponse\(/);
   assert.match(COMPONENT, /describeSwitchOutcome\(/);
-  assert.match(COMPONENT, /reconcileAfterSwitch\(/);
+  assert.match(COMPONENT, /decideAfterSwitch\(/);
+  assert.match(COMPONENT, /canSwitchNow\(/);
 });
 
 test("token field is a password input, autoComplete off, cleared after every submit, never stored in state or rendered", () => {
