@@ -172,3 +172,13 @@ test("runbook + README (step 2): remapped ids are handled automatically (not a s
   const signals = runbook.slice(runbook.indexOf("สัญญาณที่ห้ามสลับ"), runbook.indexOf("\n", runbook.indexOf("สัญญาณที่ห้ามสลับ")));
   assert.ok(!signals.includes("ออกรหัสใหม่"), "remapped ids are not a stop signal");
 });
+
+test("runbook (fix round 1): remapped ids are not 'kept', coverage of what the app reads, PUT/DELETE caveat", async () => {
+  const runbook = await read(RUNBOOK);
+  assert.ok(!runbook.includes("เหตุการณ์ที่คัดลอกยังคงรหัสเดิม และ"), "the old 'all ids kept' sentence is reworded");
+  assert.ok(!runbook.includes("รายการยกเว้นของรายการซ้ำที่แอปไม่ได้ใช้ยังข้ามไปเหมือนเดิม"), "no claim of silent skipping");
+  assert.ok(runbook.includes("รายการที่แอปแสดงแต่ไม่อยู่ในแผนคัดลอก"), "the new preview row / refusal");
+  assert.ok(runbook.includes("PUT") && runbook.includes("DELETE"), "names the occurrence writes");
+  assert.ok(runbook.includes("ยังไม่มีเอกสารของ Google ยืนยัน"), "states honestly that DELETE on an occurrence is observed, not documented");
+  assert.ok(runbook.includes("ตรวจขั้นสุดท้าย"), "the final expanded check");
+});
