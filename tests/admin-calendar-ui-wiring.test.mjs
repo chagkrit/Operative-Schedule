@@ -343,6 +343,10 @@ test("switchBlockReason: target conflicts and invalid ids block the switch with 
   const ids = ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, invalidIds: 2 });
   assert.match(ids, /2 รายการ/);
   assert.match(ids, /รหัส/);
+  assert.match(ids, /หยุด/); // stop
+  assert.match(ids, /ติดต่อผู้พัฒนา/); // contact the developer
+  assert.match(ids, /ห้ามแก้ไขหรือลบ/); // do not edit/delete in Google Calendar
+  assert.doesNotMatch(ids, /ต้องแก้รายการ/);
   // both: both reasons are shown
   const both = ui.switchBlockReason({ tokenOnly: false, targetConflicts: 1, invalidIds: 1 });
   assert.ok(both.includes(conflicts.replace("3 รายการ", "1 รายการ")) && both.includes(ids.replace("2 รายการ", "1 รายการ")));

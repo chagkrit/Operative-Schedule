@@ -718,6 +718,9 @@ test("source events whose ids Google's insert-with-id rejects: preview counts th
   assert.equal(r.status, 409, r.text);
   assert.equal(r.json.step, "preflight");
   assert.equal(r.json.error, sw.INVALID_EVENT_IDS_MESSAGE);
+  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /หยุด/);
+  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /ติดต่อผู้พัฒนา/);
+  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /ห้ามแก้ไขหรือลบ/);
   assert.equal(h.state.writes, 0);
   assert.equal(h.state.data.lock, undefined);
   assert.equal(Object.keys(seen.upserts).length, 0);
