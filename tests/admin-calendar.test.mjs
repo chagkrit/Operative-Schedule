@@ -559,3 +559,31 @@ test("clearLock clears an active lock; on a lock-only file it deletes the file i
   assert.equal(r3.status, 200);
   assert.equal(h3.state.writes, 0);
 });
+
+test("candidate = the master's own calendar: \"primary\" alias is token-only; same id via another account is refused", async () => {
+  // settings master hnbcmu@gmail.com reached as "primary" by the same account => token-only, no copy
+  const h = harness({ settings: { ...SETTINGS(), candidate: target("hnbcmu@gmail.com", "primary", NEW_TOKEN) } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.mode, "token");
+  assert.equal(h.state.data.master.calendarId, "hnbcmu@gmail.com");
+  assert.equal(openToken(h.state.data.master.sealedRefreshToken, KEY), NEW_TOKEN);
+  assert.equal(h.google.made.length, 0);
+
+  // env master (calendar id = AUTHORIZED_EMAIL) renewed via "primary" => token-only
+  const h2 = harness({ settings: { candidate: target("hnbcmu@gmail.com", "PRIMARY", NEW_TOKEN) }, env: { GOOGLE_REFRESH_TOKEN: MASTER_TOKEN } });
+  assert.deepEqual((await call(h2, "POST", { as: ADMIN, body: { action: "preview" } })).json, { tokenOnly: true });
+  const r2 = await call(h2, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r2.json.mode, "token");
+  assert.equal(h2.google.made.length, 0);
+
+  // same calendar id (any case) through a different account => 409, no Google client, nothing written
+  const h3 = harness({ settings: { ...SETTINGS(), candidate: target("new@gmail.com", "HNBCMU@gmail.com", NEW_TOKEN) }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  for (const action of ["preview", "switch"]) {
+    const r3 = await call(h3, "POST", { as: ADMIN, body: { action } });
+    assert.equal(r3.status, 409);
+    assert.equal(r3.json.error, api.SAME_CALENDAR_OTHER_ACCOUNT_MESSAGE);
+  }
+  assert.equal(h3.google.made.length, 0);
+  assert.equal(h3.state.writes, 0);
+});

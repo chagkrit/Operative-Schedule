@@ -36,6 +36,7 @@ import type { CalendarSettingsStore } from "./calendar-settings-store";
 import {
   isSameCalendar,
   planCopy,
+  sameCalendarId,
   runSwitch,
   withRefreshedMasterToken,
   type CalendarClient,
@@ -88,6 +89,7 @@ export const NO_SOURCE_TOKEN_MESSAGE = "ไม่มี GOOGLE_REFRESH_TOKEN ข
 export const TOKEN_OPEN_FAILED_MESSAGE = "เปิดอ่าน token ที่บันทึกไว้ไม่สำเร็จ กรุณาตรวจ CALENDAR_SETTINGS_KEY หรือเชื่อมต่อใหม่";
 export const PREVIEW_SOURCE_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินหลักปัจจุบันไม่สำเร็จ";
 export const PREVIEW_TARGET_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินใหม่ไม่สำเร็จ";
+export const SAME_CALENDAR_OTHER_ACCOUNT_MESSAGE = "ปฏิทินใหม่คือปฏิทินหลักเดิม (เชื่อมผ่านคนละบัญชี) จึงเปลี่ยนแบบคัดลอกไม่ได้";
 
 function storageFailure(err: unknown, fallback: string) {
   return sharedStorageFailure("admin-calendar", err, CONCURRENT_EDIT_MESSAGE, fallback);
@@ -214,6 +216,7 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
   if (!c.ok) return c.result;
   const { ctx } = c;
   if (isSameCalendar(ctx.candidate, ctx.current)) return { status: 200, body: { tokenOnly: true } };
+  if (sameCalendarId(ctx.candidate, ctx.current)) return { status: 409, body: { error: SAME_CALENDAR_OTHER_ACCOUNT_MESSAGE } };
   const grants = openGrants(ctx, deps.env);
   if (!grants.ok) return grants.result;
   const source = deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source });
@@ -274,6 +277,8 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
     });
     return { status: 200, body: { mode: "token", status: buildStatus(next, deps) } };
   }
+  // Same calendar through another account: a copy onto itself would rewrite every live event.
+  if (sameCalendarId(ctx.candidate, ctx.current)) return { status: 409, body: { error: SAME_CALENDAR_OTHER_ACCOUNT_MESSAGE } };
 
   const grants = openGrants(ctx, deps.env);
   if (!grants.ok) return grants.result;

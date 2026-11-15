@@ -386,10 +386,34 @@ test("no failure path leaves the lock set (sweep over every step)", async () => 
 });
 
 // ---- token-only refresh (same email + calendar) --------------------------------------
-test("isSameCalendar compares normalized email and exact calendar id", () => {
+test("isSameCalendar: normalized email + calendar id compared case-insensitively, \"primary\" = the owner's email", () => {
   assert.equal(sw.isSameCalendar({ email: "A@Example.com", calendarId: "c1" }, { email: "a@example.com", calendarId: "c1" }), true);
-  assert.equal(sw.isSameCalendar({ email: "a@example.com", calendarId: "C1" }, { email: "a@example.com", calendarId: "c1" }), false);
+  assert.equal(sw.isSameCalendar({ email: "a@example.com", calendarId: "C1" }, { email: "a@example.com", calendarId: "c1" }), true);
   assert.equal(sw.isSameCalendar({ email: "b@example.com", calendarId: "c1" }, { email: "a@example.com", calendarId: "c1" }), false);
+  assert.equal(sw.isSameCalendar({ email: "a@example.com", calendarId: "primary" }, { email: "a@example.com", calendarId: "A@example.com" }), true);
+  assert.equal(sw.isSameCalendar({ email: "a@example.com", calendarId: "primary" }, { email: "a@example.com", calendarId: "other" }), false);
+  // same calendar through another account: same id, not the same account
+  assert.equal(sw.sameCalendarId({ email: "b@example.com", calendarId: "shared@group" }, { email: "a@example.com", calendarId: "Shared@Group" }), true);
+  assert.equal(sw.isSameCalendar({ email: "b@example.com", calendarId: "shared@group" }, { email: "a@example.com", calendarId: "shared@group" }), false);
+  assert.equal(sw.sameCalendarId({ email: "b@example.com", calendarId: "primary" }, { email: "a@example.com", calendarId: "primary" }), false);
+});
+
+test("runSwitch refuses (step lock, before any lock or Google call) when the candidate is the source calendar itself", async () => {
+  const sameIdOtherAccount = { email: "other@example.com", calendarId: MASTER.calendarId.toUpperCase(), sealedRefreshToken: "v1.OTHER.x.y" };
+  const h = harness({ settings: { master: MASTER, candidate: sameIdOtherAccount } });
+  h.deps.candidate = sameIdOtherAccount;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "lock");
+  assert.equal(h.mem.st.writes.length, 0);
+  assert.equal(h.source.listCalls + h.target.listCalls + h.target.upserts.length, 0);
+  // env mode: candidate "primary" of the env account resolves to the env calendar
+  const env = { email: "env@example.com", calendarId: "env@example.com", sealedRefreshToken: "v1.ENV.x.y" };
+  const primary = { email: "env@example.com", calendarId: "primary", sealedRefreshToken: "v1.P.x.y" };
+  const h2 = harness({ settings: { candidate: primary }, envMaster: env, master: undefined });
+  h2.deps.candidate = primary;
+  assert.equal((await sw.runSwitch(h2.deps)).step, "lock");
+  assert.equal(h2.mem.st.writes.length + h2.source.listCalls, 0);
 });
 
 test("withRefreshedMasterToken: settings mode replaces only the sealed token, keeps previousMaster, drops candidate", () => {

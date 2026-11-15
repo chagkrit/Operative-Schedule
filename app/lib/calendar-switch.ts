@@ -117,8 +117,23 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
 }
 
 // ---- token-only refresh ------------------------------------------------------------
-export function isSameCalendar(a: { email: string; calendarId: string }, b: { email: string; calendarId: string }) {
-  return normalizeEmail(a.email) === normalizeEmail(b.email) && a.calendarId === b.calendarId;
+type CalendarRef = { email: string; calendarId: string };
+
+// Google accepts the alias "primary" for an account's own calendar, and calendar ids are email-like, so
+// "primary" resolves to the owner's email and ids compare case-insensitively.
+export function resolveCalendarId(ref: CalendarRef): string {
+  const id = ref.calendarId.trim().toLowerCase();
+  return id === "primary" ? normalizeEmail(ref.email) : id;
+}
+
+// Same underlying calendar, whichever account reaches it.
+export function sameCalendarId(a: CalendarRef, b: CalendarRef) {
+  return resolveCalendarId(a) === resolveCalendarId(b);
+}
+
+// Same account AND same calendar: the token-only renewal case.
+export function isSameCalendar(a: CalendarRef, b: CalendarRef) {
+  return normalizeEmail(a.email) === normalizeEmail(b.email) && sameCalendarId(a, b);
 }
 
 // Renewal for the same account + calendar: no copy. Settings mode keeps master's place and previousMaster
@@ -191,6 +206,12 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   const sleep = deps.sleep ?? defaultSleep;
+  // Defense in depth: copying a calendar onto itself would rewrite every live event (PUT replaces the
+  // whole event). Refuse before taking the lock; the source is never modified.
+  const sourceRef = deps.master ?? deps.envMaster;
+  if (sourceRef && sameCalendarId(deps.candidate, sourceRef)) {
+    return { ok: false, step: "lock", error: SWITCH_STEP_MESSAGES.lock };
+  }
   let lock: { since: number; by: string } | null = null;
   const ours = (s: CalendarSettings | "missing"): s is CalendarSettings =>
     s !== "missing" && !!lock && !!s.lock && s.lock.since === lock.since && s.lock.by === lock.by;
