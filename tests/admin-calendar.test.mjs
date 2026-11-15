@@ -1025,3 +1025,35 @@ test("round 4: the SOURCE calendar's zone blocks too: not Bangkok, not reported 
   assert.equal(p.json.planBlocked, null);
   assert.equal((await call(ok, "POST", { as: ADMIN, body: { action: "switch" } })).status, 200);
 });
+
+// ---- copy-failure diagnostics in the 502 body ----
+test("a copy failure returns a safe diag in the 502 body and logs one diag line (no ids, text or tokens)", async () => {
+  const secretEvent = { ...EV.booking, id: "sx0001aa", summary: "SYNTH-SECRET-SUMMARY" };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [secretEvent, EV.extra] } });
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId !== "hnbcmu@gmail.com") {
+      c.upsertEvent = async () => { throw Object.assign(new Error(`calendar insert failed (HTTP 400) ${NEW_TOKEN}`), { name: "GoogleCalendarError", status: 400, reason: "invalid" }); };
+    }
+    return c;
+  };
+  let r;
+  const out = await spyConsole(async () => {
+    r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  });
+  assert.equal(r.status, 502, r.text);
+  assert.equal(r.json.step, "copy");
+  assert.equal(r.json.switched, false);
+  assert.equal(r.json.diag.kind, "upsert");
+  assert.equal(r.json.diag.httpStatus, 400);
+  assert.equal(r.json.diag.reason, "invalid");
+  assert.equal(r.json.diag.failed >= 1, true);
+  assert.match(r.json.diag.firstFailed.idShape, /^[A-Za-z0-9?\-_.:@/+=…]*$/);
+  for (const leak of ["sx0001aa", "ea0001aa", "SYNTH-SECRET-SUMMARY", "SYNTH-HN-9", NEW_TOKEN, MASTER_TOKEN, "hnbcmu", "cal-new"]) {
+    assert.ok(!r.text.includes(leak), `body leaks ${leak}`);
+  }
+  const diagLines = out.split("\n").filter((l) => l.includes("copy failure diag"));
+  assert.equal(diagLines.length, 1);
+  for (const leak of ["sx0001aa", "SYNTH-SECRET-SUMMARY", NEW_TOKEN, MASTER_TOKEN]) assert.ok(!out.includes(leak), `log leaks ${leak}`);
+});

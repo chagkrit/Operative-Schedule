@@ -405,6 +405,11 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
       return { status: 500, body: { error: SWITCH_OUTCOME_UNKNOWN_MESSAGE, step: result.step } };
     }
     const status = result.step === "lock" || result.step === "preflight" ? 409 : result.step === "flip" ? 500 : 502;
+    if (result.diag) {
+      // Safe by construction (calendar-switch.ts CopyFailureDiag): kinds, counts, masked id shapes only.
+      console.error("[admin-calendar] switch copy failure diag:", JSON.stringify(result.diag));
+      return { status, body: { error: result.error, step: result.step, switched: false, diag: result.diag } };
+    }
     return { status, body: { error: result.error, step: result.step, switched: false } };
   }
   let status: CalendarStatus | undefined;

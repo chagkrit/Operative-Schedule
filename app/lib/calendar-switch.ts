@@ -830,7 +830,30 @@ export type SwitchResult =
       exceptions: { modify: number; cancel: number; applied: number; unchanged: number };
       lockCleared: boolean;
     }
-  | { ok: false; step: SwitchStep; error: string };
+  | { ok: false; step: SwitchStep; error: string; diag?: CopyFailureDiag };
+
+// Safe diagnostics of a failed copy/read/lock step: kinds, a class name, Google's HTTP status and its
+// one-word error reason, counts, and the first failed item's class plus its MASKED id shape (maskIdShape).
+// Never event text, raw ids, emails or tokens.
+export type CopyFailureDiag = {
+  kind: "upsert" | "exception" | "budget" | "lock" | "read";
+  errorClass: string;
+  httpStatus?: number;
+  reason?: string;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  firstFailed?: { eventClass: "legacy" | "tagged" | "recurring master" | "exception"; idShape: string };
+};
+const SAFE_WORD = /^[a-zA-Z]{1,40}$/;
+function errorFacts(err: unknown): Pick<CopyFailureDiag, "errorClass" | "httpStatus" | "reason"> {
+  const name = err instanceof Error ? err.name : "";
+  const e = (err ?? {}) as { status?: unknown; reason?: unknown };
+  const out: Pick<CopyFailureDiag, "errorClass" | "httpStatus" | "reason"> = { errorClass: SAFE_WORD.test(name) ? name : "Error" };
+  if (typeof e.status === "number" && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599) out.httpStatus = e.status;
+  if (typeof e.reason === "string" && SAFE_WORD.test(e.reason)) out.reason = e.reason;
+  return out;
+}
 
 class StepError extends Error {
   readonly step: SwitchStep;
@@ -1030,7 +1053,10 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   // Bounded concurrency (COPY_CONCURRENCY). The copy budget is checked before each item. On the first
   // failure no new item starts; the call returns only after every in-flight write has settled, so nothing is
   // still writing during the next step, read or verify.
-  async function runPool<T>(items: T[], write: (item: T) => Promise<void>) {
+  // Diagnostics of this press (counts; the first write that failed, described safely).
+  const counts = { attempted: 0, succeeded: 0, failed: 0 };
+  let firstFailed: { kind: "upsert" | "exception"; err: unknown; item: NonNullable<CopyFailureDiag["firstFailed"]> } | null = null;
+  async function runPool<T>(items: T[], write: (item: T) => Promise<void>, describe: (item: T) => { kind: "upsert" | "exception"; item: NonNullable<CopyFailureDiag["firstFailed"]> }) {
     let next = 0;
     let failure: unknown = null;
     const worker = async () => {
@@ -1043,8 +1069,17 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
         try {
           await maybeRenew();
           if (failure !== null) return;
-          await write(item);
         } catch (err) {
+          if (failure === null) failure = err;
+          return;
+        }
+        counts.attempted += 1;
+        try {
+          await write(item);
+          counts.succeeded += 1;
+        } catch (err) {
+          counts.failed += 1;
+          if (!firstFailed) firstFailed = { ...describe(item), err };
           if (failure === null) failure = err;
         }
       }
@@ -1054,11 +1089,21 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   }
 
   function upsertAll(events: GoogleEventLike[], tally: { created: number; updated: number }) {
-    return runPool(events, async (event) => {
-      const result = await deps.target.upsertEvent(event);
-      if (result === "updated") tally.updated += 1;
-      else tally.created += 1;
-    });
+    return runPool(
+      events,
+      async (event) => {
+        const result = await deps.target.upsertEvent(event);
+        if (result === "updated") tally.updated += 1;
+        else tally.created += 1;
+      },
+      (event) => ({
+        kind: "upsert",
+        item: {
+          eventClass: isMasterEvent(event) ? "recurring master" : event.extendedProperties?.private?.or_queue ? "tagged" : "legacy",
+          idShape: maskIdShape(String(event.id ?? "")),
+        },
+      }),
+    );
   }
 
   // Cancels sent in this press that Google answered (deleted, or 404/410 = gone).
@@ -1081,7 +1126,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
         throw err;
       }
       tally.applied += 1;
-    });
+    }, (item) => ({ kind: "exception", item: { eventClass: "exception", idShape: maskIdShape(item.id) } }));
   }
 
   // Nothing in the target the plan does not account for, per-type counts match, every copied event holds
@@ -1280,11 +1325,20 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     }
     // Any lock write may have landed despite an error, so always try to release (only ours is cleared).
     if (mine.size) await releaseLock();
-    return {
+    const out: SwitchResult = {
       ok: false,
       step: stepErr.step,
       error: stepErr.unknownOutcome ? SWITCH_OUTCOME_UNKNOWN_MESSAGE : stepErr.userMessage ?? SWITCH_STEP_MESSAGES[stepErr.step],
     };
+    if (stepErr.step === "copy" || stepErr.step === "read" || stepErr.step === "lock") {
+      const failedWrite = firstFailed as { kind: "upsert" | "exception"; err: unknown; item: NonNullable<CopyFailureDiag["firstFailed"]> } | null;
+      const kind: CopyFailureDiag["kind"] =
+        stepErr.userMessage === COPY_BUDGET_MESSAGE ? "budget" : stepErr.step === "lock" ? "lock" : stepErr.step === "read" ? "read" : failedWrite?.kind ?? "upsert";
+      const source = kind === "upsert" || kind === "exception" ? failedWrite?.err ?? cause : cause;
+      out.diag = { kind, ...errorFacts(source), ...counts };
+      if (failedWrite && (kind === "upsert" || kind === "exception")) out.diag.firstFailed = failedWrite.item;
+    }
+    return out;
   }
 }
 
@@ -1314,6 +1368,8 @@ class GoogleCalendarError extends Error {
   readonly deadlineExceeded: boolean;
   // updateInstance only: Google does not know that occurrence (404/410)
   readonly instanceMissing: boolean;
+  // Google's one-word error reason (e.g. "invalid", "forbidden") for diagnostics; never its message text
+  reason: string | undefined;
   constructor(message: string, status?: number, deadlineExceeded = false, instanceMissing = false) {
     super(status ? `${message} (HTTP ${status})` : message);
     this.name = "GoogleCalendarError";
@@ -1321,6 +1377,15 @@ class GoogleCalendarError extends Error {
     this.deadlineExceeded = deadlineExceeded;
     this.instanceMissing = instanceMissing;
   }
+}
+
+// Reads only Google's error `reason` (errors[0].reason, else error.status) and keeps it only when it is one
+// plain word; the message text is never read into anything.
+async function withGoogleReason(error: GoogleCalendarError, response: Response): Promise<GoogleCalendarError> {
+  const payload = (await response.json().catch(() => null)) as { error?: { errors?: { reason?: unknown }[]; status?: unknown } } | null;
+  const reason = payload?.error?.errors?.[0]?.reason ?? payload?.error?.status;
+  if (typeof reason === "string" && SAFE_WORD.test(reason)) error.reason = reason;
+  return error;
 }
 
 export function createGoogleCalendarClient(
@@ -1431,10 +1496,10 @@ export function createGoogleCalendarClient(
       const startedAt = now();
       const inserted = await request(`${base}?sendUpdates=none`, { method: "POST", body }, startedAt);
       if (inserted.ok) return "created";
-      if (inserted.status !== 409) throw new GoogleCalendarError("calendar insert failed", inserted.status);
+      if (inserted.status !== 409) throw await withGoogleReason(new GoogleCalendarError("calendar insert failed", inserted.status), inserted);
       const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body }, startedAt);
       if (updated.ok) return "updated";
-      throw new GoogleCalendarError("calendar update failed", updated.status);
+      throw await withGoogleReason(new GoogleCalendarError("calendar update failed", updated.status), updated);
     },
 
     async calendarTimeZone(opts) {
@@ -1452,7 +1517,7 @@ export function createGoogleCalendarClient(
       const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "PUT", body: JSON.stringify(body) }, now());
       if (response.ok) return;
       if (response.status === 404 || response.status === 410) throw new GoogleCalendarError("calendar instance not found", response.status, false, true);
-      throw new GoogleCalendarError("calendar instance update failed", response.status);
+      throw await withGoogleReason(new GoogleCalendarError("calendar instance update failed", response.status), response);
     },
 
     // events.delete on the occurrence's instance id cancels it (observed: 204, then 410 on a repeat; 404 for
@@ -1461,7 +1526,7 @@ export function createGoogleCalendarClient(
       const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "DELETE" }, now());
       if (response.ok) return "deleted";
       if (response.status === 404 || response.status === 410) return "gone";
-      throw new GoogleCalendarError("calendar instance delete failed", response.status);
+      throw await withGoogleReason(new GoogleCalendarError("calendar instance delete failed", response.status), response);
     },
   };
 }

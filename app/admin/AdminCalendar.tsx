@@ -17,7 +17,7 @@ import {
   type DiagnosticsView,
 } from "./calendar-ui";
 
-type Notice = { type: "success" | "error"; text: string; hint?: string } | null;
+type Notice = { type: "success" | "error"; text: string; hint?: string; dev?: string } | null;
 type Preview = {
   tokenOnly: boolean;
   counts: Record<string, number>;
@@ -372,6 +372,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
         {notice?.text || ""}
         {notice?.hint ? <><br />{notice.hint}</> : null}
       </p>
+      {notice?.dev ? <p className="admin-calendar-dev"><small>{notice.dev}</small></p> : null}
 
       {dialog && (
         <div className="queue-conflict-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isBusy && closeDialog()}>
