@@ -39,7 +39,8 @@ export type GoogleEventLike = {
 };
 
 export type CalendarClient = {
-  listEvents(): Promise<GoogleEventLike[]>;
+  // deadline: absolute ms (same clock as the run); the client stops paginating and times out pages there.
+  listEvents(opts?: { deadline?: number }): Promise<GoogleEventLike[]>;
   upsertEvent(event: GoogleEventLike): Promise<"created" | "updated">;
 };
 
@@ -189,9 +190,11 @@ export const SWITCH_OUTCOME_UNKNOWN_MESSAGE = "ไม่ทราบผลกา
 export const LOCK_HOLD_AFTER_FLIP_MS = 35_000;
 // The lock is renewed during a long copy so its 20 min TTL never lapses mid-copy.
 export const LOCK_RENEW_MS = 5 * 60_000;
-// A write that passed the lock check just before the lock was set is abandoned by the app within
+// A write that passed the lock check just before the lock was set is aborted by the app within
 // CALENDAR_WRITE_DEADLINE_MS (30 s, calendar-target.ts); the second source read waits this long after the
-// lock so such a write has landed (or never will) before the last copy pass.
+// confirmed lock so such a write has landed (or never will) before the last copy pass.
+// Must stay larger than CALENDAR_WRITE_DEADLINE_MS (30 s) plus the time Google may take to resolve a write
+// already sent at the abort, which is also the window createBookingEvent's lookup GET relies on.
 export const SETTLE_MS = 45_000;
 export const COPY_CONCURRENCY = 5;
 // A settings put can be aborted (5 s) and still commit a moment later. After a storage error on a lock
@@ -200,6 +203,9 @@ export const SETTINGS_SETTLE_MS = 8_000;
 // Copy-phase budget inside one request (route maxDuration = 300 s): checked before each upsert, before
 // the settle wait and before the flip; the remaining hold + release fit in what is left.
 export const COPY_PHASE_BUDGET_MS = 150_000;
+// Hard deadline from the run start for everything up to the flip (reads, verify, delta). Worst case after
+// the flip ≈ flip 23 s + hold 35 s + release 28 s ≈ 86 s, so a run stays under maxDuration 300 s.
+export const RUN_HARD_DEADLINE_MS = 170_000;
 export const COPY_BUDGET_MESSAGE = "คัดลอกยังไม่เสร็จในรอบเวลานี้ ยังไม่ได้เปลี่ยนปฏิทิน กดเปลี่ยนอีกครั้งเพื่อคัดลอกส่วนที่เหลือต่อ";
 
 export type SwitchDeps = {
@@ -217,6 +223,7 @@ export type SwitchDeps = {
   sleep?: (ms: number) => Promise<void>;
   // Tests only; production uses COPY_PHASE_BUDGET_MS.
   copyBudgetMs?: number;
+  hardDeadlineMs?: number;
 };
 
 export type SwitchResult =
@@ -316,6 +323,24 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   const checkBudget = () => {
     if (overBudget()) throw budgetError();
   };
+  const hardDeadline = runStart + (deps.hardDeadlineMs ?? RUN_HARD_DEADLINE_MS);
+  const pastHard = () => deps.now() > hardDeadline;
+  const checkHard = () => {
+    if (pastHard()) throw budgetError();
+  };
+  // Every list call carries the hard deadline; a deadline breach (by the client or by the clock after the
+  // call) aborts as a resumable "copy" failure, any other error keeps its own step.
+  async function listBounded(step: SwitchStep, client: CalendarClient): Promise<GoogleEventLike[]> {
+    let events: GoogleEventLike[];
+    try {
+      events = await client.listEvents({ deadline: hardDeadline });
+    } catch (err) {
+      if ((err as { deadlineExceeded?: unknown } | null)?.deadlineExceeded === true || pastHard()) throw budgetError();
+      throw new StepError(step, err);
+    }
+    checkHard();
+    return events;
+  }
   const ours = (s: CalendarSettings | "missing"): s is CalendarSettings =>
     s !== "missing" && !!s.lock && s.lock.by === deps.by && mine.has(s.lock.since);
 
@@ -468,10 +493,10 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     });
 
     // 2. read the source and plan
-    const plan1 = planCopy(await stepRun("read", () => deps.source.listEvents()));
+    const plan1 = planCopy(await listBounded("read", deps.source));
 
     // 3. refuse a target that already holds app events not in the source (they would show up in the app)
-    const before = await stepRun("verify", () => deps.target.listEvents());
+    const before = await listBounded("verify", deps.target);
     const planIds1 = new Set(plan1.copy.map((e) => e.id as string));
     if (planCopy(before).copy.some((e) => !planIds1.has(e.id as string))) throw new StepError("verify");
 
@@ -490,18 +515,20 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     await maybeRenew();
 
     // 6. re-read the source; copy what appeared or changed since the first read
-    const plan2 = planCopy(await stepRun("read", () => deps.source.listEvents()));
+    const plan2 = planCopy(await listBounded("read", deps.source));
     const firstBodies = new Map(plan1.copy.map((e) => [e.id as string, JSON.stringify(e)]));
     const delta = plan2.copy.filter((e) => firstBodies.get(e.id as string) !== JSON.stringify(e));
     await stepRun("copy", () => upsertAll(delta, tally));
+    checkHard();
 
     // 7. verify the target against the latest plan, then confirm the source has not moved since
-    const after = await stepRun("verify", () => deps.target.listEvents());
+    const after = await listBounded("verify", deps.target);
     if (!verifyTarget(after, plan2)) throw new StepError("verify");
-    const plan3 = planCopy(await stepRun("read", () => deps.source.listEvents()));
+    const plan3 = planCopy(await listBounded("read", deps.source));
     if (!samePlans(plan2, plan3)) throw new StepError("verify");
     await maybeRenew();
-    checkBudget();
+    // The flip is allowed only within the hard run deadline (the copy budget governed the copy itself).
+    checkHard();
 
     // 8. flip the pointer, keeping the lock (fresh since) — only if the lock is still ours and active.
     //    A flip that landed but reported an error counts as flipped; an unreadable outcome is "unknown".
@@ -589,10 +616,12 @@ export const MAX_LIST_PAGES = 200; // 200 x 2,500 events
 // Thrown messages are fixed text plus an HTTP status: never a token, never Google's own error text.
 class GoogleCalendarError extends Error {
   readonly status: number | undefined;
-  constructor(message: string, status?: number) {
+  readonly deadlineExceeded: boolean;
+  constructor(message: string, status?: number, deadlineExceeded = false) {
     super(status ? `${message} (HTTP ${status})` : message);
     this.name = "GoogleCalendarError";
     this.status = status;
+    this.deadlineExceeded = deadlineExceeded;
   }
 }
 
@@ -636,9 +665,11 @@ export function createGoogleCalendarClient(
   // One Calendar request with bounded retries on 429/5xx/network errors, inside a time budget that starts
   // at `startedAt` (shared by an upsert's insert and update). Returns the response (ok or a non-retryable
   // status) for the caller to interpret.
-  async function request(url: string, init: RequestInit, startedAt: number): Promise<Response> {
+  async function request(url: string, init: RequestInit, startedAt: number, deadline?: number): Promise<Response> {
     for (let attempt = 1; ; attempt += 1) {
-      const remaining = UPSERT_TIME_BUDGET_MS - (now() - startedAt);
+      const untilDeadline = deadline === undefined ? Infinity : deadline - now();
+      if (untilDeadline <= 0) throw new GoogleCalendarError("calendar request passed the run deadline", undefined, true);
+      const remaining = Math.min(UPSERT_TIME_BUDGET_MS - (now() - startedAt), untilDeadline);
       if (remaining <= 0) throw new GoogleCalendarError("calendar request took too long");
       let response: Response | null = null;
       try {
@@ -657,7 +688,7 @@ export function createGoogleCalendarClient(
       }
       if (response && !RETRY_STATUSES.has(response.status)) return response;
       const wait = 500 * 2 ** (attempt - 1);
-      const outOfTime = now() - startedAt + wait >= UPSERT_TIME_BUDGET_MS;
+      const outOfTime = now() - startedAt + wait >= UPSERT_TIME_BUDGET_MS || (deadline !== undefined && now() + wait >= deadline);
       if (attempt >= maxAttempts || outOfTime) {
         if (response) return response;
         throw new GoogleCalendarError("calendar request failed");
@@ -667,15 +698,19 @@ export function createGoogleCalendarClient(
   }
 
   return {
-    async listEvents() {
+    async listEvents(opts) {
+      const deadline = opts?.deadline;
       const events: GoogleEventLike[] = [];
       const seenTokens = new Set<string>();
       let pageToken = "";
       for (let page = 0; ; page += 1) {
         if (page >= maxPages) throw new GoogleCalendarError("calendar list has too many pages");
+        if (deadline !== undefined && now() >= deadline) {
+          throw new GoogleCalendarError("calendar list passed the run deadline", undefined, true);
+        }
         const params = new URLSearchParams({ singleEvents: "false", showDeleted: "false", maxResults: "2500" });
         if (pageToken) params.set("pageToken", pageToken);
-        const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now());
+        const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now(), deadline);
         if (!response.ok) throw new GoogleCalendarError("calendar list failed", response.status);
         const payload = (await response.json().catch(() => null)) as { items?: unknown; nextPageToken?: unknown } | null;
         if (!payload || (payload.items !== undefined && !Array.isArray(payload.items))) {

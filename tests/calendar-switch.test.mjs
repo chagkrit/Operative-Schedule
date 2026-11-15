@@ -166,7 +166,7 @@ function memoryStore(initial, log) {
 const MASTER = t("old", "v1.OLDSEALED.x.y");
 const CANDIDATE = t("new", "v1.NEWSEALED.x.y");
 
-function harness({ settings = { master: MASTER, candidate: CANDIDATE }, sourceEvents = ALL(), targetEvents = [], envMaster, master = settings.master, advancing = false, copyBudgetMs } = {}) {
+function harness({ settings = { master: MASTER, candidate: CANDIDATE }, sourceEvents = ALL(), targetEvents = [], envMaster, master = settings.master, advancing = false, copyBudgetMs, hardDeadlineMs = copyBudgetMs === undefined ? undefined : copyBudgetMs + 20_000 } = {}) {
   const log = [];
   const clock = { t: 5_000_000 };
   const sleeps = [];
@@ -195,6 +195,8 @@ function harness({ settings = { master: MASTER, candidate: CANDIDATE }, sourceEv
       }
     },
     copyBudgetMs,
+    // tests that stretch the copy budget stretch the hard deadline with it
+    hardDeadlineMs,
   };
   return { log, clock, sleeps, mem, source, target, deps };
 }
@@ -946,4 +948,76 @@ test("google client: one upsert's retries stop within ~30 s in total (429 backof
   assert.ok(t <= sw.UPSERT_TIME_BUDGET_MS + 4_000, `gave up after ${t} ms`);
   assert.ok(posts >= 2, "it did retry");
   assert.equal(sw.UPSERT_TIME_BUDGET_MS, 30_000);
+});
+
+// ---- fix round 3: hard run deadline for everything after the copy --------------------------------------
+test("RUN_HARD_DEADLINE_MS is 170 s and every listEvents call gets the absolute deadline (normal run unaffected)", async () => {
+  assert.equal(sw.RUN_HARD_DEADLINE_MS, 170_000);
+  const h = harness();
+  const runStart = h.clock.t;
+  const seen = [];
+  for (const c of [h.source, h.target]) {
+    const real = c.listEvents;
+    c.listEvents = async (opts) => { seen.push(opts?.deadline); return real(); };
+  }
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(seen.length, 5);
+  for (const d of seen) assert.equal(d, runStart + sw.RUN_HARD_DEADLINE_MS);
+});
+
+test("a slow source re-read after the copy that crosses the hard deadline ⇒ step copy, no flip, lock released", async () => {
+  const h = harness({ advancing: true });
+  const real = h.source.listEvents;
+  h.source.listEvents = async () => { const out = await real(); if (h.source.listCalls === 2) h.clock.t += 130_000; return out; };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(h.target.listCalls, 1, "no verify read after the breach");
+  assert.ok(!h.mem.st.writes.some((w) => w.master?.calendarId === CANDIDATE.calendarId), "no flip write");
+  assert.deepEqual(h.mem.st.data, { master: MASTER, candidate: CANDIDATE });
+});
+
+test("a slow final source read crossing the hard deadline ⇒ abort, not flip", async () => {
+  const h = harness({ advancing: true });
+  const real = h.source.listEvents;
+  h.source.listEvents = async () => { const out = await real(); if (h.source.listCalls === 3) h.clock.t += 130_000; return out; };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(h.source.listCalls, 3);
+  assert.deepEqual(h.mem.st.data, { master: MASTER, candidate: CANDIDATE });
+});
+
+test("a list call that fails with the client's deadline error maps to step copy with the resumable message", async () => {
+  const h = harness();
+  h.target.listEvents = async () => {
+    h.target.listCalls += 1;
+    if (h.target.listCalls === 2) throw Object.assign(new Error("calendar list passed the run deadline"), { deadlineExceeded: true });
+    return [...h.target.events.values()].map((e) => structuredClone(e));
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+});
+
+test("google client: pagination stops at the deadline; each page's timeout never exceeds the time left", async () => {
+  let t = 1_000;
+  let pages = 0;
+  const timeouts = [];
+  const realTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = (ms) => { timeouts.push(ms); return realTimeout.call(AbortSignal, ms); };
+  try {
+    const { fetchFn } = fakeGoogle(() => { pages += 1; t += 10_000; return Response.json({ items: [{ id: `p${pages}` }], nextPageToken: `tok${pages}` }); });
+    const client = sw.createGoogleCalendarClient({ calendarId: "c", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", now: () => t, sleep: async (ms) => { t += ms; } });
+    await assert.rejects(() => client.listEvents({ deadline: 1_000 + 35_000 }), (err) => err.deadlineExceeded === true);
+    assert.ok(pages <= 4, `fetched ${pages} pages`);
+    const listTimeouts = timeouts.slice(1); // the first is the token exchange
+    assert.ok(listTimeouts.at(-1) <= 6_000, `last page timeout ${listTimeouts.at(-1)} ms`);
+  } finally {
+    AbortSignal.timeout = realTimeout;
+  }
 });
