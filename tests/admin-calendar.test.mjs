@@ -154,6 +154,7 @@ test("GET as admin returns only emails, ids and flags (settings source)", async 
     candidate: { email: "new@gmail.com", calendarId: "cand-id" },
     previousMaster: { email: "old@gmail.com", calendarId: "old-id" },
     locked: true,
+    lockedSince: 1_000_000 - 1000,
     keyConfigured: true,
   });
   for (const t of [MASTER_TOKEN, NEW_TOKEN, "SYNTH-OLD-TOKEN-cccc", "v1.", "sealed"]) assert.ok(!r.text.includes(t), t);
@@ -235,6 +236,7 @@ test("GET with a master-less settings file reports the env master plus the candi
     master: { email: "hnbcmu@gmail.com", calendarId: "hnbcmu@gmail.com", source: "env" },
     candidate: { email: "new@gmail.com", calendarId: "cand-id" },
     locked: true,
+    lockedSince: 1_000_000 - 1000,
     keyConfigured: true,
   });
   assert.ok(!r.text.includes(NEW_TOKEN));
@@ -629,4 +631,13 @@ test("switch whose flip landed but was reported as failed never says 'not switch
 test("admin calendar route sets maxDuration = 300", async () => {
   const src = await readFile(new URL("../app/api/admin/calendar/route.ts", import.meta.url), "utf8");
   assert.match(src, /export const maxDuration = 300;/);
+});
+
+test("GET exposes lockedSince (a number) only while the lock is active, never for an expired lock", async () => {
+  const active = await call(harness({ settings: { ...SETTINGS(), lock: { since: 1_000_000 - 5000, by: ADMIN } } }), "GET", { as: ADMIN });
+  assert.equal(active.json.locked, true);
+  assert.equal(active.json.lockedSince, 1_000_000 - 5000);
+  const expired = await call(harness({ settings: { ...SETTINGS(), lock: { since: 1_000_000 - 21 * 60_000, by: ADMIN } } }), "GET", { as: ADMIN });
+  assert.equal(expired.json.locked, false);
+  assert.ok(!("lockedSince" in expired.json));
 });

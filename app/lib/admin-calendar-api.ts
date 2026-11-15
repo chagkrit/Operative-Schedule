@@ -76,6 +76,8 @@ export type CalendarStatus = {
   candidate?: { email: string; calendarId: string };
   previousMaster?: { email: string; calendarId: string };
   locked: boolean;
+  // Epoch ms the active lock was taken (only while locked); the Admin screen warns before clearing a fresh one.
+  lockedSince?: number;
   keyConfigured: boolean;
 };
 
@@ -126,6 +128,7 @@ export function buildStatus(settings: CalendarSettings | "missing", deps: Pick<A
     locked: isLockActive(settings, deps.now()),
     keyConfigured,
   };
+  if (status.locked && settings.lock) status.lockedSince = settings.lock.since;
   if (settings.candidate) status.candidate = pub(settings.candidate);
   if (settings.previousMaster) status.previousMaster = pub(settings.previousMaster);
   return status;

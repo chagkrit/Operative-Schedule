@@ -4,6 +4,10 @@ import { redirect } from "next/navigation";
 import { sessionAccess } from "../lib/session";
 import { describeStoreError, userStore } from "../lib/user-store";
 import type { UserRecord } from "../lib/users";
+import { AUTHORIZED_EMAIL } from "../../auth";
+import { buildStatus, type CalendarStatus } from "../lib/admin-calendar-api";
+import { calendarSettingsStore } from "../lib/calendar-settings-store";
+import AdminCalendar from "./AdminCalendar";
 import AdminUsers from "./AdminUsers";
 
 export const metadata: Metadata = {
@@ -24,6 +28,22 @@ export default async function AdminPage() {
     console.error("[admin] user list unreadable:", describeStoreError(err));
   }
 
+  // Public fields only (emails, ids, flags): buildStatus never copies a sealed token. A failed read shows
+  // a reload prompt instead of guessing.
+  let calendar: CalendarStatus | null = null;
+  try {
+    calendar = buildStatus(await calendarSettingsStore.read(), {
+      now: Date.now,
+      env: {
+        AUTHORIZED_EMAIL,
+        GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID,
+        CALENDAR_SETTINGS_KEY: process.env.CALENDAR_SETTINGS_KEY,
+      },
+    });
+  } catch (err) {
+    console.error("[admin] calendar settings unreadable:", describeStoreError(err));
+  }
+
   return (
     <main className="admin-shell">
       <header className="admin-header">
@@ -42,6 +62,7 @@ export default async function AdminPage() {
           <p className="admin-load-error" role="alert">อ่านรายชื่อผู้ใช้ไม่สำเร็จ กรุณาโหลดหน้านี้ใหม่อีกครั้ง</p>
         </section>
       )}
+      <AdminCalendar initial={calendar} />
     </main>
   );
 }
