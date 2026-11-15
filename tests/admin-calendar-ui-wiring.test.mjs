@@ -221,6 +221,43 @@ test("definite errors never become success; candidate unchanged keeps preview, c
   assert.equal(changed.keepPreview, false);
 });
 
+// ---- fix round 3: unknown + candidate changed needs master/previousMaster evidence ----
+const OTHER = { email: "other@x.com", calendarId: "other-cal" };
+
+test("unknown outcome + unlocked + candidate changed + master unchanged is NOT success", () => {
+  const flipUnknown = out({ error: "ไม่ทราบผลการเปลี่ยนปฏิทินหลัก กรุณาเปิดหน้าสถานะ", step: "flip" }, 500);
+  for (const outcome of [out(null, 504, true), out({ error: ui.NETWORK_MESSAGE }, 0), flipUnknown]) {
+    assert.equal(outcome.kind, "unknown");
+    const r = ui.decideAfterSwitch(outcome, st({ candidate: OTHER }), FORMER);
+    assert.equal(r.notice.type, "error");
+    assert.equal(r.keepPreview, false);
+    assert.equal(r.notice.hint, undefined);
+    assert.match(r.notice.text, /สถานะล่าสุด/);
+  }
+});
+
+test("candidate changed but previousMaster equals former (ours landed, someone switched again) is landed", () => {
+  const r = ui.decideAfterSwitch(out(null, 504, true), st({ candidate: OTHER, previousMaster: { ...FORMER } }), FORMER);
+  assert.equal(r.notice.type, "success");
+  assert.equal(r.keepPreview, false);
+});
+
+test("switched-with-error + candidate changed is landed; master equal to former is landed", () => {
+  const swe = out({ error: "เปลี่ยนแล้วแต่มีข้อผิดพลาด", step: "flip", switched: true }, 500);
+  assert.equal(swe.kind, "switched-with-error");
+  const r = ui.decideAfterSwitch(swe, st({ candidate: OTHER }), FORMER);
+  assert.equal(r.notice.type, "success");
+  const m = ui.decideAfterSwitch(out(null, 504, true), st({ master: { ...FORMER, source: "settings" }, candidate: OTHER }), FORMER);
+  assert.equal(m.notice.type, "success");
+});
+
+test("locked + candidate gone or changed does not keep a stale preview", () => {
+  const net = out({ error: ui.NETWORK_MESSAGE }, 0);
+  assert.equal(ui.decideAfterSwitch(net, st({ locked: true, candidate: undefined }), FORMER).keepPreview, false);
+  assert.equal(ui.decideAfterSwitch(net, st({ locked: true, candidate: OTHER }), FORMER).keepPreview, false);
+  assert.equal(ui.decideAfterSwitch(net, st({ locked: true }), FORMER).keepPreview, true);
+});
+
 // ---- source wiring ----
 const COMPONENT = await read("app/admin/AdminCalendar.tsx");
 const PAGE = await read("app/admin/page.tsx");

@@ -105,12 +105,18 @@ const samePub = same;
 export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus | null, former: Pub): { notice: SwitchNotice; keepPreview: boolean } {
   if (!fresh) return { notice: { type: "error", text: STATUS_UNKNOWN_MESSAGE }, keepPreview: true };
   const candidateUnchanged = !!fresh.candidate && samePub(fresh.candidate, former);
-  const landed = !candidateUnchanged;
+  // A changed candidate alone is not proof: an unknown outcome also needs the master (or previous master) to be ours.
+  const landed =
+    !candidateUnchanged &&
+    (outcome.kind === "success" ||
+      outcome.kind === "switched-with-error" ||
+      samePub(fresh.master, former) ||
+      (!!fresh.previousMaster && samePub(fresh.previousMaster, former)));
   if (fresh.locked) {
     if (outcome.kind === "success" && landed) {
       return { notice: { type: "success", text: `${outcome.text} (ระบบยังล็อกอยู่ชั่วครู่หลังสลับ)` }, keepPreview: false };
     }
-    return { notice: { type: "error", text: LOCKED_NOW_MESSAGE }, keepPreview: true };
+    return { notice: { type: "error", text: LOCKED_NOW_MESSAGE }, keepPreview: candidateUnchanged };
   }
   if (outcome.kind !== "error" && landed) {
     const text = outcome.kind === "success"
@@ -120,7 +126,7 @@ export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus 
   }
   const text = outcome.kind === "unknown" ? `${outcome.text} (สถานะล่าสุด: ยังไม่ได้เปลี่ยนปฏิทิน)` : outcome.text;
   const hint = outcome.kind === "unknown" ? "กดสลับอีกครั้งเพื่อทำต่อ" : outcome.hint;
-  return { notice: { type: "error", text, hint }, keepPreview: candidateUnchanged };
+  return { notice: { type: "error", text, hint: candidateUnchanged ? hint : undefined }, keepPreview: candidateUnchanged };
 }
 
 // The switch button is usable only with a candidate, a preview of it, and no lock.
