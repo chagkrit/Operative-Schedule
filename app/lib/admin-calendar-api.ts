@@ -38,6 +38,7 @@ import type { CalendarSettingsStore } from "./calendar-settings-store";
 import {
   COPY_PHASE_BUDGET_MS,
   countRecurring,
+  expansionWindow,
   isSameCalendar,
   planCopy,
   PREFLIGHT_TARGET_FAILED_MESSAGE,
@@ -235,28 +236,21 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
   if (!grants.ok) return grants.result;
   const source = deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source });
   const target = deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target });
-  let plan: ReturnType<typeof planCopy>;
-  let recurring: number;
-  let sourceEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
-  try {
-    sourceEvents = await source.listEvents();
-    plan = planCopy(sourceEvents);
-    recurring = countRecurring(sourceEvents);
-  } catch (err) {
-    console.error("[admin-calendar] preview source read failed:", err instanceof Error ? err.name : typeof err);
-    return { status: 502, body: { error: PREVIEW_SOURCE_FAILED_MESSAGE } };
+  // The same three reads, with the same parameters, as the switch's preflight (preflightReads), so preview
+  // and switch cannot drift; bounded like the preflight.
+  const reads = await preflightReads(source, target, deps.now() + COPY_PHASE_BUDGET_MS);
+  if (!reads.ok) {
+    console.error(`[admin-calendar] preview ${reads.side} read failed:`, reads.errorName);
+    return { status: 502, body: { error: reads.side === "source" ? PREVIEW_SOURCE_FAILED_MESSAGE : PREVIEW_TARGET_FAILED_MESSAGE } };
   }
-  let targetEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
-  try {
-    targetEvents = await target.listEvents();
-  } catch (err) {
-    console.error("[admin-calendar] preview target read failed:", err instanceof Error ? err.name : typeof err);
-    return { status: 502, body: { error: PREVIEW_TARGET_FAILED_MESSAGE } };
-  }
+  const { sourceEvents, expanded, targetEvents, viewWindow } = reads;
+  const plan = planCopy(sourceEvents, expanded, viewWindow);
+  const recurring = countRecurring(sourceEvents);
   // Counts and month keys only: events carry patient identifiers and never leave the server.
-  // Same rule as the switch's preflight (switchPreflight), so preview and switch cannot drift.
-  // invalidIds = events copied under a new id (informational); planBlocked = fixed Thai refusal or null.
-  const { targetConflicts, invalidIds, exceptions, refusal } = switchPreflight(sourceEvents, targetEvents);
+  // Same rule as the switch's preflight (switchPreflight). invalidIds = events copied under a new id
+  // (informational); planBlocked = fixed Thai refusal or null. Deleted target entries are not "events".
+  const { targetConflicts, invalidIds, exceptions, uncoveredOccurrences, refusal } = switchPreflight(sourceEvents, targetEvents, expanded, viewWindow);
+  const targetEventCount = targetEvents.filter((e) => e?.status !== "cancelled").length;
   return {
     status: 200,
     body: {
@@ -264,16 +258,46 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
       counts: plan.counts,
       skipped: plan.skipped,
       byMonth: plan.byMonth,
-      targetEventCount: targetEvents.length,
-      targetHasEvents: targetEvents.length > 0,
+      targetEventCount,
+      targetHasEvents: targetEventCount > 0,
       targetConflicts,
       invalidIds,
       recurring,
       exceptions,
+      uncoveredOccurrences,
       planBlocked: refusal,
       diagnostics: plan.diagnostics,
     },
   };
+}
+
+type ListedEvents = Awaited<ReturnType<CalendarClient["listEvents"]>>;
+// Preview's and the preflight's reads (no lock, no writes), with the engine's parameters: the source's plain
+// list and its app view (singleEvents over the expansion window), and the target with deleted entries.
+async function preflightReads(
+  source: CalendarClient,
+  target: CalendarClient,
+  deadline: number,
+): Promise<
+  | { ok: true; sourceEvents: ListedEvents; expanded: ListedEvents; targetEvents: ListedEvents; viewWindow: ReturnType<typeof expansionWindow> }
+  | { ok: false; side: "source" | "target"; errorName: string }
+> {
+  const viewWindow = expansionWindow();
+  const name = (err: unknown) => (err instanceof Error ? err.name : typeof err);
+  let sourceEvents: ListedEvents;
+  let expanded: ListedEvents;
+  try {
+    sourceEvents = await source.listEvents({ deadline });
+    expanded = await source.listEvents({ deadline, expand: viewWindow });
+  } catch (err) {
+    return { ok: false, side: "source", errorName: name(err) };
+  }
+  try {
+    const targetEvents = await target.listEvents({ deadline, showDeleted: true });
+    return { ok: true, sourceEvents, expanded, targetEvents, viewWindow };
+  } catch (err) {
+    return { ok: false, side: "target", errorName: name(err) };
+  }
 }
 
 async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarDeps, actor: string): Promise<ActionResult> {
@@ -316,21 +340,12 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
   const preflightDeadline = runStart + COPY_PHASE_BUDGET_MS;
   const refuse = (status: number, error: string, step: "preflight" | "read" = "preflight"): ActionResult =>
     ({ status, body: { error, step, switched: false } });
-  let sourceEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
-  try {
-    sourceEvents = await source.listEvents({ deadline: preflightDeadline });
-  } catch (err) {
-    console.error("[admin-calendar] switch preflight source read failed:", err instanceof Error ? err.name : typeof err);
-    return refuse(502, SWITCH_STEP_MESSAGES.read, "read");
+  const reads = await preflightReads(source, target, preflightDeadline);
+  if (!reads.ok) {
+    console.error(`[admin-calendar] switch preflight ${reads.side} read failed:`, reads.errorName);
+    return reads.side === "source" ? refuse(502, SWITCH_STEP_MESSAGES.read, "read") : refuse(502, PREFLIGHT_TARGET_FAILED_MESSAGE);
   }
-  let targetEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
-  try {
-    targetEvents = await target.listEvents({ deadline: preflightDeadline });
-  } catch (err) {
-    console.error("[admin-calendar] switch preflight target read failed:", err instanceof Error ? err.name : typeof err);
-    return refuse(502, PREFLIGHT_TARGET_FAILED_MESSAGE);
-  }
-  const blockers = switchPreflight(sourceEvents, targetEvents);
+  const blockers = switchPreflight(reads.sourceEvents, reads.targetEvents, reads.expanded, reads.viewWindow);
   if (blockers.targetConflicts > 0) return refuse(409, TARGET_CONFLICTS_MESSAGE);
   if (blockers.refusal) return refuse(409, blockers.refusal);
 

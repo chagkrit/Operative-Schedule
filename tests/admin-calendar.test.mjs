@@ -9,6 +9,7 @@ const api = await import("../app/lib/admin-calendar-api.ts");
 const { createUserStore } = await import("../app/lib/user-store.ts");
 const { createCalendarSettingsStore } = await import("../app/lib/calendar-settings-store.ts");
 const { sealToken, openToken } = await import("../app/lib/token-seal.ts");
+const { expandEvents } = await import("./fake-expand.mjs");
 
 const SECRET = "test-secret-for-admin-calendar-0123456789";
 const COOKIE = "authjs.session-token";
@@ -52,7 +53,8 @@ function fakeCalendars(initial = {}) {
     if (!cals.has(calendarId)) cals.set(calendarId, new Map());
     const events = cals.get(calendarId);
     return {
-      async listEvents() {
+      async listEvents(opts) {
+        if (opts?.expand) return expandEvents([...events.values()], opts.expand);
         return [...events.values()].map((e) => structuredClone(e));
       },
       async upsertEvent(e) {
@@ -61,10 +63,10 @@ function fakeCalendars(initial = {}) {
         return result;
       },
       // recurring-instance writes: the master must already be in this calendar (else Google answers 404)
-      async patchInstance(id, body) {
+      async updateInstance(id, body) {
         const masterId = id.slice(0, id.indexOf("_"));
         if (!events.get(masterId)?.recurrence) throw Object.assign(new Error("SYNTH 404"), { status: 404, instanceMissing: true });
-        events.set(id, { ...(events.get(id) ?? {}), ...structuredClone(body), id, recurringEventId: masterId });
+        events.set(id, { ...structuredClone(body), id, recurringEventId: masterId });
       },
       async deleteInstance(id) {
         const masterId = id.slice(0, id.indexOf("_"));
@@ -418,6 +420,7 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       invalidIds: 0,
       recurring: 0,
       exceptions: { modify: 0, cancel: 0 },
+      uncoveredOccurrences: 0,
       planBlocked: null,
       diagnostics: {
         invalidIds: {
@@ -433,9 +436,12 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
           infiniteMasters: 0,
           byFreq: { DAILY: 0, WEEKLY: 0, MONTHLY: 0, YEARLY: 0, other: 0 },
           exceptionsCancelled: 0,
+          rruleExtras: 0,
         },
         skippedReasons: { cancelled: 0, recurringException: 0, notReadable: 1 },
         exceptions: { modify: 0, cancel: 0 },
+        uncoveredOccurrences: 0,
+        orphanedExceptions: 0,
       },
     });
     for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
@@ -821,10 +827,10 @@ test("preflight lists are bounded (copy budget) and reuse the run's two clients;
   const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
   assert.equal(r.status, 200, r.text);
   assert.equal(h.google.made.length, 2, "one source and one target client for preflight + run");
-  // first two lists = preflight (source, target) with the copy-budget deadline; then the run's hard deadline
-  assert.deepEqual(seen.lists.slice(0, 2).map((l) => l.calendarId), ["hnbcmu@gmail.com", "cal-new@group.calendar.google.com"]);
-  for (const l of seen.lists.slice(0, 2)) assert.equal(l.deadline, 1_000_000 + sw.COPY_PHASE_BUDGET_MS);
-  for (const l of seen.lists.slice(2)) assert.equal(l.deadline, 1_000_000 + sw.RUN_HARD_DEADLINE_MS);
+  // first three lists = preflight (source, source expanded, target) with the copy-budget deadline; then the run's hard deadline
+  assert.deepEqual(seen.lists.slice(0, 3).map((l) => l.calendarId), ["hnbcmu@gmail.com", "hnbcmu@gmail.com", "cal-new@group.calendar.google.com"]);
+  for (const l of seen.lists.slice(0, 3)) assert.equal(l.deadline, 1_000_000 + sw.COPY_PHASE_BUDGET_MS);
+  for (const l of seen.lists.slice(3)) assert.equal(l.deadline, 1_000_000 + sw.RUN_HARD_DEADLINE_MS);
 });
 
 test("production verifyGoogleAccount fails closed unless the ID token says email_verified === true", async () => {
@@ -849,4 +855,66 @@ test("preview diagnostics describe invalid ids and recurring events without leak
   assert.equal(r.json.diagnostics.invalidIds.reasons.uppercase, 1);
   assert.equal(r.json.diagnostics.recurring.infiniteMasters, 1);
   for (const leak of ["Bad-Id_ZZ9", "SYNTH-LEAK-SUMMARY"]) assert.ok(!r.text.includes(leak), leak);
+});
+
+// ---- step 2 fix round 1: app-view parity before the lock ----
+test("preview and preflight read the source expansion; uncovered occurrences are shown and refused BEFORE the lock", async () => {
+  const master = { id: "pm0001aa", summary: "Lunch", start: { date: "2026-12-03" }, end: { date: "2026-12-04" }, recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const exc = { id: "pm0001aa_20261210", status: "confirmed", recurringEventId: "pm0001aa", originalStartTime: { date: "2026-12-10" }, summary: "A ทดสอบ 1234567 SYNTH-op", start: { date: "2026-12-10" }, end: { date: "2026-12-11" } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), master, exc] } });
+  const seen = countUpserts(h);
+  // hide the master from the plain list only: its readable occurrence is then not covered
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId === "hnbcmu@gmail.com") {
+      const list = c.listEvents;
+      c.listEvents = async (opts) => (await list(opts)).filter((e) => opts?.expand || e.id !== "pm0001aa");
+    }
+    return c;
+  };
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.uncoveredOccurrences, 1);
+  assert.equal(p.json.planBlocked, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  for (const leak of ["pm0001aa", "SYNTH-op", "1234567"]) assert.ok(!p.text.includes(leak), leak);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409, r.text);
+  assert.equal(r.json.step, "preflight");
+  assert.equal(r.json.error, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  assert.equal(Object.keys(seen.upserts).length, 0);
+});
+
+test("handler reads use the engine's parameters: target with showDeleted, source expansion over the window", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const opts = [];
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    const list = c.listEvents;
+    c.listEvents = async (o) => { opts.push({ cal: t.calendarId, showDeleted: o?.showDeleted === true, expand: o?.expand }); return list(o); };
+    return c;
+  };
+  for (const action of ["preview", "switch"]) {
+    opts.length = 0;
+    const r = await call(h, "POST", { as: ADMIN, body: { action } });
+    assert.equal(r.status, 200, r.text);
+    const pre = opts.slice(0, 3);
+    assert.deepEqual(pre.map((o) => [o.cal, o.showDeleted, !!o.expand]), [
+      ["hnbcmu@gmail.com", false, false],
+      ["hnbcmu@gmail.com", false, true],
+      ["cal-new@group.calendar.google.com", true, false],
+    ], action);
+    assert.equal(pre[1].expand.timeMin, "2000-01-01T00:00:00.000Z");
+    if (action === "switch") break;
+  }
+});
+
+test("preview: deleted entries in the target do not count as 'target not empty'", async () => {
+  const deleted = { ...EV.personal, id: "dl0001aa", status: "cancelled" };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC(), "cal-new@group.calendar.google.com": [deleted] } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.targetEventCount, 0);
+  assert.equal(p.json.targetHasEvents, false);
 });

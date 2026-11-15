@@ -5,6 +5,7 @@ import test from "node:test";
 import "./ts-resolve.mjs";
 
 const sw = await import("../app/lib/calendar-switch.ts");
+const { expandEvents } = await import("./fake-expand.mjs");
 const { createCalendarSettingsStore } = await import("../app/lib/calendar-settings-store.ts");
 
 const ADMIN = "admin@example.com";
@@ -104,11 +105,23 @@ function fakeCalendar(name, log, events = []) {
   const c = {
     events: new Map(events.map((e) => [e.id, structuredClone(e)])),
     listCalls: 0,
+    expandCalls: 0,
     upserts: [],
     failOnUpsert: null,
     failList: null,
+    failExpand: null,
     onList: null,
-    async listEvents() {
+    onExpand: null,
+    // opts.expand = singleEvents=true over a window (counted separately so the numbering of the plain
+    // reads, which existing tests rely on, is unchanged)
+    async listEvents(opts) {
+      if (opts?.expand) {
+        c.expandCalls += 1;
+        log.push(`${name}.expand`);
+        if (c.onExpand) c.onExpand(c.expandCalls, c);
+        if (c.failExpand && c.failExpand(c.expandCalls)) throw new Error(`SYNTH google expand failed token=${name}-SECRET`);
+        return expandEvents([...c.events.values()], opts.expand);
+      }
       c.listCalls += 1;
       log.push(`${name}.list`);
       if (c.onList) c.onList(c.listCalls, c);
@@ -140,19 +153,16 @@ function fakeCalendar(name, log, events = []) {
       const known = !!master && Array.isArray(master.recurrence) && master.recurrence.length > 0 && !c.missingInstances.has(id);
       return { masterId, known, suffix: id.slice(id.indexOf("_") + 1) };
     },
-    async patchInstance(id, body) {
-      log.push(`${name}.patch`);
+    // PUT (events.update): the body REPLACES the occurrence (nothing inherited from the master)
+    async updateInstance(id, body) {
+      log.push(`${name}.put`);
       const n = c.instanceOps.length + 1;
-      c.instanceOps.push({ op: "patch", id });
-      if (c.failOnInstanceOp === n) throw new Error(`SYNTH google patch failed token=${name}-SECRET`);
+      c.instanceOps.push({ op: "put", id });
+      if (c.failOnInstanceOp === n) throw new Error(`SYNTH google put failed token=${name}-SECRET`);
       const { masterId, known, suffix } = c.instance(id);
       if (!known) throw Object.assign(new Error(`SYNTH 404 token=${name}-SECRET`), { status: 404, instanceMissing: true });
       const prev = c.events.get(id);
-      const merged = { ...(prev ?? {}), ...structuredClone(body) };
-      if (prev?.extendedProperties || body.extendedProperties) {
-        merged.extendedProperties = { private: { ...(prev?.extendedProperties?.private ?? {}), ...(body.extendedProperties?.private ?? {}) } };
-      }
-      c.events.set(id, { ...merged, id, recurringEventId: masterId, originalStartTime: prev?.originalStartTime ?? { synth: suffix } });
+      c.events.set(id, { ...structuredClone(body), id, recurringEventId: masterId, originalStartTime: body.originalStartTime ?? prev?.originalStartTime ?? { synth: suffix } });
     },
     async deleteInstance(id) {
       log.push(`${name}.delete`);
@@ -258,7 +268,8 @@ test("runSwitch success: target holds the same ids, master flipped, previousMast
   assert.deepEqual(h.mem.st.data, { master: CANDIDATE, previousMaster: MASTER });
   // the source is never written
   assert.equal(h.source.upserts.length, 0);
-  assert.ok(!h.log.some((l) => l.startsWith("source.") && l !== "source.list"));
+  // (fix round 1: the source is also read in the app's view — still read-only)
+  assert.ok(!h.log.some((l) => l.startsWith("source.") && l !== "source.list" && l !== "source.expand"));
 });
 
 test("lock is set before the first source read and cleared at the end; held >= 35 s after the flip", async () => {
@@ -340,8 +351,8 @@ test("verify: a count mismatch in the target ⇒ step verify, no flip, lock clea
   const h = harness();
   // the target "loses" the tag of one copied event when read back
   const realList = h.target.listEvents;
-  h.target.listEvents = async () => {
-    const events = await realList();
+  h.target.listEvents = async (opts) => {
+    const events = await realList(opts);
     return events.map((e) => (e.id === EXTRA.id ? { ...e, extendedProperties: { private: { or_queue: "booking", queue_type: "OR17" } } } : e));
   };
   const r = await sw.runSwitch(h.deps);
@@ -355,7 +366,7 @@ test("verify: a count mismatch in the target ⇒ step verify, no flip, lock clea
 test("verify: an id missing from the target ⇒ step verify, no flip", async () => {
   const h = harness();
   const realList = h.target.listEvents;
-  h.target.listEvents = async () => (await realList()).filter((e) => e.id !== LEGACY.id);
+  h.target.listEvents = async (opts) => (await realList(opts)).filter((e) => e.id !== LEGACY.id);
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.step, "verify");
   assert.deepEqual(h.mem.st.data, { master: MASTER, candidate: CANDIDATE });
@@ -443,7 +454,7 @@ test("lock clear failing after the flip still reports ok with lockCleared false"
 });
 
 test("a long copy renews the lock so it never expires mid-copy", async () => {
-  const many = Array.from({ length: 30 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}bb`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
+  const many = Array.from({ length: 30 }, (_, i) => ({ id: `ea${String(i).padStart(4, "0")}bb`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
   const h = harness({ sourceEvents: many, copyBudgetMs: 3 * 60 * 60_000 });
   const realUpsert = h.target.upsertEvent;
   h.target.upsertEvent = async (e) => {
@@ -633,7 +644,7 @@ test("lock write lands but reports an error (advancing clock): the run recognise
 });
 
 test("renew write lands but reports an error: the copy continues and the lock is still released", async () => {
-  const many = Array.from({ length: 12 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}cc`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
+  const many = Array.from({ length: 12 }, (_, i) => ({ id: `ea${String(i).padStart(4, "0")}cc`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
   const h = harness({ sourceEvents: many, advancing: true, copyBudgetMs: 3 * 60 * 60_000 });
   const realUpsert = h.target.upsertEvent;
   h.target.upsertEvent = async (e) => { h.clock.t += 60_000; return realUpsert(e); };
@@ -720,7 +731,7 @@ test("Calendar writes in the app are sent within a deadline (from the lock check
 });
 
 test("copy runs at most 5 upserts at once and verify starts only after all of them finished", async () => {
-  const many = Array.from({ length: 23 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}dd`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
+  const many = Array.from({ length: 23 }, (_, i) => ({ id: `ea${String(i).padStart(4, "0")}dd`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
   const h = harness({ sourceEvents: many });
   let inFlight = 0;
   let maxInFlight = 0;
@@ -733,20 +744,21 @@ test("copy runs at most 5 upserts at once and verify starts only after all of th
   };
   const realList = h.target.listEvents;
   const inFlightAtList = [];
-  h.target.listEvents = async () => { inFlightAtList.push(inFlight); return realList(); };
+  h.target.listEvents = async (opts) => { inFlightAtList.push(inFlight); return realList(opts); };
   const sourceList = h.source.listEvents;
   const inFlightAtSource = [];
-  h.source.listEvents = async () => { inFlightAtSource.push(inFlight); return sourceList(); };
+  h.source.listEvents = async (opts) => { inFlightAtSource.push(inFlight); return sourceList(opts); };
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(maxInFlight, 5);
-  assert.deepEqual(inFlightAtList, [0, 0]);
-  assert.deepEqual(inFlightAtSource, [0, 0, 0]);
+  // target: before, verify, expanded verify; source: 3 reads, each with its expanded read
+  assert.deepEqual(inFlightAtList, [0, 0, 0]);
+  assert.deepEqual(inFlightAtSource, [0, 0, 0, 0, 0, 0]);
   assert.equal(h.target.events.size, 23);
 });
 
 test("lock renewal is serialized while 5 workers copy (never two renewals at once)", async () => {
-  const many = Array.from({ length: 40 }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}ee`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
+  const many = Array.from({ length: 40 }, (_, i) => ({ id: `ea${String(i).padStart(4, "0")}ee`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
   const h = harness({ sourceEvents: many, copyBudgetMs: 3 * 60 * 60_000 });
   const realUpsert = h.target.upsertEvent;
   h.target.upsertEvent = async (e) => { h.clock.t += 60_000; await new Promise((r) => setTimeout(r, 1)); return realUpsert(e); };
@@ -766,9 +778,9 @@ test("verify compares each copied event's private props, start and end with the 
   const h = harness();
   const realList = h.target.listEvents;
   let n = 0;
-  h.target.listEvents = async () => {
+  h.target.listEvents = async (opts) => {
     n += 1;
-    const events = await realList();
+    const events = await realList(opts);
     if (n < 2) return events;
     return events.map((e) => (e.id === BOOKING.id ? { ...e, extendedProperties: { private: { ...e.extendedProperties.private, slot_no: "9" } } } : e));
   };
@@ -776,9 +788,9 @@ test("verify compares each copied event's private props, start and end with the 
   const h2 = harness();
   const real2 = h2.target.listEvents;
   let m = 0;
-  h2.target.listEvents = async () => {
+  h2.target.listEvents = async (opts) => {
     m += 1;
-    const events = await real2();
+    const events = await real2(opts);
     return m < 2 ? events : events.map((e) => (e.id === EXTRA.id ? { ...e, end: { date: "2026-12-09" } } : e));
   };
   assert.equal((await sw.runSwitch(h2.deps)).step, "verify");
@@ -788,7 +800,7 @@ test("verify compares each copied event's private props, start and end with the 
 test("verify accepts the same instant written in another time-zone offset and a different key order", async () => {
   const h = harness();
   const realList = h.target.listEvents;
-  h.target.listEvents = async () => (await realList()).map((e) => {
+  h.target.listEvents = async (opts) => (await realList(opts)).map((e) => {
     if (e.id !== BOOKING.id) return e;
     const priv = Object.fromEntries(Object.entries(e.extendedProperties.private).reverse());
     return { ...e, start: { timeZone: "Asia/Bangkok", dateTime: "2026-12-01T01:00:00Z" }, end: { timeZone: "Asia/Bangkok", dateTime: "2026-12-01T02:00:00Z" }, extendedProperties: { private: priv } };
@@ -843,7 +855,7 @@ test("calendar.ts readers use the orig-aware helpers; closure/leave edits clear 
 });
 
 // ---- fix round 2: late-committing settings writes, run budget, cheap re-runs -------------------------
-const extras = (n, tag) => Array.from({ length: n }, (_, i) => ({ id: `ex${String(i).padStart(4, "0")}${tag}`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
+const extras = (n, tag) => Array.from({ length: n }, (_, i) => ({ id: `ea${String(i).padStart(4, "0")}${tag}`, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } }));
 
 test("SETTINGS_SETTLE_MS is exported (8 s) and COPY_PHASE_BUDGET_MS is 150 s", () => {
   assert.equal(sw.SETTINGS_SETTLE_MS, 8_000);
@@ -974,7 +986,7 @@ test("copy budget is checked before the flip", async () => {
   const h = harness();
   const realList = h.target.listEvents;
   let n = 0;
-  h.target.listEvents = async () => { n += 1; if (n === 2) h.clock.t += 200_000; return realList(); }; // slow verify read
+  h.target.listEvents = async (opts) => { n += 1; if (n === 2) h.clock.t += 200_000; return realList(opts); }; // slow verify read
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.step, "copy");
   assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
@@ -1009,18 +1021,18 @@ test("RUN_HARD_DEADLINE_MS is 170 s and every listEvents call gets the absolute 
   const seen = [];
   for (const c of [h.source, h.target]) {
     const real = c.listEvents;
-    c.listEvents = async (opts) => { seen.push(opts?.deadline); return real(); };
+    c.listEvents = async (opts) => { seen.push(opts?.deadline); return real(opts); };
   }
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(seen.length, 5);
+  assert.equal(seen.length, 9); // 3 source reads + 3 expanded, target before + verify + expanded verify
   for (const d of seen) assert.equal(d, runStart + sw.RUN_HARD_DEADLINE_MS);
 });
 
 test("a slow source re-read after the copy that crosses the hard deadline ⇒ step copy, no flip, lock released", async () => {
   const h = harness({ advancing: true });
   const real = h.source.listEvents;
-  h.source.listEvents = async () => { const out = await real(); if (h.source.listCalls === 2) h.clock.t += 130_000; return out; };
+  h.source.listEvents = async (opts) => { const out = await real(opts); if (h.source.listCalls === 2) h.clock.t += 130_000; return out; };
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.ok, false);
   assert.equal(r.step, "copy");
@@ -1033,7 +1045,7 @@ test("a slow source re-read after the copy that crosses the hard deadline ⇒ st
 test("a slow final source read crossing the hard deadline ⇒ abort, not flip", async () => {
   const h = harness({ advancing: true });
   const real = h.source.listEvents;
-  h.source.listEvents = async () => { const out = await real(); if (h.source.listCalls === 3) h.clock.t += 130_000; return out; };
+  h.source.listEvents = async (opts) => { const out = await real(opts); if (h.source.listCalls === 3) h.clock.t += 130_000; return out; };
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.step, "copy");
   assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
@@ -1093,10 +1105,11 @@ test("planCopy counts planned events whose id Google's insert-with-id rejects (i
 test("switchPreflight reports target app events missing from the source, remapped ids, exceptions and plan refusals (shared by preview and switch)", () => {
   const ev = (id) => ({ id, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } });
   const none = { modify: 0, cancel: 0 };
-  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("ev3aaaaa")], [ev("ev1aaaaa"), ev("ev2aaaaa"), PERSONAL]), { targetConflicts: 1, invalidIds: 0, exceptions: none, refusal: null });
+  const zero = { uncoveredOccurrences: 0, orphanedExceptions: 0 };
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("ev3aaaaa")], [ev("ev1aaaaa"), ev("ev2aaaaa"), PERSONAL]), { targetConflicts: 1, invalidIds: 0, exceptions: none, refusal: null, ...zero });
   // step 2: an invalid id is remapped (informational count), not a refusal
-  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("EV-bad")], []), { targetConflicts: 0, invalidIds: 1, exceptions: none, refusal: null });
-  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa")], [PERSONAL]), { targetConflicts: 0, invalidIds: 0, exceptions: none, refusal: null });
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("EV-bad")], []), { targetConflicts: 0, invalidIds: 1, exceptions: none, refusal: null, ...zero });
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa")], [PERSONAL]), { targetConflicts: 0, invalidIds: 0, exceptions: none, refusal: null, ...zero });
 });
 
 test("switch back into the OLD calendar after a delete on the new master: refused with the specific message, master unchanged, lock released (engine second line)", async () => {
@@ -1403,9 +1416,12 @@ test("planCopy builds exception items for planned masters (modify / cancel) and 
   assert.equal(items.rm0001aa_20261210.kind, "modify");
   assert.equal(items.rm0001aa_20261217.kind, "cancel");
   assert.equal(items.rm0001aa_20261210.masterId, "rm0001aa");
-  // the modify body carries the exception's fields (+ orig_*), never id / recurringEventId / originalStartTime
+  // the modify body is the FULL exception for a PUT (+ orig_*): its original start and master (target id),
+  // never its own id or server fields (fix round 1: PUT replaces; PATCH inherited the master's fields)
   const body = items.rm0001aa_20261210.body;
-  for (const k of ["id", "recurringEventId", "originalStartTime", "etag", "created", "updated", "recurrence"]) assert.ok(!(k in body), k);
+  for (const k of ["id", "etag", "created", "updated", "recurrence"]) assert.ok(!(k in body), k);
+  assert.deepEqual(body.originalStartTime, R_MOD.originalStartTime);
+  assert.equal(body.recurringEventId, "rm0001aa");
   assert.deepEqual(body.start, R_MOD.start);
   assert.equal(body.summary, R_MOD.summary);
   assert.equal(body.status, "confirmed");
@@ -1476,7 +1492,7 @@ test("runSwitch applies modify and cancel exceptions AFTER every master/normal u
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.ok, true, JSON.stringify(r));
   const lastUpsert = h.log.lastIndexOf("target.upsert");
-  const firstInstance = h.log.findIndex((l) => l === "target.patch" || l === "target.delete");
+  const firstInstance = h.log.findIndex((l) => l === "target.put" || l === "target.delete");
   assert.ok(firstInstance > lastUpsert, "instances after all upserts");
   const secondSourceRead = h.log.indexOf("source.list", h.log.indexOf("source.list") + 1);
   assert.ok(firstInstance < secondSourceRead, "instances before the second source read");
@@ -1486,7 +1502,7 @@ test("runSwitch applies modify and cancel exceptions AFTER every master/normal u
   assert.equal(mod.recurringEventId, "rm0001aa");
   assert.equal(h.target.events.get("rm0001aa_20261217").status, "cancelled");
   assert.equal(h.target.events.get("tm0001aa_20261208T010000Z").extendedProperties.private.note, "moved");
-  assert.deepEqual(h.target.instanceOps.map((o) => o.op).sort(), ["delete", "patch", "patch"]);
+  assert.deepEqual(h.target.instanceOps.map((o) => o.op).sort(), ["delete", "put", "put"]);
   assert.deepEqual(r.exceptions, { modify: 2, cancel: 1, applied: 3, unchanged: 0 });
   assert.equal(r.skipped, 3);
   assert.ok(!JSON.stringify(r).includes("rm0001aa"), "no ids in the result");
@@ -1549,12 +1565,15 @@ test("verify fails when a modified exception is missing or differs in the target
     (events) => events.filter((e) => e.id !== "rm0001aa_20261210"),
     (events) => events.map((e) => (e.id === "rm0001aa_20261210" ? { ...e, start: { date: "2026-12-10" }, end: { date: "2026-12-11" } } : e)),
     (events) => events.map((e) => (e.id === "rm0001aa_20261210" ? { ...e, summary: "other" } : e)),
-    (events) => events.map((e) => (e.id === "rm0001aa_20261217" ? { ...e, status: "confirmed" } : e)),
+    // the cancelled occurrence is back (consistently in both views)
+    (events, opts) => (opts?.expand
+      ? [...events, { id: "rm0001aa_20261217", status: "confirmed", recurringEventId: "rm0001aa", summary: R_MASTER.summary, start: { date: "2026-12-17" }, end: { date: "2026-12-18" } }]
+      : events.map((e) => (e.id === "rm0001aa_20261217" ? { ...e, status: "confirmed" } : e))),
   ]) {
     const h = harness({ sourceEvents: [...ALL(), ...REC()] });
     const realList = h.target.listEvents;
     let n = 0;
-    h.target.listEvents = async (opts) => { n += 1; const events = await realList(opts); return n < 2 ? events : mutate(events); };
+    h.target.listEvents = async (opts) => { n += 1; const events = await realList(opts); return n < 2 ? events : mutate(events, opts); };
     const r = await sw.runSwitch(h.deps);
     assert.equal(r.step, "verify", JSON.stringify(r));
     assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
@@ -1565,7 +1584,7 @@ test("the verify read of the target asks for deleted entries (showDeleted) so ca
   const h = harness({ sourceEvents: [...ALL(), ...REC()] });
   const seen = [];
   const realList = h.target.listEvents;
-  h.target.listEvents = async (opts) => { seen.push(opts?.showDeleted); return realList(opts); };
+  h.target.listEvents = async (opts) => { if (!opts?.expand) seen.push(opts?.showDeleted); return realList(opts); };
   const srcSeen = [];
   const realSrc = h.source.listEvents;
   h.source.listEvents = async (opts) => { srcSeen.push(opts?.showDeleted); return realSrc(opts); };
@@ -1655,18 +1674,20 @@ test("an exception write failure stops at copy (resumable), releases the lock, n
   assert.equal(h.mem.st.data.lock, undefined);
 });
 
-test("google client: patchInstance = PATCH on the instance id (sendUpdates=none); 404 is flagged instanceMissing", async () => {
+test("google client: updateInstance = PUT (events.update) on the instance id (sendUpdates=none), never PATCH; 404/410 flagged instanceMissing", async () => {
   const { seen, fetchFn } = fakeGoogle((url, init) => {
-    if (init.method === "PATCH") return url.includes("missing") ? new Response("{}", { status: 404 }) : Response.json({ id: "x" });
+    if (init.method === "PUT") return url.includes("missing") ? new Response("{}", { status: 404 }) : Response.json({ id: "x" });
     return new Response("{}", { status: 500 });
   });
   const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
-  await client.patchInstance("rm0001aa_20261210", { summary: "s", start: { date: "2026-12-14" } });
-  const patch = seen.find((s) => s.init.method === "PATCH");
-  assert.equal(new URL(patch.url).pathname, "/calendar/v3/calendars/c1/events/rm0001aa_20261210");
-  assert.equal(new URL(patch.url).searchParams.get("sendUpdates"), "none");
-  assert.deepEqual(JSON.parse(patch.init.body), { summary: "s", start: { date: "2026-12-14" } });
-  await assert.rejects(() => client.patchInstance("missing0001_20261210", { summary: "s" }), (err) => err.instanceMissing === true && !/s"/.test(err.message));
+  await client.updateInstance("rm0001aa_20261210", { summary: "s", start: { date: "2026-12-14" } });
+  const put = seen.find((s) => s.init.method === "PUT");
+  assert.equal(new URL(put.url).pathname, "/calendar/v3/calendars/c1/events/rm0001aa_20261210");
+  assert.equal(new URL(put.url).searchParams.get("sendUpdates"), "none");
+  assert.deepEqual(JSON.parse(put.init.body), { summary: "s", start: { date: "2026-12-14" } });
+  assert.ok(!seen.some((s) => s.init.method === "PATCH"));
+  assert.equal(client.patchInstance, undefined);
+  await assert.rejects(() => client.updateInstance("missing0001_20261210", { summary: "s" }), (err) => err.instanceMissing === true && !/s"/.test(err.message));
 });
 
 test("google client: deleteInstance = DELETE (sendUpdates=none); 204 → deleted, 404/410 → gone, other errors throw fixed text", async () => {
@@ -1696,4 +1717,280 @@ test("google client: listEvents({ showDeleted: true }) asks Google for deleted e
   assert.equal(new URL(lists[0].url).searchParams.get("showDeleted"), "false");
   assert.equal(new URL(lists[1].url).searchParams.get("showDeleted"), "true");
   assert.equal(new URL(lists[1].url).searchParams.get("singleEvents"), "false");
+});
+
+// ==== step 2 fix round 1: app-view parity (the app reads singleEvents=true expansions) ====
+const WIN = { timeMin: "2000-01-01T00:00:00.000Z", timeMax: new Date(Date.now() + 400 * 86_400_000).toISOString() }; // = the engine's window (tested below)
+const expand = (events) => expandEvents(events.map((e) => structuredClone(e)), WIN);
+// 2026-12-03 Thursday, 2026-12-04 Friday, 2026-12-07 Monday
+const P_MASTER = { id: "pm0001aa", status: "confirmed", summary: "Lunch", start: { date: "2026-12-03" }, end: { date: "2026-12-04" }, recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+const P_EXC = { id: "pm0001aa_20261210", status: "confirmed", recurringEventId: "pm0001aa", originalStartTime: { date: "2026-12-10" }, summary: "A ทดสอบ 1234567 SYNTH-op", start: { date: "2026-12-10" }, end: { date: "2026-12-11" } };
+const F_MASTER = { id: "fm0001aa", status: "confirmed", summary: "A ทดสอบ 1234567 SYNTH-op", start: { date: "2026-12-04" }, end: { date: "2026-12-05" }, recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=FR,MO;COUNT=4"] };
+const APP_TAGS = ["booking", "extra_day", "schedule_closure", "staff_unavailable"];
+const readableIds = (events) => events.filter((e) => e.status !== "cancelled" && (legacyMod.parseLegacyCalendarEvent(e) || APP_TAGS.includes(e.extendedProperties?.private?.or_queue))).map((e) => e.id).sort();
+
+test("expansionWindow: 2000-01-01 … now + 400 days (ISO)", () => {
+  const at = Date.parse("2026-11-15T00:00:00Z");
+  assert.deepEqual(sw.expansionWindow(at), { timeMin: "2000-01-01T00:00:00.000Z", timeMax: "2027-12-20T00:00:00.000Z" });
+});
+
+test("probe1 (Critical 1): a personal weekly master whose exception the app reads is planned through the expansion", () => {
+  assert.ok(legacyMod.parseLegacyCalendarEvent(P_EXC), "the app reads the exception");
+  const source = [P_MASTER, P_EXC];
+  const plan = sw.planCopy(source, expand(source));
+  assert.deepEqual(plan.copy.map((e) => e.id), ["pm0001aa"]);
+  assert.deepEqual(plan.exceptions.map((x) => [x.kind, x.id]), [["modify", "pm0001aa_20261210"]]);
+  assert.equal(plan.uncoveredOccurrences, 0);
+  assert.equal(plan.refusal, null);
+});
+
+test("probe2 (Critical 2): a BYDAY=FR,MO master starting on a Friday is planned because its Monday occurrences are read", () => {
+  assert.equal(sw.classifyEvent(F_MASTER), null, "the master itself is not readable (Friday)");
+  const plan = sw.planCopy([F_MASTER], expand([F_MASTER]));
+  assert.deepEqual(plan.copy.map((e) => e.id), ["fm0001aa"]);
+  assert.equal(plan.counts.legacy, 1);
+  assert.equal(plan.uncoveredOccurrences, 0);
+});
+
+test("runSwitch copies probe1 + probe2 so the target shows exactly the occurrences the app reads in the source", async () => {
+  const h = harness({ sourceEvents: [...ALL(), P_MASTER, P_EXC, F_MASTER] });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const src = readableIds(expand([...h.source.events.values()]));
+  const tgt = readableIds(expand([...h.target.events.values()]));
+  assert.deepEqual(tgt, src);
+  assert.ok(tgt.includes("fm0001aa_20261207") && tgt.includes("pm0001aa_20261210"));
+});
+
+test("probe1 P-I: a cancelled exception with a foreign id gets the UTC instance id from originalStartTime (+07:00)", () => {
+  const m2 = { id: "rm0002aa", summary: "A ทดสอบ 1234567 x", start: { dateTime: "2026-12-03T08:00:00+07:00", timeZone: "Asia/Bangkok" }, end: { dateTime: "2026-12-03T09:00:00+07:00", timeZone: "Asia/Bangkok" }, recurrence: ["RRULE:FREQ=WEEKLY"] };
+  const e2 = { id: "foreign", recurringEventId: "rm0002aa", status: "cancelled", originalStartTime: { dateTime: "2026-12-10T08:00:00+07:00", timeZone: "Asia/Bangkok" } };
+  assert.deepEqual(sw.planCopy([m2, e2]).exceptions, [{ kind: "cancel", id: "rm0002aa_20261210T010000Z", masterId: "rm0002aa" }]);
+});
+
+test("probe1 P-J: a deleted copy in the target is never a conflict", () => {
+  const BK = { id: "bk0001aa", status: "confirmed", summary: "s", start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } };
+  assert.equal(sw.switchPreflight([BK], [{ ...BK, status: "cancelled" }]).targetConflicts, 0);
+  assert.equal(sw.switchPreflight([], [{ ...BK, status: "cancelled" }]).targetConflicts, 0);
+});
+
+test("probe1 P-K: a cancelled target exception of an occurrence the source does not show (EXDATE) is not a conflict; one the source shows is", () => {
+  const m3 = { id: "rm0002aa", summary: "A ทดสอบ 1234567 x", start: { dateTime: "2026-12-03T08:00:00+07:00", timeZone: "Asia/Bangkok" }, end: { dateTime: "2026-12-03T09:00:00+07:00", timeZone: "Asia/Bangkok" }, recurrence: ["EXDATE;TZID=Asia/Bangkok:20261210T080000", "RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const stray = (suffix, local) => ({ id: `rm0002aa_${suffix}`, status: "cancelled", recurringEventId: "rm0002aa", originalStartTime: { dateTime: local } });
+  const exp = expand([m3]);
+  assert.equal(sw.switchPreflight([m3], [m3, stray("20261210T010000Z", "2026-12-10T08:00:00+07:00")], exp).targetConflicts, 0);
+  assert.equal(sw.switchPreflight([m3], [m3, stray("20261217T010000Z", "2026-12-17T08:00:00+07:00")], exp).targetConflicts, 1);
+  assert.equal(sw.planCopy([m3], exp).diagnostics.recurring.rruleExtras, 1);
+});
+
+test("rruleExtras counts planned masters with EXDATE / RDATE / EXRULE lines only", () => {
+  const m = (id, recurrence) => ({ ...structuredClone(R_MASTER), id, recurrence });
+  const source = [
+    m("ma0001aa", ["RRULE:FREQ=WEEKLY;COUNT=2"]),
+    m("ma0002aa", ["EXDATE;VALUE=DATE:20261210", "RRULE:FREQ=WEEKLY;COUNT=4"]),
+    m("ma0003aa", ["RDATE;VALUE=DATE:20261216", "RRULE:FREQ=WEEKLY;COUNT=2"]),
+    m("ma0004aa", ["EXRULE:FREQ=MONTHLY", "RRULE:FREQ=WEEKLY;COUNT=2"]),
+    { ...structuredClone(P_MASTER), id: "pm0002aa", recurrence: ["EXDATE;VALUE=DATE:20261210", "RRULE:FREQ=WEEKLY;COUNT=2"] }, // not planned
+  ];
+  assert.equal(sw.planCopy(source, expand(source)).diagnostics.recurring.rruleExtras, 3);
+});
+
+test("uncovered occurrences: a readable occurrence the plan does not cover is counted and refused", () => {
+  // the expansion shows a readable occurrence whose master is missing from the plain list
+  const occurrence = { ...structuredClone(P_EXC), id: "zq0001aa_20261210", recurringEventId: "zq0001aa" };
+  const plan = sw.planCopy([], [occurrence]);
+  assert.equal(plan.uncoveredOccurrences, 1);
+  assert.equal(plan.diagnostics.uncoveredOccurrences, 1);
+  assert.equal(plan.refusal, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  assert.match(sw.UNCOVERED_OCCURRENCES_MESSAGE, /ยังไม่ได้เปลี่ยนปฏิทิน/);
+  assert.match(sw.UNCOVERED_OCCURRENCES_MESSAGE, /ติดต่อผู้พัฒนา/);
+  assert.doesNotMatch(sw.UNCOVERED_OCCURRENCES_MESSAGE, /กดเปลี่ยนอีกครั้ง/);
+  assert.equal(sw.switchPreflight([], [], [occurrence]).uncoveredOccurrences, 1);
+  // everything covered: 0
+  assert.equal(sw.planCopy(ALL(), expand(ALL())).uncoveredOccurrences, 0);
+});
+
+test("runSwitch refuses uncovered occurrences before any write (engine second line)", async () => {
+  const h = harness({ sourceEvents: [...ALL(), P_MASTER, P_EXC] });
+  const real = h.source.listEvents;
+  h.source.listEvents = async (opts) => (await real(opts)).filter((e) => opts?.expand || e.id !== "pm0001aa"); // master hidden from the plain list
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  assert.equal(h.target.upserts.length + h.target.instanceOps.length, 0);
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+// final gate: wraps the target's EXPANDED read only
+function gateHarness(mutate, extra = []) {
+  const h = harness({ sourceEvents: [...ALL(), ...REC(), ...extra] });
+  const real = h.target.listEvents;
+  h.target.listEvents = async (opts) => {
+    const events = await real(opts);
+    return opts?.expand ? mutate(events) : events;
+  };
+  return h;
+}
+
+test("final gate: a readable occurrence missing from the target expansion fails verify (no flip, lock released)", async () => {
+  const h = gateHarness((events) => events.filter((e) => e.id !== "rm0001aa_20261224"));
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "verify", JSON.stringify(r));
+  assert.deepEqual(h.mem.st.data, { master: MASTER, candidate: CANDIDATE });
+});
+
+test("final gate: an extra readable occurrence in the target fails verify", async () => {
+  const ghost = { ...structuredClone(LEGACY), id: "gh0001aa", summary: "A ทดสอบ 7654321 SYNTH-ghost" };
+  const h = gateHarness((events) => [...events, ghost]);
+  assert.equal((await sw.runSwitch(h.deps)).step, "verify");
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("final gate: content drift (summary, description, location, private props, start) fails verify; orig_* props are ignored", async () => {
+  const drifts = [
+    (e) => ({ ...e, description: "SYNTH inherited master description" }),
+    (e) => ({ ...e, location: "SYNTH other room" }),
+    (e) => ({ ...e, summary: "A ทดสอบ 1234567 SYNTH-other" }),
+    (e) => ({ ...e, start: { date: "2026-12-15" }, end: { date: "2026-12-16" } }),
+  ];
+  for (const drift of drifts) {
+    const h = gateHarness((events) => events.map((e) => (e.id === "rm0001aa_20261210" ? drift(e) : e)));
+    assert.equal((await sw.runSwitch(h.deps)).step, "verify");
+  }
+  const hp = gateHarness((events) => events.map((e) => (e.id === "tm0001aa_20261215T010000Z" ? { ...e, extendedProperties: { private: { ...e.extendedProperties.private, note: "x" } } } : e)));
+  assert.equal((await sw.runSwitch(hp.deps)).step, "verify");
+  const ok = gateHarness((events) => events.map((e) => (e.id === LEGACY.id ? { ...e, extendedProperties: { private: { ...(e.extendedProperties?.private ?? {}), orig_created: "x", orig_updated: "y", orig_id: "z" } } } : e)));
+  assert.equal((await sw.runSwitch(ok.deps)).ok, true);
+});
+
+test("PUT replaces the occurrence: a description the master has but the exception lacks is NOT inherited (PATCH would fail the gate)", async () => {
+  const master = { ...structuredClone(R_MASTER), description: "SYNTH master description" };
+  const exc = structuredClone(R_MOD); // no description
+  const h = harness({ sourceEvents: [master, exc] });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.events.get(exc.id).description, undefined);
+  assert.ok(h.target.instanceOps.every((o) => o.op !== "patch"));
+  // a PATCH-like merge that inherits the master's description is caught by the gate
+  const h2 = harness({ sourceEvents: [master, exc] });
+  h2.target.updateInstance = async (id, body) => {
+    const masterId = id.slice(0, id.indexOf("_"));
+    h2.target.events.set(id, { description: h2.target.events.get(masterId).description, ...structuredClone(body), id, recurringEventId: masterId });
+  };
+  assert.equal((await sw.runSwitch(h2.deps)).step, "verify");
+});
+
+test("smoke fact 5: re-sending a master wipes its modified occurrences in Google; the run re-applies them and passes the gate", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  h.source.events.get("rm0001aa").description = "SYNTH changed master";
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e) => {
+    const out = await realUpsert(e);
+    // Google: a PUT on the master reverts modified exceptions (cancelled ones survive)
+    for (const [id, ev] of h.target.events) if (ev.recurringEventId === e.id && ev.status !== "cancelled") h.target.events.delete(id);
+    return out;
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.events.get("rm0001aa_20261210").summary, R_MOD.summary);
+});
+
+test("orphans: a modified exception that is not an occurrence of the source expansion is not applied and is counted (non-blocking)", async () => {
+  const orphanMod = { ...structuredClone(R_MOD), id: "rm0001aa_20261231", originalStartTime: { date: "2026-12-31" }, start: { date: "2027-01-01" }, end: { date: "2027-01-02" } };
+  const source = [...ALL(), ...REC(), orphanMod];
+  const plan = sw.planCopy(source, expand(source));
+  assert.equal(plan.diagnostics.orphanedExceptions, 1);
+  assert.ok(!plan.exceptions.some((x) => x.id === orphanMod.id));
+  assert.equal(plan.refusal, null);
+  const h = harness({ sourceEvents: source });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(!h.target.instanceOps.some((o) => o.id === orphanMod.id));
+  // outside the window nothing can be decided: it is still applied
+  const far = { ...structuredClone(orphanMod), id: "rm0001aa_20991231", originalStartTime: { date: "2099-12-31" } };
+  const p2 = sw.planCopy([R_MASTER, far], expand([R_MASTER, far]));
+  assert.deepEqual(p2.exceptions.map((x) => x.id), [far.id]);
+  assert.equal(p2.diagnostics.orphanedExceptions, 0);
+});
+
+test("orphans: a cancel of an occurrence that does not exist is still sent; Google's 404 plus absence from the target expansion verifies it", async () => {
+  const orphanCxl = { id: "rm0001aa_20261231", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2026-12-31" } };
+  const h = harness({ sourceEvents: [...ALL(), ...REC(), orphanCxl] });
+  h.target.missingInstances.add(orphanCxl.id); // DELETE answers 404, nothing is stored
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(h.target.instanceOps.some((o) => o.op === "delete" && o.id === orphanCxl.id));
+  assert.ok(!h.target.events.has(orphanCxl.id));
+});
+
+test("an occurrence added to the source expansion during the copy (final re-read) aborts the switch", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const late = { ...structuredClone(LEGACY), id: "la0001aa", summary: "A ทดสอบ 7654321 SYNTH-late" };
+  h.source.onExpand = (n, c) => { if (n === 3) c.events.set(late.id, structuredClone(late)); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "verify");
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("the expanded reads use singleEvents over the window and carry the hard deadline", async () => {
+  const h = harness();
+  const seen = [];
+  for (const c of [h.source, h.target]) {
+    const real = c.listEvents;
+    c.listEvents = async (opts) => { if (opts?.expand) seen.push(opts); return real(opts); };
+  }
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  assert.equal(seen.length, 4); // 3 source + 1 target
+  for (const o of seen) {
+    assert.equal(o.expand.timeMin, "2000-01-01T00:00:00.000Z");
+    assert.ok(Math.abs(Date.parse(o.expand.timeMax) - (Date.now() + 400 * 86_400_000)) < 60_000);
+    assert.equal(typeof o.deadline, "number");
+  }
+});
+
+test("a slow expanded read crossing the hard deadline ⇒ step copy (resumable), no flip; a failing expanded read ⇒ step read", async () => {
+  const h = harness({ advancing: true });
+  h.source.onExpand = (n) => { if (n === 2) h.clock.t += 130_000; };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.ok(!h.mem.st.writes.some((w) => w.master?.calendarId === CANDIDATE.calendarId));
+  assert.equal(h.mem.st.data.lock, undefined);
+  const h2 = harness();
+  h2.source.failExpand = (n) => n === 1;
+  const r2 = await sw.runSwitch(h2.deps);
+  assert.equal(r2.step, "read");
+  assert.ok(!JSON.stringify(r2).includes("SECRET"));
+  assert.equal(h2.mem.st.data.lock, undefined);
+  const h3 = harness();
+  const realT = h3.target.listEvents;
+  h3.target.listEvents = async (opts) => {
+    if (opts?.expand) throw Object.assign(new Error("calendar list passed the run deadline"), { deadlineExceeded: true });
+    return realT(opts);
+  };
+  const r3 = await sw.runSwitch(h3.deps);
+  assert.equal(r3.step, "copy");
+  assert.equal(r3.error, sw.COPY_BUDGET_MESSAGE);
+});
+
+test("google client: listEvents({ expand }) = singleEvents=true with timeMin/timeMax, paginated, deadline-bounded", async () => {
+  const { seen, fetchFn } = fakeGoogle((url) => {
+    const page = new URL(url).searchParams.get("pageToken");
+    return page ? Response.json({ items: [{ id: "b" }] }) : Response.json({ items: [{ id: "a" }], nextPageToken: "p2" });
+  });
+  const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  const out = await client.listEvents({ expand: { timeMin: "2000-01-01T00:00:00.000Z", timeMax: "2027-12-20T00:00:00.000Z" } });
+  assert.deepEqual(out.map((e) => e.id), ["a", "b"]);
+  const lists = seen.filter((s) => s.url.includes("/events"));
+  for (const l of lists) {
+    const q = new URL(l.url).searchParams;
+    assert.equal(q.get("singleEvents"), "true");
+    assert.equal(q.get("timeMin"), "2000-01-01T00:00:00.000Z");
+    assert.equal(q.get("timeMax"), "2027-12-20T00:00:00.000Z");
+    assert.equal(q.get("showDeleted"), "false");
+  }
 });
