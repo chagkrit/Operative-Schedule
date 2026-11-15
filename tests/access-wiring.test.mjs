@@ -104,17 +104,25 @@ test("closures and staff-unavailability saves record the acting user", async () 
   }
 });
 
-test("user-store write computes its put options before awaiting the SDK import", async () => {
+test("shared Blob adapter computes its put options before awaiting the SDK import", async () => {
   const store = await read("app/lib/user-store.ts");
-  const write = block(store, "async write(users)");
-  assert.match(write, /^async write\(users\) \{\n(?:\s*\/\/.*\n)*\s*const opts = blobPutOptions\(etag\);\n\s*const \{ put \} = await import\("@vercel\/blob"\);/);
-  assert.match(write, /put\(pathname, JSON\.stringify\(users, null, 2\), \{ \.\.\.opts, abortSignal: blobTimeoutSignal\(\) \}\)/);
+  const write = block(store, "async write(value)");
+  assert.match(write, /^async write\(value\) \{\n(?:\s*\/\/.*\n)*\s*const opts = blobPutOptions\(etag\);\n\s*const \{ put \} = await import\("@vercel\/blob"\);/);
+  assert.match(write, /put\(pathname, serialize\(value\), \{ \.\.\.opts, abortSignal: blobTimeoutSignal\(\) \}\)/);
+});
+
+test("users and calendar-settings stores are both built from the shared Blob adapter", async () => {
+  const store = await read("app/lib/user-store.ts");
+  assert.match(store, /return blobJsonStorage<UserRecord\[\]>\(pathname, parseUsersJson,/);
+  const cal = await read("app/lib/calendar-settings-store.ts");
+  assert.match(cal, /return blobJsonStorage<CalendarSettings>\(pathname, parseSettingsJson,/);
+  assert.doesNotMatch(cal, /import\("@vercel\/blob"\)/);
 });
 
 test("user-store Blob get and put carry a per-call timeout signal", async () => {
   const store = await read("app/lib/user-store.ts");
   assert.match(block(store, "async read()"), /get\(pathname, \{ access: "private", useCache: false, abortSignal: blobTimeoutSignal\(\) \}\)/);
-  assert.match(block(store, "async write(users)"), /abortSignal: blobTimeoutSignal\(\)/);
+  assert.match(block(store, "async write(value)"), /abortSignal: blobTimeoutSignal\(\)/);
   // Not AbortSignal.timeout(): its TimeoutError is retried by the SDK with backoff (minutes).
   assert.doesNotMatch(store, /AbortSignal\.timeout\(/);
 });

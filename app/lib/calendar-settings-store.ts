@@ -2,7 +2,7 @@
 // refresh tokens; never log its contents. Reads are never cached (settings change rarely and a
 // stale master would write to the wrong calendar). Failure policy mirrors user-store.ts:
 // "missing" only for a true 404; every other failure throws.
-import { BLOB_TIMEOUT_MS, blobPutOptions, blobTimeoutSignal, storageReadKind, UserStoreError } from "./user-store";
+import { BLOB_TIMEOUT_MS, blobJsonStorage, UserStoreError } from "./user-store";
 import type { CalendarSettings, CalendarTarget } from "./calendar-settings";
 
 export const CALENDAR_SETTINGS_BLOB_PATH = "or-queue/calendar-settings.json";
@@ -72,30 +72,9 @@ export function createCalendarSettingsStore(
   };
 }
 
-// ---- Vercel Blob adapter -------------------------------------------------------------
+// ---- Vercel Blob adapter (shared with the users store) -------------------------------
 export function blobSettingsStorage(pathname: string = CALENDAR_SETTINGS_BLOB_PATH): CalendarSettingsStorage {
-  let etag: string | null = null;
-  return {
-    async read() {
-      const { get } = await import("@vercel/blob");
-      const result = await get(pathname, { access: "private", useCache: false, abortSignal: blobTimeoutSignal() });
-      if (storageReadKind(result) === "missing") {
-        etag = null;
-        return "missing";
-      }
-      if (!result || result.statusCode !== 200) throw new UserStoreError("unexpected blob read result");
-      const text = await new Response(result.stream as unknown as ReadableStream<Uint8Array>).text();
-      const settings = parseSettingsJson(text);
-      etag = result.blob.etag || null;
-      return settings;
-    },
-    async write(settings) {
-      const opts = blobPutOptions(etag); // etag as of this call; null => create-only
-      const { put } = await import("@vercel/blob");
-      const saved = await put(pathname, JSON.stringify(settings, null, 2), { ...opts, abortSignal: blobTimeoutSignal() });
-      etag = saved.etag || null;
-    },
-  };
+  return blobJsonStorage<CalendarSettings>(pathname, parseSettingsJson, (v) => JSON.stringify(v, null, 2));
 }
 
 export const calendarSettingsStore: CalendarSettingsStore = createCalendarSettingsStore(blobSettingsStorage());
