@@ -36,6 +36,7 @@ import {
 } from "./calendar-settings";
 import type { CalendarSettingsStore } from "./calendar-settings-store";
 import {
+  APP_TIME_ZONE,
   COPY_PHASE_BUDGET_MS,
   countRecurring,
   expansionWindow,
@@ -273,7 +274,9 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
 
 type ListedEvents = Awaited<ReturnType<CalendarClient["listEvents"]>>;
 // Preview's and the preflight's reads (no lock, no writes), with the engine's parameters: the source's plain
-// list and its app view (singleEvents over the expansion window), and the target with deleted entries.
+// list and its app view (singleEvents over the expansion window), and the target with deleted entries, all
+// rendered in the app's zone. A booking created or deleted between the two source reads can make one
+// occurrence look uncovered, so the source pair is read once more before an "uncovered" result stands.
 async function preflightReads(
   source: CalendarClient,
   target: CalendarClient,
@@ -284,20 +287,30 @@ async function preflightReads(
 > {
   const viewWindow = expansionWindow();
   const name = (err: unknown) => (err instanceof Error ? err.name : typeof err);
-  let sourceEvents: ListedEvents;
-  let expanded: ListedEvents;
+  const readPair = async () => ({
+    sourceEvents: await source.listEvents({ deadline, timeZone: APP_TIME_ZONE }),
+    expanded: await source.listEvents({ deadline, expand: viewWindow, timeZone: APP_TIME_ZONE }),
+  });
+  let pair: { sourceEvents: ListedEvents; expanded: ListedEvents };
   try {
-    sourceEvents = await source.listEvents({ deadline });
-    expanded = await source.listEvents({ deadline, expand: viewWindow });
+    pair = await readPair();
   } catch (err) {
     return { ok: false, side: "source", errorName: name(err) };
   }
+  let targetEvents: ListedEvents;
   try {
-    const targetEvents = await target.listEvents({ deadline, showDeleted: true });
-    return { ok: true, sourceEvents, expanded, targetEvents, viewWindow };
+    targetEvents = await target.listEvents({ deadline, showDeleted: true, timeZone: APP_TIME_ZONE });
   } catch (err) {
     return { ok: false, side: "target", errorName: name(err) };
   }
+  if (switchPreflight(pair.sourceEvents, targetEvents, pair.expanded, viewWindow).uncoveredOccurrences > 0) {
+    try {
+      pair = await readPair();
+    } catch (err) {
+      return { ok: false, side: "source", errorName: name(err) };
+    }
+  }
+  return { ok: true, sourceEvents: pair.sourceEvents, expanded: pair.expanded, targetEvents, viewWindow };
 }
 
 async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarDeps, actor: string): Promise<ActionResult> {

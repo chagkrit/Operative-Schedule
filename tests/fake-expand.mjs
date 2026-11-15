@@ -3,7 +3,10 @@
 // UTC/local basic times); all-day and timed starts. Instance ids are `<masterId>_<YYYYMMDD | UTC
 // YYYYMMDDTHHMMSSZ>` (confirmed against real Google by the controller's smoke test). A cancelled
 // exception hides its occurrence; a modified exception replaces it; an exception whose id is not an
-// occurrence of the rule (an orphan) is not shown. Synthetic data only.
+// occurrence of the rule (an orphan) is not shown. Like Google, the window filters each occurrence by its
+// OWN start/end (a modified exception moved out of the window disappears, one moved in appears).
+// renderZone() re-renders dateTimes in a zone, as Google does for the `timeZone` list parameter (or the
+// calendar's own zone without it). Synthetic data only.
 const DAY = 86_400_000;
 const WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 
@@ -72,6 +75,36 @@ function inWindow(e, lo, hi) {
   return (Number.isFinite(en) ? en : s) > lo && s < hi;
 }
 
+// How far a modified exception may have been moved (occurrences are generated this far past the window,
+// then filtered by their own start).
+const MOVE_MARGIN = 400 * DAY;
+
+// Is `instanceId` an occurrence of `master`'s rule (Google answers 404 to PUT/DELETE otherwise)?
+export function isOccurrenceOf(master, instanceId) {
+  if (!master || !Array.isArray(master.recurrence) || !master.recurrence.length) return false;
+  const suffix = instanceId.slice(instanceId.indexOf("_") + 1);
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z)?$/.exec(suffix);
+  if (!m) return false;
+  const t = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4] ?? "00"}:${m[5] ?? "00"}:${m[6] ?? "00"}Z`);
+  return occurrences(master, -Infinity, t + DAY).some((o) => o.id === instanceId);
+}
+
+export function renderZone(events, offsetHours) {
+  const fmt = (dt) => {
+    const ms = Date.parse(dt);
+    if (!Number.isFinite(ms)) return dt;
+    const local = new Date(ms + offsetHours * 3_600_000).toISOString().slice(0, 19);
+    const sign = offsetHours < 0 ? "-" : "+";
+    const abs = Math.abs(offsetHours);
+    return offsetHours === 0 ? `${local}Z` : `${local}${sign}${pad(Math.floor(abs))}:${pad(Math.round((abs % 1) * 60))}`;
+  };
+  return events.map((e) => {
+    const out = structuredClone(e);
+    for (const k of ["start", "end", "originalStartTime"]) if (out[k]?.dateTime) out[k] = { ...out[k], dateTime: fmt(out[k].dateTime) };
+    return out;
+  });
+}
+
 export function expandEvents(events, { timeMin, timeMax }) {
   const lo = Date.parse(timeMin);
   const hi = Date.parse(timeMax);
@@ -83,12 +116,13 @@ export function expandEvents(events, { timeMin, timeMax }) {
   }
   for (const m of events) {
     if (!m || m.status === "cancelled" || !Array.isArray(m.recurrence) || !m.recurrence.length) continue;
-    for (const occ of occurrences(m, lo, hi)) {
+    for (const occ of occurrences(m, lo - MOVE_MARGIN, hi + MOVE_MARGIN)) {
       const exc = exceptions.get(occ.id);
       if (exc) {
-        if (exc.status !== "cancelled") out.push(structuredClone(exc));
+        if (exc.status !== "cancelled" && inWindow(exc, lo, hi)) out.push(structuredClone(exc));
         continue;
       }
+      if (!inWindow(occ, lo, hi)) continue;
       const rest = structuredClone(m);
       delete rest.recurrence;
       out.push({ ...rest, id: occ.id, recurringEventId: m.id, originalStartTime: occ.start, start: occ.start, end: occ.end });

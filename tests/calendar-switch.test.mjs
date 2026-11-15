@@ -5,7 +5,7 @@ import test from "node:test";
 import "./ts-resolve.mjs";
 
 const sw = await import("../app/lib/calendar-switch.ts");
-const { expandEvents } = await import("./fake-expand.mjs");
+const { expandEvents, isOccurrenceOf, renderZone } = await import("./fake-expand.mjs");
 const { createCalendarSettingsStore } = await import("../app/lib/calendar-settings-store.ts");
 
 const ADMIN = "admin@example.com";
@@ -112,6 +112,12 @@ function fakeCalendar(name, log, events = []) {
     failExpand: null,
     onList: null,
     onExpand: null,
+    // the calendar's own time zone (hours); Google renders dateTimes in it unless the read passes timeZone
+    zone: undefined,
+    render(events, opts) {
+      const zone = opts?.timeZone === "Asia/Bangkok" ? 7 : c.zone;
+      return zone === undefined ? events : renderZone(events, zone);
+    },
     // opts.expand = singleEvents=true over a window (counted separately so the numbering of the plain
     // reads, which existing tests rely on, is unchanged)
     async listEvents(opts) {
@@ -120,13 +126,13 @@ function fakeCalendar(name, log, events = []) {
         log.push(`${name}.expand`);
         if (c.onExpand) c.onExpand(c.expandCalls, c);
         if (c.failExpand && c.failExpand(c.expandCalls)) throw new Error(`SYNTH google expand failed token=${name}-SECRET`);
-        return expandEvents([...c.events.values()], opts.expand);
+        return c.render(expandEvents([...c.events.values()], opts.expand), opts);
       }
       c.listCalls += 1;
       log.push(`${name}.list`);
       if (c.onList) c.onList(c.listCalls, c);
       if (c.failList && c.failList(c.listCalls)) throw new Error(`SYNTH google list failed token=${name}-SECRET`);
-      return [...c.events.values()].map((e) => structuredClone(e));
+      return c.render([...c.events.values()].map((e) => structuredClone(e)), opts);
     },
     async upsertEvent(e) {
       const n = c.upserts.length + 1;
@@ -160,7 +166,8 @@ function fakeCalendar(name, log, events = []) {
       c.instanceOps.push({ op: "put", id });
       if (c.failOnInstanceOp === n) throw new Error(`SYNTH google put failed token=${name}-SECRET`);
       const { masterId, known, suffix } = c.instance(id);
-      if (!known) throw Object.assign(new Error(`SYNTH 404 token=${name}-SECRET`), { status: 404, instanceMissing: true });
+      // like Google: 404 unless the id is an occurrence of the master's rule
+      if (!known || !isOccurrenceOf(c.events.get(masterId), id)) throw Object.assign(new Error(`SYNTH 404 token=${name}-SECRET`), { status: 404, instanceMissing: true });
       const prev = c.events.get(id);
       c.events.set(id, { ...structuredClone(body), id, recurringEventId: masterId, originalStartTime: body.originalStartTime ?? prev?.originalStartTime ?? { synth: suffix } });
     },
@@ -798,13 +805,19 @@ test("verify compares each copied event's private props, start and end with the 
 });
 
 test("verify accepts the same instant written in another time-zone offset and a different key order", async () => {
+  // fix round 2: the per-item verify compares instants; the app's view (expanded read, rendered in the
+  // app's zone) must also match on wall-clock time, so only the plain list is re-rendered here
   const h = harness();
   const realList = h.target.listEvents;
-  h.target.listEvents = async (opts) => (await realList(opts)).map((e) => {
-    if (e.id !== BOOKING.id) return e;
-    const priv = Object.fromEntries(Object.entries(e.extendedProperties.private).reverse());
-    return { ...e, start: { timeZone: "Asia/Bangkok", dateTime: "2026-12-01T01:00:00Z" }, end: { timeZone: "Asia/Bangkok", dateTime: "2026-12-01T02:00:00Z" }, extendedProperties: { private: priv } };
-  });
+  h.target.listEvents = async (opts) => {
+    const events = await realList(opts);
+    if (opts?.expand) return events;
+    return events.map((e) => {
+      if (e.id !== BOOKING.id) return e;
+      const priv = Object.fromEntries(Object.entries(e.extendedProperties.private).reverse());
+      return { ...e, start: { timeZone: "Asia/Bangkok", dateTime: "2026-12-01T01:00:00Z" }, end: { timeZone: "Asia/Bangkok", dateTime: "2026-12-01T02:00:00Z" }, extendedProperties: { private: priv } };
+    });
+  };
   const r = await sw.runSwitch(h.deps);
   assert.equal(r.ok, true, JSON.stringify(r));
 });
@@ -1992,5 +2005,158 @@ test("google client: listEvents({ expand }) = singleEvents=true with timeMin/tim
     assert.equal(q.get("timeMin"), "2000-01-01T00:00:00.000Z");
     assert.equal(q.get("timeMax"), "2027-12-20T00:00:00.000Z");
     assert.equal(q.get("showDeleted"), "false");
+  }
+});
+
+// ==== step 2 fix round 2: time zone, moved-out exceptions, cancels outside the window, minors ====
+const WIN2 = { timeMin: "2000-01-01T00:00:00.000Z", timeMax: "2027-12-20T00:00:00.000Z" };
+// weekly Tuesday master readable by itself; its 2027-12-14 occurrence (inside WIN2) moved to 2027-12-28 (outside)
+const MM_MASTER = { id: "mm0001aa", status: "confirmed", summary: "A ทดสอบ 1234567 SYNTH op", start: { dateTime: "2027-11-30T08:00:00+07:00", timeZone: "Asia/Bangkok" }, end: { dateTime: "2027-11-30T09:00:00+07:00", timeZone: "Asia/Bangkok" }, recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=TU"] };
+const MM_MOVED = { id: "mm0001aa_20271214T010000Z", status: "confirmed", recurringEventId: "mm0001aa", originalStartTime: { dateTime: "2027-12-14T08:00:00+07:00", timeZone: "Asia/Bangkok" }, summary: "A ทดสอบ 7654321 SYNTH moved", start: { dateTime: "2027-12-28T08:00:00+07:00", timeZone: "Asia/Bangkok" }, end: { dateTime: "2027-12-28T09:00:00+07:00", timeZone: "Asia/Bangkok" } };
+
+test("probe moved-out (Important 2): an exception moved beyond the window is applied, never counted as an orphan", async () => {
+  const source = [MM_MASTER, MM_MOVED];
+  const expanded = expandEvents(structuredClone(source), WIN2);
+  assert.ok(!expanded.some((e) => e.id === MM_MOVED.id), "Google (and the fake) filter by the occurrence's own start");
+  const plan = sw.planCopy(source, expanded, WIN2);
+  assert.equal(plan.diagnostics.orphanedExceptions, 0);
+  assert.deepEqual(plan.exceptions.map((x) => [x.kind, x.id]), [["modify", MM_MOVED.id]]);
+  assert.equal(plan.refusal, null);
+  const h = harness({ sourceEvents: [...ALL(), ...source] });
+  h.deps.window = WIN2;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(h.target.instanceOps.some((o) => o.op === "put" && o.id === MM_MOVED.id));
+  assert.equal(h.target.events.get(MM_MOVED.id).summary, MM_MOVED.summary);
+  // a moved-out exception that the target does not hold fails the per-item check (the gate cannot see it)
+  const h2 = harness({ sourceEvents: [...ALL(), ...source] });
+  h2.deps.window = WIN2;
+  const real = h2.target.listEvents;
+  h2.target.listEvents = async (opts) => (await real(opts)).filter((e) => opts?.expand || e.id !== MM_MOVED.id);
+  assert.equal((await sw.runSwitch(h2.deps)).step, "verify");
+});
+
+test("orphan only when BOTH the original start and its own start are inside the window (and it is not in the view)", () => {
+  // original 2026-12-31 is not an occurrence (COUNT=4); own start 2027-01-01: both inside → orphan
+  const inside = { ...structuredClone(R_MOD), id: "rm0001aa_20261231", originalStartTime: { date: "2026-12-31" }, start: { date: "2027-01-01" }, end: { date: "2027-01-02" } };
+  const p1 = sw.planCopy([R_MASTER, inside], expandEvents(structuredClone([R_MASTER, inside]), WIN2), WIN2);
+  assert.equal(p1.diagnostics.orphanedExceptions, 1);
+  // same original, own start beyond the window → not an orphan: applied
+  const out = { ...structuredClone(inside), start: { date: "2028-06-01" }, end: { date: "2028-06-02" } };
+  const p2 = sw.planCopy([R_MASTER, out], expandEvents(structuredClone([R_MASTER, out]), WIN2), WIN2);
+  assert.equal(p2.diagnostics.orphanedExceptions, 0);
+  assert.deepEqual(p2.exceptions.map((x) => x.id), [out.id]);
+});
+
+test("Important 3: a cancel whose original start is outside the window, answered 404/410, is satisfied (per-item only)", async () => {
+  const farCxl = { id: "rm0001aa_20991231", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2099-12-31" } };
+  const h = harness({ sourceEvents: [...ALL(), ...REC(), farCxl] });
+  h.target.missingInstances.add(farCxl.id); // DELETE answers 404; nothing is stored
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(h.target.instanceOps.some((o) => o.op === "delete" && o.id === farCxl.id));
+  // inside the window a "gone" cancel whose occurrence is still visible keeps failing (unchanged)
+  const h2 = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h2.target.swallowDelete = true;
+  assert.equal((await sw.runSwitch(h2.deps)).step, "verify");
+});
+
+test("Important 1: every list read the engine makes passes timeZone=Asia/Bangkok", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const seen = [];
+  for (const c of [h.source, h.target]) {
+    const real = c.listEvents;
+    c.listEvents = async (opts) => { seen.push(opts?.timeZone); return real(opts); };
+  }
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  assert.equal(seen.length, 9);
+  assert.ok(seen.every((z) => z === "Asia/Bangkok"), JSON.stringify(seen));
+  assert.equal(sw.APP_TIME_ZONE, "Asia/Bangkok");
+});
+
+test("Important 1: a target calendar in another zone still passes (both sides read in Bangkok time)", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h.source.zone = 7;
+  h.target.zone = 0; // UTC calendar: without timeZone its dateTimes would come back as ...Z
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+});
+
+test("Important 1: a wall-clock mismatch in the app's view (same instant, other zone) fails the final gate", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h.target.zone = 0;
+  const real = h.target.listEvents;
+  // the target ignores the requested zone: its view renders bookings in UTC (other dates for early slots)
+  h.target.listEvents = async (opts) => real(opts?.expand ? { ...opts, timeZone: undefined } : opts);
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "verify", JSON.stringify(r));
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+});
+
+test("probe zone: the same instant rendered in another zone is a different app view (date differs)", () => {
+  const a = { id: "bk0001aa", start: { dateTime: "2027-01-05T00:30:00+07:00" }, end: { dateTime: "2027-01-05T01:30:00+07:00" }, extendedProperties: { private: { or_queue: "booking", queue_type: "OR17" } } };
+  const b = { ...a, start: { dateTime: "2027-01-04T17:30:00Z" }, end: { dateTime: "2027-01-04T18:30:00Z" } };
+  const pa = sw.planCopy([a], [a], WIN2);
+  const pb = sw.planCopy([b], [b], WIN2);
+  assert.notDeepEqual(pa.byMonth, undefined);
+  assert.equal(sw.sameAppView([...pa.occurrences.values()][0], [...pb.occurrences.values()][0]), false);
+  assert.equal(sw.sameAppView([...pa.occurrences.values()][0], [...pa.occurrences.values()][0]), true);
+});
+
+test("minor (c): a readable exception of an UNPLANNED master outside the window is uncovered (refused); cancelled ones are not", () => {
+  const farReadable = { ...structuredClone(P_EXC), id: "pm0001aa_20261217", originalStartTime: { date: "2026-12-17" }, start: { date: "2028-06-01" }, end: { date: "2028-06-02" } };
+  const farCancelled = { id: "pm0001aa_20261224", status: "cancelled", recurringEventId: "pm0001aa", originalStartTime: { date: "2026-12-24" } };
+  const p = sw.planCopy([P_MASTER, farReadable], expandEvents(structuredClone([P_MASTER, farReadable]), WIN2), WIN2);
+  assert.equal(p.uncoveredOccurrences, 1);
+  assert.equal(p.refusal, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  const p2 = sw.planCopy([P_MASTER, farCancelled], expandEvents(structuredClone([P_MASTER, farCancelled]), WIN2), WIN2);
+  assert.equal(p2.uncoveredOccurrences, 0);
+  assert.equal(p2.refusal, null);
+});
+
+test("minor (d): a master planned through occurrences takes the kind of its EARLIEST readable occurrence, whatever the list order", () => {
+  // Friday master (unreadable itself) with a Monday legacy occurrence (12-07) and a later tagged one (12-14)
+  const tagged = { id: "fm0001aa_20261214", status: "confirmed", recurringEventId: "fm0001aa", originalStartTime: { date: "2026-12-14" }, summary: "x", start: { date: "2026-12-14" }, end: { date: "2026-12-15" }, extendedProperties: { private: { or_queue: "extra_day" } } };
+  const source = [F_MASTER, tagged];
+  const view = expandEvents(structuredClone(source), WIN2);
+  const a = sw.planCopy(source, view, WIN2);
+  const b = sw.planCopy(source, [...view].reverse(), WIN2);
+  assert.equal(a.counts.legacy, 1);
+  assert.deepEqual(a.counts, b.counts);
+});
+
+test("fake parity (minor f): updateInstance answers 404 for an id that is not an occurrence of its master", async () => {
+  const h = harness({ sourceEvents: [structuredClone(R_MASTER)] });
+  await h.target.upsertEvent(sw.planCopy([R_MASTER]).copy[0]);
+  await assert.rejects(() => h.target.updateInstance("rm0001aa_20261211", { summary: "x" }), (err) => err.instanceMissing === true);
+  await h.target.updateInstance("rm0001aa_20261210", { summary: "x" });
+});
+
+test("google client: expanded reads use a fields projection that keeps nextPageToken (pagination continues); plain reads stay full; timeZone is passed", async () => {
+  const { seen, fetchFn } = fakeGoogle((url) => {
+    const q = new URL(url).searchParams;
+    const fields = q.get("fields");
+    // a projection without nextPageToken would silently stop pagination
+    const next = !fields || fields.includes("nextPageToken");
+    const page = q.get("pageToken");
+    if (!page) return Response.json({ items: [{ id: "a" }], ...(next ? { nextPageToken: "p2" } : {}) });
+    return Response.json({ items: [{ id: "b" }] });
+  });
+  const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  const out = await client.listEvents({ expand: { timeMin: "2000-01-01T00:00:00.000Z", timeMax: "2027-12-20T00:00:00.000Z" }, timeZone: "Asia/Bangkok" });
+  assert.deepEqual(out.map((e) => e.id), ["a", "b"]);
+  const expanded = seen.filter((s) => s.url.includes("/events"));
+  for (const l of expanded) {
+    const q = new URL(l.url).searchParams;
+    assert.equal(q.get("fields"), "nextPageToken,items(id,status,summary,description,location,start,end,recurringEventId,originalStartTime,extendedProperties)");
+    assert.equal(q.get("timeZone"), "Asia/Bangkok");
+  }
+  const before = seen.length;
+  await client.listEvents({ timeZone: "Asia/Bangkok" });
+  const plain = seen.slice(before).filter((s) => s.url.includes("/events"));
+  for (const l of plain) {
+    const q = new URL(l.url).searchParams;
+    assert.equal(q.get("fields"), null);
+    assert.equal(q.get("timeZone"), "Asia/Bangkok");
   }
 });

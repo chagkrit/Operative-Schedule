@@ -46,7 +46,8 @@ export type CalendarClient = {
   // showDeleted: also list deleted entries (used only for the target's reads; never for the source).
   // expand: the app's own view instead (singleEvents=true: every occurrence, no masters, no cancelled
   // occurrences) over [timeMin, timeMax).
-  listEvents(opts?: { deadline?: number; showDeleted?: boolean; expand?: ExpansionWindow }): Promise<GoogleEventLike[]>;
+  // timeZone: render dateTimes in this zone (Google otherwise uses each calendar's own zone).
+  listEvents(opts?: { deadline?: number; showDeleted?: boolean; expand?: ExpansionWindow; timeZone?: string }): Promise<GoogleEventLike[]>;
   upsertEvent(event: GoogleEventLike): Promise<"created" | "updated">;
   // One occurrence of a recurring event already in this calendar, addressed by its instance id
   // (`<masterId>_<original start>`, confirmed against real Google). update = events.update (PUT) with the
@@ -210,6 +211,12 @@ const isMasterEvent = (e: GoogleEventLike | undefined) => !!e && Array.isArray(e
 // The app lists the calendar with singleEvents=true, so planning and the final check work on that view over
 // a bounded window: 2000-01-01 … now + EXPANSION_DAYS_AHEAD. Bounded by the run deadline like every read.
 export type ExpansionWindow = { timeMin: string; timeMax: string };
+// The engine reads both calendars in the app's zone, so dates and wall-clock times compare like for like
+// whatever zone each calendar is set to (the app's own reads in calendar.ts are unchanged).
+export const APP_TIME_ZONE = "Asia/Bangkok";
+// Expanded reads fetch only what planning and the final gate use (nextPageToken is required or pagination
+// would silently stop after the first page). Plain reads stay full: they feed the copy bodies.
+export const EXPANDED_LIST_FIELDS = "nextPageToken,items(id,status,summary,description,location,start,end,recurringEventId,originalStartTime,extendedProperties)";
 export const EXPANSION_WINDOW_START = "2000-01-01T00:00:00.000Z";
 export const EXPANSION_DAYS_AHEAD = 400;
 // Wall-clock date (the window only needs today's date; deps.now() is a test clock for timing).
@@ -222,6 +229,11 @@ function suffixTime(suffix: string): number {
   const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z)?$/.exec(suffix);
   if (!m) return NaN;
   return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4] ?? "00"}:${m[5] ?? "00"}:${m[6] ?? "00"}Z`);
+}
+function ownStartMs(event: GoogleEventLike): number {
+  if (event.start?.dateTime) return Date.parse(event.start.dateTime);
+  if (event.start?.date) return Date.parse(`${event.start.date}T00:00:00Z`);
+  return NaN;
 }
 function originalStartMs(event: GoogleEventLike, suffix: string | null): number {
   const ost = event.originalStartTime;
@@ -236,13 +248,17 @@ type OccurrenceView = { start: GoogleEventLike["start"]; end: GoogleEventLike["e
 function occurrenceView(e: GoogleEventLike): OccurrenceView {
   return { start: e.start, end: e.end, summary: e.summary ?? "", description: e.description ?? "", location: e.location ?? "", data: privateWithoutOrig(e) };
 }
-function sameView(a: OccurrenceView, b: OccurrenceView): boolean {
+// Same instant AND same wall-clock date/time: the app takes a booking's date from dateTime.slice(0, 10)
+// (calendarEventDate), so the same instant rendered in another zone is a different booking date. The
+// engine reads both sides in APP_TIME_ZONE; this is the second line if a calendar renders otherwise.
+export function sameAppView(a: OccurrenceView, b: OccurrenceView): boolean {
   const time = (x: GoogleEventLike["start"], y: GoogleEventLike["start"]) => {
     if (!x || !y) return !x && !y;
     if ((x.date ?? "") !== (y.date ?? "")) return false;
     if (!x.dateTime && !y.dateTime) return true;
     const tx = Date.parse(x.dateTime ?? "");
-    return Number.isFinite(tx) && tx === Date.parse(y.dateTime ?? "");
+    if (!Number.isFinite(tx) || tx !== Date.parse(y.dateTime ?? "")) return false;
+    return (x.dateTime ?? "").slice(0, 19) === (y.dateTime ?? "").slice(0, 19);
   };
   return time(a.start, b.start) && time(a.end, b.end) && a.summary === b.summary && a.description === b.description && a.location === b.location && a.data === b.data;
 }
@@ -258,7 +274,7 @@ function sameOccurrences(source: Map<string, OccurrenceView>, target: Map<string
   if (source.size !== target.size) return false;
   for (const [key, view] of source) {
     const t = target.get(key);
-    if (!t || !sameView(view, t)) return false;
+    if (!t || !sameAppView(view, t)) return false;
   }
   return true;
 }
@@ -414,14 +430,23 @@ export function planCopy(source: GoogleEventLike[], expanded?: GoogleEventLike[]
     exceptionsCancelled: 0,
     rruleExtras: 0,
   };
-  // kind of the first readable occurrence of each master in the app's view (by SOURCE master id)
+  // kind of the EARLIEST readable occurrence of each master in the app's view (by SOURCE master id; ties by
+  // id), so the plan does not depend on the order Google lists occurrences in
   const occurrenceKind = new Map<string, CopyKind>();
+  const occurrenceRank = new Map<string, [number, string]>();
   const viewIds = new Set<string>();
   for (const occ of expanded ?? []) {
     if (!occ || typeof occ.id !== "string") continue;
     viewIds.add(occ.id);
     const k = readableKind(occ);
-    if (k && typeof occ.recurringEventId === "string" && !occurrenceKind.has(occ.recurringEventId)) occurrenceKind.set(occ.recurringEventId, k);
+    if (!k || typeof occ.recurringEventId !== "string") continue;
+    const at = ownStartMs(occ);
+    const rank: [number, string] = [Number.isFinite(at) ? at : Infinity, occ.id];
+    const best = occurrenceRank.get(occ.recurringEventId);
+    if (!best || rank[0] < best[0] || (rank[0] === best[0] && rank[1] < best[1])) {
+      occurrenceRank.set(occ.recurringEventId, rank);
+      occurrenceKind.set(occ.recurringEventId, k);
+    }
   }
   const skippedReasons = { cancelled: 0, recurringException: 0, notReadable: 0 };
   const skip = (event: GoogleEventLike | undefined) => {
@@ -499,12 +524,16 @@ export function planCopy(source: GoogleEventLike[], expanded?: GoogleEventLike[]
   const exceptions: ExceptionItem[] = [];
   const exceptionCounts = { modify: 0, cancel: 0 };
   let orphanedExceptions = 0;
+  let uncoveredOccurrences = 0;
   const seenExceptions = new Set<string>();
   for (const event of pending) {
     const sourceId = event.id as string;
     const masterSourceId = event.recurringEventId as string;
     const master = plannedMasters.get(masterSourceId);
     if (!master || seenExceptions.has(sourceId)) {
+      // An exception the app would read, moved outside the window, of a master that is not copied: the view
+      // cannot show it, so it is not covered (inside the window it would have planned its master).
+      if (expanded && !master && readableKind(event) && !inWindow(ownStartMs(event), viewWindow)) uncoveredOccurrences += 1;
       skip(event);
       continue;
     }
@@ -521,9 +550,17 @@ export function planCopy(source: GoogleEventLike[], expanded?: GoogleEventLike[]
     }
     const id = `${master.targetId}_${suffix}`;
     // A modified exception that is not an occurrence of the app's view (its original start is no longer an
-    // occurrence of the rule) cannot be shown by the app: not applied, counted. Outside the window nothing
-    // can be decided, so it is applied as usual. Cancels are always applied (404/410 = satisfied).
-    if (expanded && event.status !== "cancelled" && !viewIds.has(sourceId) && inWindow(originalStartMs(event, suffix), viewWindow)) {
+    // occurrence of the rule) cannot be shown by the app: not applied, counted. Google filters the view by
+    // each occurrence's OWN start, so this is decided only when BOTH its original start and its own start
+    // are inside the window; otherwise it is applied as usual (and verified per item). Cancels are always
+    // applied (404/410 = satisfied).
+    if (
+      expanded &&
+      event.status !== "cancelled" &&
+      !viewIds.has(sourceId) &&
+      inWindow(originalStartMs(event, suffix), viewWindow) &&
+      inWindow(ownStartMs(event), viewWindow)
+    ) {
       orphanedExceptions += 1;
       continue;
     }
@@ -539,7 +576,6 @@ export function planCopy(source: GoogleEventLike[], expanded?: GoogleEventLike[]
     }
   }
   // The app's view: map every occurrence to its target id; readable ones must be covered by the plan.
-  let uncoveredOccurrences = 0;
   let occurrences: Map<string, OccurrenceView> | null = null;
   let occurrenceKeys: Set<string> | null = null;
   if (expanded) {
@@ -566,8 +602,8 @@ export function planCopy(source: GoogleEventLike[], expanded?: GoogleEventLike[]
       if (!covered || key === null) uncoveredOccurrences += 1;
       else occurrences.set(key, occurrenceView(occ));
     }
-    if (uncoveredOccurrences > 0) refuse(UNCOVERED_OCCURRENCES_MESSAGE);
   }
+  if (uncoveredOccurrences > 0) refuse(UNCOVERED_OCCURRENCES_MESSAGE);
   const shapes = [...shapeCounts.entries()]
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
     .slice(0, MAX_SHAPES)
@@ -886,7 +922,8 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   const viewWindow = deps.window ?? expansionWindow();
   async function listBounded(step: SwitchStep, client: CalendarClient, view: "plain" | "deleted" | "expand" = "plain"): Promise<GoogleEventLike[]> {
     let events: GoogleEventLike[];
-    const opts = view === "deleted" ? { deadline: hardDeadline, showDeleted: true } : view === "expand" ? { deadline: hardDeadline, expand: viewWindow } : { deadline: hardDeadline };
+    const base = { deadline: hardDeadline, timeZone: APP_TIME_ZONE };
+    const opts = view === "deleted" ? { ...base, showDeleted: true } : view === "expand" ? { ...base, expand: viewWindow } : base;
     try {
       events = await client.listEvents(opts);
     } catch (err) {
@@ -996,13 +1033,19 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     });
   }
 
+  // Cancels sent in this press that Google answered (deleted, or 404/410 = gone).
+  const sentCancels = new Set<string>();
   // Occurrences of copied recurring masters (run only after their masters are written). An occurrence
   // Google does not know in the target cannot be fixed by pressing again: fixed, non-resumable message.
   function applyExceptions(items: ExceptionItem[], tally: { applied: number }) {
     return runPool(items, async (item) => {
       try {
-        if (item.kind === "cancel") await deps.target.deleteInstance(item.id);
-        else await deps.target.updateInstance(item.id, item.body ?? {});
+        if (item.kind === "cancel") {
+          await deps.target.deleteInstance(item.id);
+          sentCancels.add(item.id);
+        } else {
+          await deps.target.updateInstance(item.id, item.body ?? {});
+        }
       } catch (err) {
         if ((err as { instanceMissing?: unknown } | null)?.instanceMissing === true) {
           throw new StepError("copy", err, false, EXCEPTION_APPLY_FAILED_MESSAGE);
@@ -1032,8 +1075,11 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     return plan.exceptions.every((x) => {
       if (x.kind === "modify") return exceptionVerified(listed.get(x.id), x);
       if (listed.get(x.id)?.status === "cancelled") return true;
-      const suffix = x.id.slice(x.masterId.length + 1);
-      return !shown.has(x.id) && inWindow(suffixTime(suffix), viewWindow);
+      const original = suffixTime(x.id.slice(x.masterId.length + 1));
+      // Inside the window: what the app sees decides. Outside it the view cannot tell: Google's answer
+      // to this press's DELETE (deleted, or 404/410) is the check.
+      if (inWindow(original, viewWindow)) return !shown.has(x.id);
+      return sentCancels.has(x.id);
     });
   }
 
@@ -1238,7 +1284,7 @@ export const MAX_LIST_PAGES = 200; // 200 x 2,500 events
 class GoogleCalendarError extends Error {
   readonly status: number | undefined;
   readonly deadlineExceeded: boolean;
-  // patchInstance only: Google does not know that occurrence (404/410)
+  // updateInstance only: Google does not know that occurrence (404/410)
   readonly instanceMissing: boolean;
   constructor(message: string, status?: number, deadlineExceeded = false, instanceMissing = false) {
     super(status ? `${message} (HTTP ${status})` : message);
@@ -1333,8 +1379,9 @@ export function createGoogleCalendarClient(
           throw new GoogleCalendarError("calendar list passed the run deadline", undefined, true);
         }
         const params = opts?.expand
-          ? new URLSearchParams({ singleEvents: "true", showDeleted: "false", timeMin: opts.expand.timeMin, timeMax: opts.expand.timeMax, maxResults: "2500" })
+          ? new URLSearchParams({ singleEvents: "true", showDeleted: "false", timeMin: opts.expand.timeMin, timeMax: opts.expand.timeMax, maxResults: "2500", fields: EXPANDED_LIST_FIELDS })
           : new URLSearchParams({ singleEvents: "false", showDeleted: opts?.showDeleted ? "true" : "false", maxResults: "2500" });
+        if (opts?.timeZone) params.set("timeZone", opts.timeZone);
         if (pageToken) params.set("pageToken", pageToken);
         const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now(), deadline);
         if (!response.ok) throw new GoogleCalendarError("calendar list failed", response.status);

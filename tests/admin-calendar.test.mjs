@@ -9,7 +9,7 @@ const api = await import("../app/lib/admin-calendar-api.ts");
 const { createUserStore } = await import("../app/lib/user-store.ts");
 const { createCalendarSettingsStore } = await import("../app/lib/calendar-settings-store.ts");
 const { sealToken, openToken } = await import("../app/lib/token-seal.ts");
-const { expandEvents } = await import("./fake-expand.mjs");
+const { expandEvents, isOccurrenceOf } = await import("./fake-expand.mjs");
 
 const SECRET = "test-secret-for-admin-calendar-0123456789";
 const COOKIE = "authjs.session-token";
@@ -65,7 +65,7 @@ function fakeCalendars(initial = {}) {
       // recurring-instance writes: the master must already be in this calendar (else Google answers 404)
       async updateInstance(id, body) {
         const masterId = id.slice(0, id.indexOf("_"));
-        if (!events.get(masterId)?.recurrence) throw Object.assign(new Error("SYNTH 404"), { status: 404, instanceMissing: true });
+        if (!isOccurrenceOf(events.get(masterId), id)) throw Object.assign(new Error("SYNTH 404"), { status: 404, instanceMissing: true });
         events.set(id, { ...structuredClone(body), id, recurringEventId: masterId });
       },
       async deleteInstance(id) {
@@ -917,4 +917,46 @@ test("preview: deleted entries in the target do not count as 'target not empty'"
   const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
   assert.equal(p.json.targetEventCount, 0);
   assert.equal(p.json.targetHasEvents, false);
+});
+
+// ---- step 2 fix round 2 ----
+test("preview/preflight retry the read pair once before refusing as uncovered (a booking created between the two reads does not block)", async () => {
+  const late = { id: "la0001aa", summary: "SYNTH late", start: { dateTime: "2026-12-08T08:00:00+07:00" }, end: { dateTime: "2026-12-08T09:00:00+07:00" }, extendedProperties: { private: { or_queue: "booking", queue_type: "OR17", hn: "SYNTH-HN-7" } } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), late] } });
+  let plainReads = 0;
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId === "hnbcmu@gmail.com") {
+      const list = c.listEvents;
+      // the booking "appears" after the first plain read of each request: only the expanded read sees it
+      c.listEvents = async (opts) => {
+        const events = await list(opts);
+        if (opts?.expand) return events;
+        plainReads += 1;
+        return plainReads % 2 === 1 ? events.filter((e) => e.id !== late.id) : events;
+      };
+    }
+    return c;
+  };
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.uncoveredOccurrences, 0);
+  assert.equal(p.json.planBlocked, null);
+  assert.equal(plainReads, 2, "one retry");
+});
+
+test("handler reads pass timeZone=Asia/Bangkok", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const zones = [];
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    const list = c.listEvents;
+    c.listEvents = async (o) => { zones.push(o?.timeZone); return list(o); };
+    return c;
+  };
+  assert.equal((await call(h, "POST", { as: ADMIN, body: { action: "preview" } })).status, 200);
+  assert.equal((await call(h, "POST", { as: ADMIN, body: { action: "switch" } })).status, 200);
+  assert.ok(zones.length >= 12 && zones.every((z) => z === "Asia/Bangkok"), JSON.stringify(zones));
 });
