@@ -145,17 +145,18 @@ const MAX_SHAPE_LENGTH = 48;
 // - A-Z, a-z, 0-9 form "alphanumeric segments" between separators. Inside a segment, a run of lowercase
 //   letters is `l<n>` and a run of uppercase letters is `U<n>`; a digit joins the run before it, a case
 //   change starts a new run, and leading digits join the first letter run after them. A segment of only
-//   digits is `l<n>`.
+//   digits takes the id-wide class: `U<n>` when the whole id has uppercase letters and no lowercase ones,
+//   else `l<n>` (so a random uppercase UUID is always U8-U4-U4-U4-U12).
 // - ASCII punctuation in the allowlist - _ . : @ / + = is kept as is (it separates segments).
 // - Every other code point (non-ASCII letters, emoji, whitespace, control characters, other punctuation)
 //   becomes `?`, and a run of them is `?<n>`.
 // - Truncation happens AFTER masking, by code points, so a surrogate pair is never split.
 const SHAPE_PUNCT = "-_.:@/+=";
 
-function segmentShape(segment: string): string {
+function segmentShape(segment: string, digitClass: "l" | "U"): string {
   const chars = Array.from(segment);
   const caseOf = (c: string): "l" | "U" | null => (/[a-z]/.test(c) ? "l" : /[A-Z]/.test(c) ? "U" : null);
-  const firstLetter = chars.map(caseOf).find((c) => c !== null) ?? "l";
+  const firstLetter = chars.map(caseOf).find((c) => c !== null) ?? digitClass;
   let out = "";
   let current = firstLetter;
   let length = 0;
@@ -175,8 +176,9 @@ export function maskIdShape(id: string): string {
   let out = "";
   let segment = "";
   let unknown = 0;
+  const digitClass = /[A-Z]/.test(id) && !/[a-z]/.test(id) ? "U" : "l";
   const flushSegment = () => {
-    if (segment) out += segmentShape(segment);
+    if (segment) out += segmentShape(segment, digitClass);
     segment = "";
   };
   const flushUnknown = () => {

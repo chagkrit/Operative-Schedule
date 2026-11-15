@@ -313,7 +313,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                   </ul>
                   {preview.diagnostics.shapes.length > 0 && (
                     <p className="admin-calendar-diagnostics-shapes">
-                      รูปแบบรหัส (ย่อเป็นความยาวของแต่ละช่วง: l = ตัวพิมพ์เล็ก/เลข, U = ตัวพิมพ์ใหญ่/เลข, ? = อักขระอื่น): {preview.diagnostics.shapes.map((x) => `${x.shape} (${x.count})`).join(" · ")}
+                      รูปแบบรหัส (ย่อเป็นความยาวของแต่ละช่วง: l = ตัวพิมพ์เล็ก/เลข, U = ตัวพิมพ์ใหญ่/เลข, ? = อักขระอื่น; เครื่องหมายขีด/ขีดล่าง/จุด ฯลฯ แสดงตามจริง และ … หมายถึงตัดให้สั้น): {preview.diagnostics.shapes.map((x) => `${x.shape} (${x.count})`).join(" · ")}
                       {preview.diagnostics.shapesOmitted > 0 ? ` · ไม่อยู่ในรายการ ${preview.diagnostics.shapesOmitted} รหัส` : ""}
                     </p>
                   )}

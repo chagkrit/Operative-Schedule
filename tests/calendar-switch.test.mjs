@@ -1126,27 +1126,46 @@ test("diagnostics: shapes are run-length masked, capped at 5, ordered by count t
   assert.equal(sw.maskIdShape("a b\tc"), "l1?1l1?1l1");
   const events = [
     dEvent("Zz-aaaa"), dEvent("Zz-bbbb"), dEvent("Zz-cccc"), // one shape x3
-    dEvent("T-1"), dEvent("T-2"), // U1-l1 x2
+    dEvent("Tt-1"), dEvent("Tt-2"), // U1l1-l1 x2
     dEvent("U_1_2"), dEvent("V.w.x"), dEvent("K-9-9-9"), dEvent("Q-Q-Q-Q-Q"), dEvent("m-m-m-m-m-m"),
   ];
   const plan = sw.planCopy(events);
   const { shapes, shapesOmitted } = plan.diagnostics.invalidIds;
   assert.equal(shapes.length, 5);
   assert.deepEqual(shapes[0], { shape: "U1l1-l4", count: 3 });
-  assert.deepEqual(shapes[1], { shape: "U1-l1", count: 2 });
+  assert.deepEqual(shapes[1], { shape: "U1l1-l1", count: 2 });
   assert.equal(plan.invalidIds, 10);
   assert.equal(shapesOmitted, plan.invalidIds - shapes.reduce((n, x) => n + x.count, 0));
   assert.equal(shapesOmitted, 2);
   for (const x of shapes) assert.ok(Array.from(x.shape).length <= 49);
 });
 
-test("diagnostics: 17 uppercase UUIDs collapse into one shape", () => {
-  const ids = Array.from({ length: 17 }, (_, i) => `${(0xabcdef01 + i).toString(16).toUpperCase()}-1A2B-3C4D-5E6F-${(0x123456789abc + i).toString(16).toUpperCase()}`);
+test("diagnostics: uppercase UUIDs (incl. all-digit segments) collapse into one shape", () => {
+  // 17 ids, several segments all digits on purpose
+  const ids = [
+    "12345678-ABCD-1234-ABCD-1234567890AB",
+    "ABCDEF01-1234-4ABC-9ABC-123456789012",
+    "12345678-1234-1234-1234-123456789ABC",
+    ...Array.from({ length: 14 }, (_, i) => `${String(10000000 + i * 7)}-${i % 2 ? "1234" : "A2B3"}-4${String(100 + i)}-8C${i % 10}D-ABCDEF12${String(1000 + i)}`),
+  ];
   const plan = sw.planCopy(ids.map((id) => dEvent(id)));
   assert.equal(plan.invalidIds, 17);
   assert.deepEqual(plan.diagnostics.invalidIds.shapes, [{ shape: "U8-U4-U4-U4-U12", count: 17 }]);
   assert.equal(plan.diagnostics.invalidIds.shapesOmitted, 0);
+  assert.equal(sw.maskIdShape("12345678-ABCD-1234-ABCD-1234567890AB"), "U8-U4-U4-U4-U12");
+  assert.equal(sw.maskIdShape("12345678-abcd-1234-abcd-1234567890ab"), "l8-l4-l4-l4-l12");
   assert.equal(sw.maskIdShape("abcdef01-1a2b-3c4d-5e6f-123456789abc"), "l8-l4-l4-l4-l12");
+  assert.equal(sw.maskIdShape("12345678-1234-1234-1234-123456789012"), "l8-l4-l4-l4-l12", "digits-only id is l");
+  assert.ok(sw.maskIdShape("12345678-ABCD-1234-abcd-1234567890AB").startsWith("l8-U4-l4-l4-"), "mixed case: all-digit segments are l");
+});
+
+test("diagnostics: 1000 random uppercase UUIDs give exactly one shape", () => {
+  const ids = Array.from({ length: 1000 }, () => globalThis.crypto.randomUUID().toUpperCase());
+  assert.ok(ids.some((id) => id.split("-").some((seg) => /^[0-9]+$/.test(seg))), "all-digit segments occur");
+  const plan = sw.planCopy(ids.map((id) => dEvent(id)));
+  assert.equal(plan.invalidIds, 1000);
+  assert.deepEqual(plan.diagnostics.invalidIds.shapes, [{ shape: "U8-U4-U4-U4-U12", count: 1000 }]);
+  assert.equal(plan.diagnostics.invalidIds.shapesOmitted, 0);
 });
 
 test("diagnostics: non-ASCII, emoji and whitespace in ids never reach the output; truncation keeps valid strings", () => {
