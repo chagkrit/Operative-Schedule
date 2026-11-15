@@ -1405,7 +1405,8 @@ const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
 // Google answers quota bursts with 403 and one of these reasons (or 429): retried like 429.
 const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded"]);
 const MAX_ATTEMPTS = 5;
-// Backoff: 1 s, 2 s, 4 s, 8 s, 16 s (+ up to 500 ms jitter), or Retry-After when Google sends it.
+// Backoff between the at most 5 tries: four waits of 1, 2, 4 and 8 s (+ up to 500 ms jitter each), or
+// Retry-After when Google sends it; always within the per-request 30 s and the caller's deadline.
 export const RETRY_BASE_MS = 1_000;
 const RETRY_JITTER_MS = 500;
 const REQUEST_TIMEOUT_MS = 15_000;

@@ -2501,3 +2501,32 @@ test("engine: a non-retryable 400 still stops at once (no new writes after the i
   assert.equal(r.diag.httpStatus, 400);
   assert.ok(calls <= sw.COPY_CONCURRENCY, `${calls} writes started`);
 });
+
+// ---- review gaps of the rate-limit fix ----
+test("client: the upsert's PUT fallback (after 409) carries the copy deadline: a rate-limit wait past it is deadlineExceeded", async () => {
+  const { seen, client } = clockClient((url, init) => {
+    if (init.method === "POST") return new Response("{}", { status: 409 });
+    if (init.method === "PUT") return rateLimited();
+    return new Response("{}", { status: 500 });
+  });
+  // the next wait (1 s) would cross the deadline: without the deadline on the PUT it would retry until the
+  // per-write 30 s and fail as a plain 403 instead of the resumable budget stop
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }, { deadline: 500 }), (err) => err.deadlineExceeded === true && err.status === undefined);
+  assert.equal(seen.filter((s) => s.init.method === "PUT").length, 1);
+});
+
+test("client: a list read (GET) answered 403 rateLimitExceeded is retried and then succeeds", async () => {
+  let gets = 0;
+  const { clock, client } = clockClient((url, init) => (init.method === "GET" ? (++gets === 1 ? rateLimited() : Response.json({ items: [{ id: "a1" }] })) : new Response("{}", { status: 500 })));
+  assert.deepEqual((await client.listEvents()).map((e) => e.id), ["a1"]);
+  assert.equal(gets, 2);
+  assert.deepEqual(clock.waits, [1000]);
+});
+
+test("client: a persistent rate limit makes exactly 5 tries (waits 1, 2, 4, 8 s)", async () => {
+  let posts = 0;
+  const { clock, client } = clockClient((url, init) => { if (init.method === "POST") posts += 1; return rateLimited(); });
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }), (err) => err.status === 403 && err.reason === "rateLimitExceeded");
+  assert.equal(posts, 5);
+  assert.deepEqual(clock.waits, [1000, 2000, 4000, 8000]);
+});
