@@ -9,11 +9,11 @@
 // `next-auth/jwt` does not.
 import { getToken } from "next-auth/jwt";
 import { userStore, type UserStore } from "./user-store";
-import { canWrite, normalizeEmail, type Role } from "./users";
+import { canWrite, normalizeEmail, VIEWER_READ_ONLY_MESSAGE, type Role } from "./users";
+
+export { VIEWER_READ_ONLY_MESSAGE };
 
 export const SIGN_IN_REQUIRED_MESSAGE = "กรุณาเข้าสู่ระบบด้วยบัญชีที่ได้รับอนุญาต";
-
-export const VIEWER_READ_ONLY_MESSAGE = "บัญชีนี้ดูตารางได้อย่างเดียว ไม่มีสิทธิ์แก้ไข";
 
 export type SessionAccess = { email: string; role: Role };
 type AccessSource = Pick<UserStore, "getAccess">;

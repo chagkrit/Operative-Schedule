@@ -379,6 +379,15 @@ test("viewer role is accepted by POST and PATCH; unknown roles still 400", async
   assert.equal(bad.status, 400);
 });
 
+test("a viewer actor gets 403 from the admin users API on GET and POST", async () => {
+  const { store, state } = memory([...BASE, u("view@cmu.ac.th", "viewer")]);
+  const read = await call(store, "GET", { as: "view@cmu.ac.th" });
+  assert.equal(read.status, 403);
+  const write = await call(store, "POST", { as: "view@cmu.ac.th", body: { email: "new@example.com", role: "user" } });
+  assert.equal(write.status, 403);
+  assert.equal(state.writes, 0);
+});
+
 test("AdminUsers offers the viewer role and labels all three roles in the PATCH success message", async () => {
   const ui = await read("app/admin/AdminUsers.tsx");
   assert.ok(ui.includes('{ value: "viewer", label: "ดูอย่างเดียว (viewer)" }'));

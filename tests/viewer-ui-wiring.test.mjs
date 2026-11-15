@@ -25,7 +25,7 @@ test("every write handler starts with a !canWrite early return", async () => {
   for (const name of ["submitBooking", "submitExtra", "saveClosure", "performDeleteClosure", "saveUnavailability", "performDeleteUnavailability", "moveCase", "saveDuration", "deleteCase"]) {
     const body = handlerBody(app, name);
     assert.match(body, /if \(!canWrite\)/, `${name} must guard on canWrite`);
-    assert.match(body, /VIEWER_READ_ONLY_TEXT/, `${name} must report the viewer text`);
+    assert.match(body, /VIEWER_READ_ONLY_MESSAGE/, `${name} must report the viewer message`);
     assert.ok(body.indexOf("!canWrite") < body.indexOf("fetch("), `${name} guard must come before fetch`);
   }
   // The presence heartbeat stays unguarded.
@@ -34,7 +34,15 @@ test("every write handler starts with a !canWrite early return", async () => {
 
 test("write controls are hidden for viewers and a banner is shown", async () => {
   const app = await read("app/SchedulerApp.tsx");
-  assert.ok(app.includes('const VIEWER_READ_ONLY_TEXT = "บัญชีนี้ดูตารางได้อย่างเดียว"'));
+  assert.doesNotMatch(app, /const VIEWER_READ_ONLY_TEXT/);
+  assert.match(app, /import \{ VIEWER_BANNER_TEXT, VIEWER_READ_ONLY_MESSAGE \} from "\.\/lib\/users"/);
+  assert.match(app, /<strong>\{VIEWER_BANNER_TEXT\}<\/strong>/);
+  const users = await read("app/lib/users.ts");
+  assert.ok(users.includes('export const VIEWER_READ_ONLY_MESSAGE = "บัญชีนี้ดูตารางได้อย่างเดียว ไม่มีสิทธิ์แก้ไข"'));
+  assert.ok(users.includes('export const VIEWER_BANNER_TEXT = "บัญชีนี้ดูตารางได้อย่างเดียว"'));
+  const session = await read("app/lib/session.ts");
+  assert.doesNotMatch(session, /VIEWER_READ_ONLY_MESSAGE = /);
+  assert.match(session, /export \{ VIEWER_READ_ONLY_MESSAGE \}/);
   assert.match(app, /!canWrite && \(\s*<div className="setup-banner viewer-banner"/);
   assert.match(app, /\{canWrite && \(\s*<form onSubmit=\{submitBooking\}/);
   assert.match(app, /canWrite && scheduleView !== "closures" && <button className="text-button" type="button" onClick=\{\(\) => setShowExtra/);
@@ -52,4 +60,13 @@ test("write controls are hidden for viewers and a banner is shown", async () => 
 
 test("user guide explains view-only accounts", async () => {
   assert.ok((await read("app/UserGuide.tsx")).includes("ดูอย่างเดียว"));
+});
+
+test("booking tab and desktop booking panel are hidden for viewers", async () => {
+  const app = await read("app/SchedulerApp.tsx");
+  assert.ok(app.includes("resolveTab(searchParams.get(\"tab\"), canWrite)"));
+  assert.ok(app.includes("<BottomNav active={activeTab} unseenAlerts={unseen} canWrite={canWrite}"));
+  assert.match(app, /\{canWrite && <section className="panel booking-panel"/);
+  const nav = await read("app/BottomNav.tsx");
+  assert.ok(nav.includes("visibleTabs(canWrite).map("));
 });

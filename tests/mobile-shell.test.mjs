@@ -62,17 +62,17 @@ test("bar text and icon colours keep 4.5:1 contrast on the soft surface", async 
 test("SchedulerApp maps every screen to a tab and switches with replaceState", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const page = await read("app/page.tsx");
-  assert.match(app, /parseTab\(searchParams\.get\("tab"\)\)/);
+  assert.match(app, /resolveTab\(searchParams\.get\("tab"\), canWrite\)/);
   assert.match(app, /window\.history\.replaceState\(null, "", tabHref\(tab\)\)/);
   assert.match(app, /<main className="app-shell" data-screen=\{activeTab\}>/);
   assert.match(app, /className="hero" data-screens="schedule"/);
-  assert.match(app, /className="workspace-grid" data-screens="book schedule"/);
-  assert.match(app, /className="panel booking-panel" id="screen-book" tabIndex=\{-1\} data-screens="book"/);
+  assert.match(app, /className=\{canWrite \? "workspace-grid" : "workspace-grid viewer-grid"\} data-screens="book schedule"/);
+  assert.match(app, /<section className="panel booking-panel" id="screen-book" tabIndex=\{-1\} data-screens="book"/);
   assert.match(app, /className="panel schedule-panel" id="screen-schedule" tabIndex=\{-1\} data-screens="schedule"/);
   assert.match(app, /className="case-tools-grid" data-screens="search alerts"/);
   assert.match(app, /className="panel case-search-panel" id="screen-search" tabIndex=\{-1\} data-screens="search"/);
   assert.match(app, /className="panel move-history-panel" id="screen-alerts" tabIndex=\{-1\} data-screens="alerts"/);
-  assert.match(app, /<BottomNav active=\{activeTab\} unseenAlerts=\{unseen\} onSelect=\{selectTab\} \/>/);
+  assert.match(app, /<BottomNav active=\{activeTab\} unseenAlerts=\{unseen\} canWrite=\{canWrite\} onSelect=\{selectTab\} \/>/);
   assert.match(page, /<Suspense/);
 });
 

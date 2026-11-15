@@ -123,6 +123,7 @@ test("user-store Blob get and put carry a per-call timeout signal", async () => 
 
 const { encode } = await import("next-auth/jwt");
 const session = await import("../app/lib/session.ts");
+const users = await import("../app/lib/users.ts");
 const { createUserStore } = await import("../app/lib/user-store.ts");
 
 const SECRET = "test-secret-for-access-wiring-0123456789";
@@ -198,6 +199,7 @@ const VLIST = [...LIST, { email: "view@cmu.ac.th", role: "viewer", active: true 
 test("requestWriterEmail lets user and admin through with their lower-cased email", async () => {
   const store = memoryStore(VLIST);
   assert.equal(session.VIEWER_READ_ONLY_MESSAGE, VIEWER_MESSAGE);
+  assert.equal(users.VIEWER_READ_ONLY_MESSAGE, VIEWER_MESSAGE);
   assert.equal(await session.requestWriterEmail(await requestWith({ email: "HnBcMu@Gmail.com" }), store), "hnbcmu@gmail.com");
   assert.equal(await session.requestWriterEmail(await requestWith({ email: "nansurg7@gmail.com" }), store), "nansurg7@gmail.com");
 });
@@ -242,17 +244,49 @@ test("every write handler awaits requestWriterEmail inside its try before any Ca
   }
 });
 
-test("sweep: every mutating route handler is guarded, except admin users and presence", async () => {
+const MUTATING = "PATCH|POST|PUT|DELETE";
+
+// Problems in one route file: unguarded `export async function X`, or any other export form
+// (`export const X =`, `export const { X } = ...`, `export { X }`) in a file without the guard.
+function unguardedWriteHandlers(path, source) {
+  const problems = [];
+  for (const match of source.matchAll(new RegExp(`export async function (${MUTATING})\\b`, "g"))) {
+    if (!/requestWriterEmail\(/.test(block(source, match[0]))) problems.push(`${path} ${match[1]} is not guarded`);
+  }
+  const otherForms = [
+    new RegExp(`export\\s+const\\s+(${MUTATING})\\b`),
+    new RegExp(`export\\s+const\\s*\\{[^}]*\\b(${MUTATING})\\b[^}]*\\}`),
+    new RegExp(`export\\s*\\{[^}]*\\b(${MUTATING})\\b[^}]*\\}`),
+  ];
+  for (const re of otherForms) {
+    const match = source.match(re);
+    if (match && !/requestWriterEmail\(/.test(source)) problems.push(`${path} exports ${match[1]} in a form the sweep cannot check and has no guard`);
+  }
+  return problems;
+}
+
+// Exempt: the admin API has its own admin gate, presence is a heartbeat, and the Auth.js
+// handlers are the sign-in flow itself (they must not be write-guarded or nobody could sign in).
+const SWEEP_EXEMPT = new Set(["app/api/admin/users/route.ts", "app/api/presence/route.ts", "app/api/auth/[...nextauth]/route.ts"]);
+
+test("sweep: every mutating route handler is guarded, except admin users, presence and Auth.js", async () => {
   const routes = (await sourceFiles("app/api")).filter((path) => path.endsWith("/route.ts"));
   assert.ok(routes.length >= 10);
+  for (const path of SWEEP_EXEMPT) assert.ok(routes.includes(path), `exempt route ${path} no longer exists; update the list`);
   for (const path of routes) {
-    if (path === "app/api/admin/users/route.ts" || path === "app/api/presence/route.ts") continue;
-    const source = await read(path);
-    for (const match of source.matchAll(/export async function (PATCH|POST|PUT|DELETE)\b/g)) {
-      const fn = block(source, match[0]);
-      assert.match(fn, /requestWriterEmail\(/, `${path} ${match[1]} is not guarded`);
-    }
+    if (SWEEP_EXEMPT.has(path)) continue;
+    assert.deepEqual(unguardedWriteHandlers(path, await read(path)), []);
   }
+});
+
+test("sweep detector flags every export form of an unguarded write handler", () => {
+  const ok = 'export async function POST(request: Request) { await requestWriterEmail(request); }';
+  assert.deepEqual(unguardedWriteHandlers("x", ok), []);
+  assert.equal(unguardedWriteHandlers("x", "export async function DELETE(request: Request) { return 1; }").length, 1);
+  assert.equal(unguardedWriteHandlers("x", "export const PATCH = async () => 1;").length, 1);
+  assert.equal(unguardedWriteHandlers("x", "export const { GET, POST } = handlers;").length, 1);
+  assert.equal(unguardedWriteHandlers("x", "async function PUT() {}\nexport { PUT };").length, 1);
+  assert.deepEqual(unguardedWriteHandlers("x", "export const GET = async () => 1;"), []);
 });
 
 test("route error mappers pass the 403 status and message through", async () => {
@@ -269,8 +303,9 @@ test("calendar chokepoint also blocks viewers from non-GET Google calls", async 
   const calendar = await read("app/lib/calendar.ts");
   const auth = block(calendar, "async function authorizedAccessToken(");
   assert.match(auth, /VIEWER_READ_ONLY_MESSAGE, 403/);
-  assert.match(auth, /role === "viewer"/);
-  assert.match(auth, /method !== "GET"/);
+  assert.match(auth, /!canWrite\(access\.role\)/);
+  assert.match(auth, /method\.toUpperCase\(\) !== "GET"/);
+  assert.doesNotMatch(auth, /role === "viewer"/);
   assert.ok(auth.indexOf("SIGN_IN_REQUIRED_MESSAGE, 401") < auth.indexOf("VIEWER_READ_ONLY_MESSAGE"));
   const fetchFn = block(calendar, "async function googleFetch(");
   assert.match(fetchFn, /authorizedAccessToken\(request, init\?\.method \?\? "GET"\)/);

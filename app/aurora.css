@@ -129,6 +129,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .setup-banner { color: var(--amber) !important; background: var(--amber-tint) !important; box-shadow: var(--shadow-glass) !important; }
 .setup-banner > button { color: #fff; background: var(--amber); border-radius: 999px; }
 .banner-icon { background: var(--amber); }
+/* Viewer notice: informational, not a warning. */
+.viewer-banner { color: var(--ink) !important; background: var(--glass-strong) !important; border: 1px solid var(--hairline) !important; }
+.viewer-banner .banner-icon { color: var(--on-rose); background: var(--rose); }
+/* Viewers have no booking panel: let the schedule use the full width. */
+.viewer-grid { grid-template-columns: minmax(0, 1fr) !important; }
 .notice { box-shadow: var(--shadow-float) !important; border-radius: 18px; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
 .notice.success { color: var(--green) !important; background: var(--green-tint) !important; }
 .notice.error { color: var(--danger) !important; background: var(--danger-tint) !important; }

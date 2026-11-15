@@ -57,6 +57,11 @@ function isRole(v: unknown): v is Role {
 }
 
 // Viewers are read-only; every write path must check this (null = not signed in or not allowed).
+// One message for every viewer rejection: the server 403 text and the client notices.
+export const VIEWER_READ_ONLY_MESSAGE = "บัญชีนี้ดูตารางได้อย่างเดียว ไม่มีสิทธิ์แก้ไข";
+// Short heading of the viewer banner (the client-only wording).
+export const VIEWER_BANNER_TEXT = "บัญชีนี้ดูตารางได้อย่างเดียว";
+
 export function canWrite(role: Role | null): boolean {
   return role === "user" || role === "admin";
 }

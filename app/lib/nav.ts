@@ -9,6 +9,20 @@ export function parseTab(value: string | null | undefined): TabId {
   return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : DEFAULT_TAB;
 }
 
+// Viewers cannot book, so the booking tab is not offered to them.
+export const WRITE_ONLY_TABS: readonly TabId[] = ["book"];
+
+export function visibleTabs(canWrite: boolean): readonly TabId[] {
+  return canWrite ? TAB_IDS : TAB_IDS.filter((tab) => !WRITE_ONLY_TABS.includes(tab));
+}
+
+// parseTab, then fall back to the default tab when the account may not use that tab
+// (a `?tab=book` deep link or bookmark opened by a viewer).
+export function resolveTab(value: string | null | undefined, canWrite: boolean): TabId {
+  const tab = parseTab(value);
+  return visibleTabs(canWrite).includes(tab) ? tab : DEFAULT_TAB;
+}
+
 export function tabHref(tab: TabId): string {
   return `?tab=${tab}`;
 }

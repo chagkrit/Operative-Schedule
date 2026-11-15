@@ -1,7 +1,7 @@
 "use client";
 
 import type { MouseEvent, ReactNode } from "react";
-import { TAB_IDS, formatBadge, tabHref, type TabId } from "./lib/nav";
+import { formatBadge, tabHref, visibleTabs, type TabId } from "./lib/nav";
 
 const TABS: Record<TabId, { label: string; icon: ReactNode }> = {
   schedule: {
@@ -54,10 +54,11 @@ const TABS: Record<TabId, { label: string; icon: ReactNode }> = {
 type BottomNavProps = {
   active: TabId;
   unseenAlerts: number;
+  canWrite: boolean;
   onSelect: (tab: TabId) => void;
 };
 
-export default function BottomNav({ active, unseenAlerts, onSelect }: BottomNavProps) {
+export default function BottomNav({ active, unseenAlerts, canWrite, onSelect }: BottomNavProps) {
   function handleClick(event: MouseEvent<HTMLAnchorElement>, tab: TabId) {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -66,7 +67,7 @@ export default function BottomNav({ active, unseenAlerts, onSelect }: BottomNavP
 
   return (
     <nav className="bottom-nav" aria-label="เมนูหลัก">
-      {TAB_IDS.map((tab) => {
+      {visibleTabs(canWrite).map((tab) => {
         const { label, icon } = TABS[tab];
         const isActive = tab === active;
         const badge = tab === "alerts" ? formatBadge(unseenAlerts) : "";

@@ -14,7 +14,8 @@ import CaseDetailDialog from "./CaseDetailDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
-import { parseTab, tabHref, type TabId } from "./lib/nav";
+import { resolveTab, tabHref, type TabId } from "./lib/nav";
+import { VIEWER_BANNER_TEXT, VIEWER_READ_ONLY_MESSAGE } from "./lib/users";
 import { REFRESH_INTERVAL_MS, freshnessLabel, shouldRefreshQuietly } from "./lib/refresh";
 import { useUnseenMoves } from "./useUnseenMoves";
 
@@ -548,9 +549,6 @@ function StatusDot({ synced }: { synced: boolean }) {
   return <span className={`status-dot ${synced ? "synced" : "pending"}`} aria-hidden="true" />;
 }
 
-// Shown to viewer accounts (banner + early return in every write handler; the server also answers 403).
-const VIEWER_READ_ONLY_TEXT = "บัญชีนี้ดูตารางได้อย่างเดียว";
-
 // isAdmin: allowlist role of the signed-in user (from app/page.tsx), for the admin-only menu link.
 // canWrite: false for viewer accounts, which can look but not change anything.
 export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { authorizedEmail: string; isAdmin: boolean; canWrite: boolean }) {
@@ -611,17 +609,17 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchParams = useSearchParams();
-  const activeTab = parseTab(searchParams.get("tab"));
+  const activeTab = resolveTab(searchParams.get("tab"), canWrite);
   const focusScreenRef = useRef(false);
   const { unseen, markOwnMove } = useUnseenMoves(data?.recentMoves, activeTab === "alerts");
 
   const selectTab = useCallback((tab: TabId, options: { focus?: boolean } = {}) => {
     setMenuOpen(false);
     window.scrollTo({ top: 0, left: 0 });
-    if (parseTab(new URLSearchParams(window.location.search).get("tab")) === tab) return;
+    if (resolveTab(new URLSearchParams(window.location.search).get("tab"), canWrite) === tab) return;
     focusScreenRef.current = options.focus !== false;
     window.history.replaceState(null, "", tabHref(tab));
-  }, []);
+  }, [canWrite]);
 
   useEffect(() => {
     if (!focusScreenRef.current) return;
@@ -1142,7 +1140,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
   async function submitBooking(event: FormEvent) {
     event.preventDefault();
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     const labels: Record<string, string> = {
@@ -1236,7 +1234,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
   async function submitExtra(event: FormEvent) {
     event.preventDefault();
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     if (!extra.date) {
@@ -1262,7 +1260,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
 
   async function saveClosure(confirmExistingBookings = false) {
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     if (!closureForm.date || !closureForm.name.trim()) {
@@ -1321,7 +1319,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
 
   async function performDeleteClosure(closure: ScheduleClosure) {
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     setClosureSaving(true);
@@ -1358,7 +1356,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
 
   async function saveUnavailability(confirmExistingBookings = false) {
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     const editing = Boolean(unavailabilityForm.id);
@@ -1436,7 +1434,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
 
   async function performDeleteUnavailability(entry: StaffUnavailability) {
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     setUnavailabilitySaving(true);
@@ -1514,7 +1512,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
   async function moveCase(event: FormEvent) {
     event.preventDefault();
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     if (!selectedCase || !moveTarget || !moveTargetDay) {
@@ -1582,7 +1580,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
   async function saveDuration(event: FormEvent) {
     event.preventDefault();
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     if (!editDialog) return;
@@ -1653,7 +1651,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
 
   async function deleteCase() {
     if (!canWrite) {
-      setNotice({ type: "error", text: VIEWER_READ_ONLY_TEXT });
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
       return;
     }
     if (!deleteDialog || deleteDialog.step !== "confirm" || !deleteHnMatches) return;
@@ -1727,7 +1725,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
       {!canWrite && (
         <div className="setup-banner viewer-banner" role="status">
           <span className="banner-icon">i</span>
-          <div><strong>{VIEWER_READ_ONLY_TEXT}</strong><p>ดูตารางผ่าตัด ค้นหาเคส และ Export ได้ตามปกติ แต่ลงคิว สลับวัน แก้ไข หรือลบไม่ได้</p></div>
+          <div><strong>{VIEWER_BANNER_TEXT}</strong><p>ดูตารางผ่าตัด ค้นหาเคส และ Export ได้ตามปกติ แต่ลงคิว สลับวัน แก้ไข ลบ หรือกำหนด OR Extra ไม่ได้</p></div>
         </div>
       )}
 
@@ -1952,8 +1950,8 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
         </div>
       )}
 
-      <div className="workspace-grid" data-screens="book schedule">
-        <section className="panel booking-panel" id="screen-book" tabIndex={-1} data-screens="book">
+      <div className={canWrite ? "workspace-grid" : "workspace-grid viewer-grid"} data-screens="book schedule">
+        {canWrite && <section className="panel booking-panel" id="screen-book" tabIndex={-1} data-screens="book">
           <div className="panel-heading">
             <div><span className="step">01</span><h3>ข้อมูลผู้ป่วยและการผ่าตัด</h3></div>
             <span className={`diagnosis-badge ${cancer ? "cancer" : "general"}`}>{cancer ? `Cancer · ${form.cancerSchedulingMode === "specific" ? "ระบุวันเอง" : "คิวเร็วที่สุด"}` : "OR 17 · เลือกวัน"}</span>
@@ -2108,8 +2106,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
             <button className="save-button" type="submit" aria-busy={saving} disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
           )}
-          {!canWrite && <p className="field-help">{VIEWER_READ_ONLY_TEXT} · ใช้แท็บ “ตาราง” หรือ “ค้นหา” เพื่อดูข้อมูล</p>}
-        </section>
+        </section>}
 
         <aside className="panel schedule-panel" id="screen-schedule" tabIndex={-1} data-screens="schedule">
           <div className="panel-heading compact"><div><span className="step">02</span><h3>{scheduleView === "closures" ? "ตั้งค่าวันปิดรับคิว" : "คิวที่กำลังจะมาถึง"}</h3></div>{canWrite && scheduleView !== "closures" && <button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button>}</div>
@@ -2299,7 +2296,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
       <UserGuide />
 
       <footer><span>Breast &amp; Endocrine Surgery CMU</span><p>ข้อมูลผู้ป่วยเป็นความลับ · กรุณาใช้งานผ่านบัญชีที่ได้รับอนุญาตเท่านั้น</p></footer>
-      <BottomNav active={activeTab} unseenAlerts={unseen} onSelect={selectTab} />
+      <BottomNav active={activeTab} unseenAlerts={unseen} canWrite={canWrite} onSelect={selectTab} />
     </main>
   );
 }
