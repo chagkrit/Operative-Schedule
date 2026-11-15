@@ -333,7 +333,7 @@ test("AdminUsers renders from API responses, confirms deletes, locks bootstrap a
 
 test("menu shows จัดการผู้ใช้ only to admins", async () => {
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(app, /export default function SchedulerApp\(\{ authorizedEmail, isAdmin \}/);
+  assert.match(app, /export default function SchedulerApp\(\{ authorizedEmail, isAdmin, canWrite \}/);
   assert.match(app, /\{isAdmin && <Link className="admin-link" href="\/admin"[^\n]*>จัดการผู้ใช้<\/Link>\}/);
   assert.equal((app.match(/จัดการผู้ใช้/g) || []).length, 1);
   const css = await read("app/mobile-shell.css");

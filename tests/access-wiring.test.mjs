@@ -75,7 +75,7 @@ test("pages and presence use the allowlist; a deny never signs the user out", as
   assert.match(presence, /await requestUserEmail\(request\)/);
   assert.match(presence, /status: 401/);
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(app, /authorizedEmail: string; isAdmin: boolean/);
+  assert.match(app, /authorizedEmail: string; isAdmin: boolean; canWrite: boolean/);
   for (const path of ["app/page.tsx", "app/signin/page.tsx", "app/api/presence/route.ts", "app/lib/session.ts", "app/lib/calendar.ts", "auth.ts"]) {
     const text = await read(path);
     assert.doesNotMatch(text, /signOut\(/, `${path} must not sign anyone out on a deny`);

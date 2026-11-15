@@ -22,7 +22,7 @@ type CaseDetailDialogProps = {
   detail: CaseDetail;
   closeRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
-  onManage: () => void;
+  onManage?: () => void; // omitted for view-only accounts: no manage button
 };
 
 function neoadjuvantText(value: boolean | null) {
@@ -65,7 +65,7 @@ export default function CaseDetailDialog({ detail, closeRef, onClose, onManage }
         <small className="case-detail-sync">{detail.synced ? "● บันทึกใน Google Calendar แล้ว" : "● ยังไม่ซิงก์กับ Google Calendar"}</small>
         <div className="case-detail-actions">
           <button ref={closeRef} type="button" onClick={onClose}>ปิด</button>
-          <button type="button" onClick={onManage}>สลับวัน / แก้ไข / ลบ</button>
+          {onManage && <button type="button" onClick={onManage}>สลับวัน / แก้ไข / ลบ</button>}
         </div>
       </section>
     </div>
