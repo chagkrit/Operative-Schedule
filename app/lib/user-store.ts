@@ -194,6 +194,13 @@ export function blobPutOptions(etag: string | null) {
   return etag ? { ...base, ifMatch: etag } : { ...base, allowOverwrite: false };
 }
 
+// A delete is only ever conditional on the etag of the last read, so it can never remove a file
+// another instance has rewritten since (stale etag => BlobPreconditionFailedError).
+export function blobDeleteOptions(etag: string | null) {
+  if (!etag) throw new UserStoreError("refusing to delete a blob without a known etag");
+  return { ifMatch: etag };
+}
+
 // Per-call timeout for Blob requests. Aborts with an AbortError on purpose: the SDK's put()
 // bails at once on an AbortError but retries a TimeoutError (AbortSignal.timeout) with
 // exponential backoff, which would hang a write for minutes. A timeout is a read/write error
@@ -205,10 +212,15 @@ export function blobTimeoutSignal(ms: number = BLOB_TIMEOUT_MS): AbortSignal {
   return controller.signal;
 }
 
+// Generic private-JSON Blob adapter shared by the users and calendar-settings stores.
 // Keeps the etag of the last read/write. Known limit: a cache refresh that lands between a
 // mutate's read and write advances this etag, so a write by another instance in that gap
 // could be overwritten (single admin in practice).
-export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
+export function blobJsonStorage<T>(
+  pathname: string,
+  parse: (text: string) => T,
+  serialize: (value: T) => string,
+): { read(): Promise<T | "missing">; write(value: T): Promise<void>; remove(): Promise<void> } {
   let etag: string | null = null;
   return {
     async read() {
@@ -220,19 +232,30 @@ export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
       }
       if (!result || result.statusCode !== 200) throw new UserStoreError("unexpected blob read result"); // narrows the type
       const text = await new Response(result.stream as unknown as ReadableStream<Uint8Array>).text();
-      const users = parseUsersJson(text);
+      const value = parse(text);
       etag = result.blob.etag || null;
-      return users;
+      return value;
     },
-    async write(users) {
+    async write(value) {
       // Options first, synchronously: the etag must be the one current when write() was called,
       // not one a concurrent read() sets while the SDK import is awaited (a seed must stay create-only).
       const opts = blobPutOptions(etag);
       const { put } = await import("@vercel/blob");
-      const saved = await put(pathname, JSON.stringify(users, null, 2), { ...opts, abortSignal: blobTimeoutSignal() });
+      const saved = await put(pathname, serialize(value), { ...opts, abortSignal: blobTimeoutSignal() });
       etag = saved.etag || null;
     },
+    // Used only by the calendar-settings store (the users store never deletes its file).
+    async remove() {
+      const opts = blobDeleteOptions(etag);
+      const { del } = await import("@vercel/blob");
+      await del(pathname, { ...opts, abortSignal: blobTimeoutSignal() });
+      etag = null;
+    },
   };
+}
+
+export function blobStorage(pathname: string = USERS_BLOB_PATH): UserStorage {
+  return blobJsonStorage<UserRecord[]>(pathname, parseUsersJson, (users) => JSON.stringify(users, null, 2));
 }
 
 export const userStore: UserStore = createUserStore(blobStorage());

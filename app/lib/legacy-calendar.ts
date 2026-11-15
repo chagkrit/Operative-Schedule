@@ -7,8 +7,21 @@ export type LegacyCalendarEvent = {
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
   created?: string;
+  updated?: string;
   extendedProperties?: { private?: Record<string, string> };
 };
+
+// Google sets created/updated itself, so a master-calendar switch carries the originals in private
+// orig_created / orig_updated (calendar-switch.ts). Readers prefer them; an empty value means "use Google's".
+type StampedEvent = { created?: string; updated?: string; extendedProperties?: { private?: Record<string, string> } };
+
+export function eventCreated(event: StampedEvent): string {
+  return event.extendedProperties?.private?.orig_created || event.created || "";
+}
+
+export function eventUpdated(event: StampedEvent): string {
+  return event.extendedProperties?.private?.orig_updated || event.updated || "";
+}
 
 export const LEGACY_STAFF_BY_INITIAL: Record<string, string> = {
   A: "อ อารีวรรณ",
@@ -70,7 +83,7 @@ export function parseLegacyCalendarEvent(event: LegacyCalendarEvent, slotNo = 0)
   return {
     id: event.id,
     scheduleDate,
-    queuedDate: calendarTimestampDate(event.created) || scheduleDate,
+    queuedDate: calendarTimestampDate(eventCreated(event)) || scheduleDate,
     queueType,
     slotNo,
     diagnosis,

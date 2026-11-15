@@ -175,12 +175,12 @@ test("persists queued dates and exports de-identified surgical waiting-time data
   const exportRoute = await read("app/api/wait-time-export/route.ts");
   const xlsx = await read("app/lib/xlsx.ts");
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(calendar, /queuedDate: data\.queued_date \|\| calendarTimestampDate\(event\.created\) \|\| date/);
+  assert.match(calendar, /queuedDate: data\.queued_date \|\| calendarTimestampDate\(eventCreated\(event\)\) \|\| date/);
   assert.match(calendar, /queued_date: booking\.queuedDate/);
   assert.match(calendar, /queued_date: booking\.queuedDate/);
   assert.match(calendar, /วันที่ลงคิว: \$\{booking\.queuedDate\}/);
   assert.match(calendar, /ระยะเวลารอผ่าตัด: \$\{daysBetween\(booking\.queuedDate, booking\.scheduleDate\)\} วัน/);
-  assert.match(legacy, /queuedDate: calendarTimestampDate\(event\.created\) \|\| scheduleDate/);
+  assert.match(legacy, /queuedDate: calendarTimestampDate\(eventCreated\(event\)\) \|\| scheduleDate/);
   assert.match(scheduleRoute, /queuedDate: today/);
   assert.match(exportRoute, /listCalendarData\(request, from, to\)/);
   assert.match(exportRoute, /"ระยะเวลารอผ่าตัด \(วัน\)"/);
@@ -380,8 +380,8 @@ test("uses one server-held Calendar refresh token when GOOGLE_REFRESH_TOKEN is s
   // The session identity check stays in front of every Calendar call.
   // (the access record is read once, so the viewer backstop sees the role from the same lookup)
   assert.match(calendar, /const access = token && email \? await userStore\.getAccess\(email\) : null;\s*if \(!token \|\| !access \|\| !access\.allowed\)/);
-  assert.ok(calendar.indexOf("userStore.getAccess(email)") < calendar.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
-  assert.match(calendar, /cachedServerToken/);
+  assert.ok(calendar.indexOf("userStore.getAccess(email)") < calendar.indexOf("resolveCalendarTarget({"));
+  assert.match(calendar, /cachedServerTokens/);
   // A dead server token is an admin problem (503), not a "sign in again" 401 that would loop.
   assert.match(calendar, /ผู้ดูแลระบบต้องต่ออายุ[\s\S]{0,200}503/);
   assert.match(route, /typeof status === "number" && status >= 400/);

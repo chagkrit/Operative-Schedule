@@ -57,7 +57,8 @@ test("the Calendar API chokepoint checks the allowlist before any Google token w
   const calendar = await read("app/lib/calendar.ts");
   const fn = block(calendar, "async function authorizedAccessToken(");
   assert.match(fn, /userStore\.getAccess\(/);
-  assert.ok(fn.indexOf("userStore.getAccess(") < fn.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
+  assert.ok(fn.indexOf("userStore.getAccess(") < fn.indexOf("resolveCalendarTarget("));
+  assert.ok(fn.indexOf("userStore.getAccess(") < fn.indexOf("serverAccessToken("));
   assert.match(fn, /withStatus\(SIGN_IN_REQUIRED_MESSAGE, 401\)/);
   assert.doesNotMatch(calendar, /กรุณาเข้าสู่ระบบด้วย hnbcmu/);
   const session = await read("app/lib/session.ts");
@@ -104,17 +105,25 @@ test("closures and staff-unavailability saves record the acting user", async () 
   }
 });
 
-test("user-store write computes its put options before awaiting the SDK import", async () => {
+test("shared Blob adapter computes its put options before awaiting the SDK import", async () => {
   const store = await read("app/lib/user-store.ts");
-  const write = block(store, "async write(users)");
-  assert.match(write, /^async write\(users\) \{\n(?:\s*\/\/.*\n)*\s*const opts = blobPutOptions\(etag\);\n\s*const \{ put \} = await import\("@vercel\/blob"\);/);
-  assert.match(write, /put\(pathname, JSON\.stringify\(users, null, 2\), \{ \.\.\.opts, abortSignal: blobTimeoutSignal\(\) \}\)/);
+  const write = block(store, "async write(value)");
+  assert.match(write, /^async write\(value\) \{\n(?:\s*\/\/.*\n)*\s*const opts = blobPutOptions\(etag\);\n\s*const \{ put \} = await import\("@vercel\/blob"\);/);
+  assert.match(write, /put\(pathname, serialize\(value\), \{ \.\.\.opts, abortSignal: blobTimeoutSignal\(\) \}\)/);
+});
+
+test("users and calendar-settings stores are both built from the shared Blob adapter", async () => {
+  const store = await read("app/lib/user-store.ts");
+  assert.match(store, /return blobJsonStorage<UserRecord\[\]>\(pathname, parseUsersJson,/);
+  const cal = await read("app/lib/calendar-settings-store.ts");
+  assert.match(cal, /return blobJsonStorage<CalendarSettings>\(pathname, parseSettingsJson,/);
+  assert.doesNotMatch(cal, /import\("@vercel\/blob"\)/);
 });
 
 test("user-store Blob get and put carry a per-call timeout signal", async () => {
   const store = await read("app/lib/user-store.ts");
   assert.match(block(store, "async read()"), /get\(pathname, \{ access: "private", useCache: false, abortSignal: blobTimeoutSignal\(\) \}\)/);
-  assert.match(block(store, "async write(users)"), /abortSignal: blobTimeoutSignal\(\)/);
+  assert.match(block(store, "async write(value)"), /abortSignal: blobTimeoutSignal\(\)/);
   // Not AbortSignal.timeout(): its TimeoutError is retried by the SDK with backoff (minutes).
   assert.doesNotMatch(store, /AbortSignal\.timeout\(/);
 });
@@ -267,7 +276,9 @@ function unguardedWriteHandlers(path, source) {
 
 // Exempt: the admin API has its own admin gate, presence is a heartbeat, and the Auth.js
 // handlers are the sign-in flow itself (they must not be write-guarded or nobody could sign in).
-const SWEEP_EXEMPT = new Set(["app/api/admin/users/route.ts", "app/api/presence/route.ts", "app/api/auth/[...nextauth]/route.ts"]);
+// app/api/admin/calendar/route.ts is admin-gated inside handleAdminCalendar (admin check before any
+// settings or Google access, asserted below), so it must not also require requestWriterEmail.
+const SWEEP_EXEMPT = new Set(["app/api/admin/users/route.ts", "app/api/admin/calendar/route.ts", "app/api/presence/route.ts", "app/api/auth/[...nextauth]/route.ts"]);
 
 test("sweep: every mutating route handler is guarded, except admin users, presence and Auth.js", async () => {
   const routes = (await sourceFiles("app/api")).filter((path) => path.endsWith("/route.ts"));
@@ -277,6 +288,24 @@ test("sweep: every mutating route handler is guarded, except admin users, presen
     if (SWEEP_EXEMPT.has(path)) continue;
     assert.deepEqual(unguardedWriteHandlers(path, await read(path)), []);
   }
+});
+
+test("admin calendar route is exempt because its handler is admin-gated before any settings or Google access", async () => {
+  const route = await read("app/api/admin/calendar/route.ts");
+  assert.match(route, /handleAdminCalendar\(request, "POST"/);
+  const lib = await read("app/lib/admin-calendar-api.ts");
+  const fn = lib.slice(lib.indexOf("export async function handleAdminCalendar"), lib.indexOf("// ---- production"));
+  const admin = fn.indexOf("await requireAdmin(");
+  assert.ok(admin !== -1);
+  // the shared gate does sign-in (401) then the admin role check (403), before returning an actor
+  const http = await read("app/lib/admin-http.ts");
+  const gate = http.slice(http.indexOf("export async function requireAdmin("), http.indexOf("export function storageFailure"));
+  assert.ok(gate.indexOf("requestUserEmail(") < gate.indexOf('role !== "admin"'));
+  const users = await read("app/lib/admin-users-api.ts");
+  const usersFn = users.slice(users.indexOf("export async function handleAdminUsers"));
+  assert.ok(usersFn.indexOf("await requireAdmin(") !== -1 && usersFn.indexOf("await requireAdmin(") < usersFn.indexOf("store.list()"));
+  for (const work of ["deps.settings", "POST_ACTIONS[", "request.json("]) assert.ok(fn.indexOf(work) > admin, `${work} before admin check`);
+  assert.doesNotMatch(fn, /verifyAccount/);
 });
 
 test("sweep detector flags every export form of an unguarded write handler", () => {
@@ -309,4 +338,30 @@ test("calendar chokepoint also blocks viewers from non-GET Google calls", async 
   assert.ok(auth.indexOf("SIGN_IN_REQUIRED_MESSAGE, 401") < auth.indexOf("VIEWER_READ_ONLY_MESSAGE"));
   const fetchFn = block(calendar, "async function googleFetch(");
   assert.match(fetchFn, /authorizedAccessToken\(request, init\?\.method \?\? "GET"\)/);
+});
+
+test("calendar target is resolved per request: after allowlist+viewer checks, before any Google fetch", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  assert.doesNotMatch(calendar, /\bCALENDAR_ID\b/);
+  assert.match(calendar, /\/calendars\/@master\//);
+  assert.doesNotMatch(calendar, /`\/calendars\/\$\{(?!MASTER_PLACEHOLDER|encodeURIComponent\(calendarId\))/);
+  const auth = block(calendar, "async function authorizedAccessToken(");
+  const i = (needle) => auth.indexOf(needle);
+  assert.ok(i("SIGN_IN_REQUIRED_MESSAGE, 401") < i("VIEWER_READ_ONLY_MESSAGE"));
+  assert.ok(i("VIEWER_READ_ONLY_MESSAGE") < i("resolveCalendarTarget("));
+  assert.ok(i("resolveCalendarTarget(") < i("serverAccessToken("));
+  // the lock only stops writes; GET reads keep working while locked
+  assert.match(auth, /target\.locked && method\.toUpperCase\(\) !== "GET"/);
+  assert.match(auth, /CALENDAR_LOCKED_MESSAGE, 503/);
+  // only GET may use the cached settings read; writes always read fresh
+  assert.match(auth, /allowCached: method\.toUpperCase\(\) === "GET"/);
+  const fetchFn = block(calendar, "async function googleFetch(");
+  // the request is sent (sendWithDeadline) only after the target was resolved; @master substitution is the
+  // pure resolveCalendarPath (calendar-target.ts, tested there)
+  assert.ok(fetchFn.indexOf("authorizedAccessToken(") !== -1);
+  assert.ok(fetchFn.indexOf("authorizedAccessToken(") < fetchFn.indexOf("sendWithDeadline(fetch,"));
+  assert.match(fetchFn, /resolveCalendarPath\(path, calendarId\)/);
+  // caches are keyed by a hash of the refresh token, never the token itself
+  assert.match(calendar, /createHash\("sha256"\)/);
+  assert.doesNotMatch(calendar, /cachedServerToken\b|inflightServerToken\b/);
 });

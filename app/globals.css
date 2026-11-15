@@ -904,3 +904,32 @@ button:disabled { cursor: not-allowed; }
   .admin-add-form, .admin-row { grid-template-columns: minmax(0, 1fr); }
   .admin-row-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
 }
+
+/* Admin: master calendar (/admin). Aurora tokens only. */
+.admin-calendar-intro { margin: 0 0 14px; color: var(--muted); font-size: 14px; line-height: 1.65; }
+.admin-calendar-status { display: grid; gap: 10px; margin: 0 0 16px; }
+.admin-calendar-status > div { padding: 12px 14px; border-radius: 18px; background: var(--glass-strong); box-shadow: var(--raised); }
+.admin-calendar-status dt { color: var(--muted); font-size: 12px; font-weight: 800; }
+.admin-calendar-status dd { margin: 2px 0 0; }
+.admin-calendar-status strong { display: block; font-size: 15px; overflow-wrap: anywhere; }
+.admin-calendar-status small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.admin-calendar-lock { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 16px; padding: 12px 14px; border-radius: 18px; color: var(--amber); background: var(--amber-tint); font-size: 14px; font-weight: 700; }
+.admin-calendar-lock p { flex: 1; margin: 0; }
+.admin-calendar-form { display: grid; gap: 12px; margin-bottom: 14px; }
+.admin-calendar-form button, .admin-calendar-switch { min-height: 48px; padding: 0 22px; border-radius: 999px; color: var(--on-rose); background: var(--grad); box-shadow: var(--shadow-glow); font-size: 14px; font-weight: 800; }
+.admin-calendar-form button:disabled, .admin-calendar-switch:disabled, .admin-calendar-lock button:disabled, .admin-calendar-actions button:disabled { cursor: not-allowed; opacity: .55; }
+.admin-calendar-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.admin-calendar-preview { margin: 12px 0; padding: 14px; border-radius: 18px; background: var(--glass-strong); box-shadow: var(--pressed); font-size: 14px; }
+.admin-calendar-preview table { width: 100%; border-collapse: collapse; }
+.admin-calendar-preview caption { margin-bottom: 6px; text-align: left; font-weight: 800; }
+.admin-calendar-preview th { text-align: left; font-weight: 600; }
+.admin-calendar-preview td { text-align: right; font-weight: 800; }
+.admin-calendar-months { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-calendar-warning { margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; color: var(--amber); background: var(--amber-tint); font-weight: 700; }
+.admin-calendar-busy { margin: 12px 0 0; padding: 12px 14px; border-radius: 14px; color: var(--rose-deep); background: var(--rose-soft); font-size: 14px; font-weight: 800; }
+.admin-calendar-dialog-body p { margin: 0 0 8px; font-size: 14px; line-height: 1.6; }
+.admin-calendar-ack { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; font-size: 14px; font-weight: 700; }
+.admin-calendar-ack input { width: 22px; height: 22px; flex: none; }
+@media (max-width: 650px) {
+  .admin-calendar-actions button, .admin-calendar-form button { width: 100%; }
+}
