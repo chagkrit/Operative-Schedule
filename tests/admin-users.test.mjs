@@ -378,3 +378,12 @@ test("viewer role is accepted by POST and PATCH; unknown roles still 400", async
   const bad = await call(store, "PATCH", { as: ADMIN, body: { email: HN, role: "root" } });
   assert.equal(bad.status, 400);
 });
+
+test("AdminUsers offers the viewer role and labels all three roles in the PATCH success message", async () => {
+  const ui = await read("app/admin/AdminUsers.tsx");
+  assert.ok(ui.includes('{ value: "viewer", label: "ดูอย่างเดียว (viewer)" }'));
+  assert.match(ui, /ROLE_LABELS[^=]*=\s*\{[^}]*admin: "ผู้ดูแลระบบ"[^}]*user: "ผู้ใช้"[^}]*viewer: "ดูอย่างเดียว"/s);
+  assert.match(ui, /\$\{ROLE_LABELS\[role\]\}/);
+  assert.doesNotMatch(ui, /role === "admin" \? "ผู้ดูแลระบบ" : "ผู้ใช้"/);
+  assert.match(ui, /useState<Role>\("user"\)/);
+});
