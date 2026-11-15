@@ -195,3 +195,16 @@ test("runbook + README (fix round 2): Bangkok time zone for the new calendar; th
   }
   assert.ok(!runbook.includes("**ทุกอย่างที่แอปอ่านได้ต้องอยู่ในแผนคัดลอก**"), "no unqualified claim");
 });
+
+test("docs (fix round 3): the time-zone refusal; booking horizon worded as the code has it", async () => {
+  const runbook = await read(RUNBOOK);
+  const readme = await read("README.md");
+  assert.ok(runbook.includes("ตรวจ time zone ของปฏิทินใหม่ก่อนล็อก"), "the new pre-lock check");
+  for (const text of [runbook, readme]) {
+    assert.ok(!text.includes("แอปเองให้จองล่วงหน้าได้ไม่เกิน 12 เดือน จึงอยู่ในช่วงนี้"), "old inexact claim");
+    assert.ok(!text.includes("(แอปจองล่วงหน้าได้ไม่เกิน 12 เดือน)"), "old inexact claim");
+  }
+  // endOfRollingHorizon: the end of the month 12 months after the current one
+  assert.ok(runbook.includes("สิ้นเดือนที่ห่างจากเดือนปัจจุบัน 12 เดือน"));
+  assert.ok(runbook.includes("ไม่จำกัดวัน"), "the staff schedule reads upcoming bookings with no end date");
+});

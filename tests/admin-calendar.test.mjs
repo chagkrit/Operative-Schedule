@@ -45,7 +45,8 @@ function memorySettings(initial) {
 }
 
 // In-memory Google calendars keyed by calendar id (synthetic events only).
-function fakeCalendars(initial = {}) {
+// zones: calendar id -> its own time zone (default Asia/Bangkok; null = Google sent no timeZone field)
+function fakeCalendars(initial = {}, zones = {}) {
   const cals = new Map(Object.entries(initial).map(([id, events]) => [id, new Map(events.map((e) => [e.id, structuredClone(e)]))]));
   const made = [];
   const makeClient = ({ calendarId, refreshToken }) => {
@@ -53,6 +54,9 @@ function fakeCalendars(initial = {}) {
     if (!cals.has(calendarId)) cals.set(calendarId, new Map());
     const events = cals.get(calendarId);
     return {
+      async calendarTimeZone() {
+        return Object.hasOwn(zones, calendarId) ? zones[calendarId] : "Asia/Bangkok";
+      },
       async listEvents(opts) {
         if (opts?.expand) return expandEvents([...events.values()], opts.expand);
         return [...events.values()].map((e) => structuredClone(e));
@@ -79,10 +83,10 @@ function fakeCalendars(initial = {}) {
   return { cals, made, makeClient };
 }
 
-function harness({ settings, key = KEY, verify, env = {}, calendars } = {}) {
+function harness({ settings, key = KEY, verify, env = {}, calendars, zones } = {}) {
   if (key === null) key = undefined; // pass null for "no key" (undefined would pick the default)
   const mem = memorySettings(settings);
-  const google = fakeCalendars(calendars);
+  const google = fakeCalendars(calendars, zones);
   const sleeps = [];
   const calls = [];
   const verifyAccount = async (a) => {
@@ -421,6 +425,8 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       recurring: 0,
       exceptions: { modify: 0, cancel: 0 },
       uncoveredOccurrences: 0,
+      targetTimeZoneOk: true,
+      sourceTimeZoneOk: true,
       planBlocked: null,
       diagnostics: {
         invalidIds: {
@@ -959,4 +965,47 @@ test("handler reads pass timeZone=Asia/Bangkok", async () => {
   assert.equal((await call(h, "POST", { as: ADMIN, body: { action: "preview" } })).status, 200);
   assert.equal((await call(h, "POST", { as: ADMIN, body: { action: "switch" } })).status, 200);
   assert.ok(zones.length >= 12 && zones.every((z) => z === "Asia/Bangkok"), JSON.stringify(zones));
+});
+
+// ---- step 2 fix round 3: the new calendar must be in Asia/Bangkok (checked before the lock) ----
+test("a target calendar not in Asia/Bangkok is refused BEFORE the lock (preview blocks; switch 409, no writes, no lock)", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "cal-new@group.calendar.google.com": "UTC" } });
+  const seen = countUpserts(h);
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.targetTimeZoneOk, false);
+  assert.equal(p.json.planBlocked, sw.TARGET_TIME_ZONE_MESSAGE);
+  assert.match(sw.TARGET_TIME_ZONE_MESSAGE, /\(GMT\+07:00\) Bangkok/);
+  assert.match(sw.TARGET_TIME_ZONE_MESSAGE, /ยังไม่ได้เปลี่ยนปฏิทิน/);
+  assert.ok(!p.text.includes("UTC"), "the zone value itself is not echoed");
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409, r.text);
+  assert.equal(r.json.step, "preflight");
+  assert.equal(r.json.switched, false);
+  assert.equal(r.json.error, sw.TARGET_TIME_ZONE_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  assert.equal(h.state.data.lock, undefined);
+  assert.equal(Object.keys(seen.upserts).length, 0);
+});
+
+test("a target calendar whose time zone Google does not report is refused (fail safe)", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "cal-new@group.calendar.google.com": null } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.targetTimeZoneOk, false);
+  assert.equal(p.json.planBlocked, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409);
+  assert.equal(r.json.error, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  for (const m of [sw.TARGET_TIME_ZONE_MESSAGE, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE]) assert.doesNotMatch(m, /กดเปลี่ยนอีกครั้ง/);
+});
+
+test("a Bangkok target passes; the SOURCE's zone is reported only (never blocks)", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "hnbcmu@gmail.com": "America/New_York" } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.targetTimeZoneOk, true);
+  assert.equal(p.json.sourceTimeZoneOk, false);
+  assert.equal(p.json.planBlocked, null);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
 });

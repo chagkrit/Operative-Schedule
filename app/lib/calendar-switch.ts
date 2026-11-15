@@ -58,6 +58,9 @@ export type CalendarClient = {
   // runSwitch verifies what the app will really see.
   updateInstance(instanceId: string, body: GoogleEventLike): Promise<void>;
   deleteInstance(instanceId: string): Promise<"deleted" | "gone">;
+  // The calendar's own time zone (events.list's top-level timeZone; calendars.get is not allowed with the
+  // calendar.events scope), or null when Google does not send it.
+  calendarTimeZone(opts?: { deadline?: number }): Promise<string | null>;
 };
 
 export const COPY_KINDS = ["booking", "extra_day", "schedule_closure", "staff_unavailable", "legacy"] as const;
@@ -404,6 +407,13 @@ export type CopyPlan = {
   diagnostics: PlanDiagnostics;
 };
 
+// After the switch the app reads the new calendar WITHOUT a timeZone parameter, i.e. in that calendar's own
+// zone, and takes booking dates from dateTime.slice(0, 10): the new calendar must be in APP_TIME_ZONE.
+export const TARGET_TIME_ZONE_MESSAGE =
+  "ปฏิทินใหม่ไม่ได้ตั้ง time zone เป็น (GMT+07:00) Bangkok จึงยังไม่ได้เปลี่ยนปฏิทิน ให้เปิด Google Calendar → Settings → เลือกปฏิทินใหม่ → Time zone แล้วตั้งเป็น (GMT+07:00) Bangkok จากนั้นกดตรวจตัวอย่างใหม่";
+export const TARGET_TIME_ZONE_UNKNOWN_MESSAGE =
+  "อ่าน time zone ของปฏิทินใหม่ไม่ได้ (Google ไม่ส่งค่ามา) จึงยังไม่ได้เปลี่ยนปฏิทิน ตรวจว่าปฏิทินใหม่ตั้ง time zone เป็น (GMT+07:00) Bangkok แล้วกดตรวจตัวอย่างใหม่ ถ้ายังขึ้นข้อความนี้ให้ติดต่อผู้พัฒนา";
+
 export const UNCOVERED_OCCURRENCES_MESSAGE =
   "ปฏิทินหลักปัจจุบันมีรายการที่แอปแสดงอยู่แต่ไม่อยู่ในแผนคัดลอก จึงยังไม่ได้เปลี่ยนปฏิทิน ให้หยุดตรงนี้ ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
 
@@ -658,11 +668,14 @@ function targetConflictCount(plan: CopyPlan, targetEvents: GoogleEventLike[]): n
 // calendar without such entries can be the target) and a plan refusal. invalidIds (remapped ids) and
 // exceptions are informational.
 // expanded = the source's app view (singleEvents=true over `window`), read without writes.
+// targetTimeZone = the target calendar's own zone (null = Google sent none; undefined = not checked). A zone
+// other than APP_TIME_ZONE, or none, is refused; that refusal wins (the admin can fix it in the settings).
 export function switchPreflight(
   sourceEvents: GoogleEventLike[],
   targetEvents: GoogleEventLike[],
   expanded?: GoogleEventLike[],
   viewWindow: ExpansionWindow = expansionWindow(),
+  targetTimeZone?: string | null,
 ): {
   targetConflicts: number;
   invalidIds: number;
@@ -678,7 +691,12 @@ export function switchPreflight(
     exceptions: { ...plan.diagnostics.exceptions },
     uncoveredOccurrences: plan.uncoveredOccurrences,
     orphanedExceptions: plan.diagnostics.orphanedExceptions,
-    refusal: plan.refusal,
+    refusal:
+      targetTimeZone === undefined || targetTimeZone === APP_TIME_ZONE
+        ? plan.refusal
+        : targetTimeZone === null
+          ? TARGET_TIME_ZONE_UNKNOWN_MESSAGE
+          : TARGET_TIME_ZONE_MESSAGE,
   };
   return out;
 }
@@ -1407,6 +1425,15 @@ export function createGoogleCalendarClient(
       const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body }, startedAt);
       if (updated.ok) return "updated";
       throw new GoogleCalendarError("calendar update failed", updated.status);
+    },
+
+    async calendarTimeZone(opts) {
+      const deadline = opts?.deadline;
+      const params = new URLSearchParams({ maxResults: "1", fields: "timeZone" });
+      const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now(), deadline);
+      if (!response.ok) throw new GoogleCalendarError("calendar time zone read failed", response.status);
+      const payload = (await response.json().catch(() => null)) as { timeZone?: unknown } | null;
+      return payload && typeof payload.timeZone === "string" && payload.timeZone ? payload.timeZone : null;
     },
 
     // events.update (PUT) on the occurrence's instance id with the full occurrence makes it a modified

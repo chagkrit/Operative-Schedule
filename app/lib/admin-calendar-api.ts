@@ -244,13 +244,13 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
     console.error(`[admin-calendar] preview ${reads.side} read failed:`, reads.errorName);
     return { status: 502, body: { error: reads.side === "source" ? PREVIEW_SOURCE_FAILED_MESSAGE : PREVIEW_TARGET_FAILED_MESSAGE } };
   }
-  const { sourceEvents, expanded, targetEvents, viewWindow } = reads;
+  const { sourceEvents, expanded, targetEvents, viewWindow, targetTimeZone, sourceTimeZone } = reads;
   const plan = planCopy(sourceEvents, expanded, viewWindow);
   const recurring = countRecurring(sourceEvents);
   // Counts and month keys only: events carry patient identifiers and never leave the server.
   // Same rule as the switch's preflight (switchPreflight). invalidIds = events copied under a new id
   // (informational); planBlocked = fixed Thai refusal or null. Deleted target entries are not "events".
-  const { targetConflicts, invalidIds, exceptions, uncoveredOccurrences, refusal } = switchPreflight(sourceEvents, targetEvents, expanded, viewWindow);
+  const { targetConflicts, invalidIds, exceptions, uncoveredOccurrences, refusal } = switchPreflight(sourceEvents, targetEvents, expanded, viewWindow, targetTimeZone);
   const targetEventCount = targetEvents.filter((e) => e?.status !== "cancelled").length;
   return {
     status: 200,
@@ -266,6 +266,9 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
       recurring,
       exceptions,
       uncoveredOccurrences,
+      // booleans only (the zone value is not sent); the source's zone is informational
+      targetTimeZoneOk: targetTimeZone === APP_TIME_ZONE,
+      sourceTimeZoneOk: sourceTimeZone === APP_TIME_ZONE,
       planBlocked: refusal,
       diagnostics: plan.diagnostics,
     },
@@ -282,7 +285,16 @@ async function preflightReads(
   target: CalendarClient,
   deadline: number,
 ): Promise<
-  | { ok: true; sourceEvents: ListedEvents; expanded: ListedEvents; targetEvents: ListedEvents; viewWindow: ReturnType<typeof expansionWindow> }
+  | {
+      ok: true;
+      sourceEvents: ListedEvents;
+      expanded: ListedEvents;
+      targetEvents: ListedEvents;
+      viewWindow: ReturnType<typeof expansionWindow>;
+      // the calendars' own zones (null = not reported); only the target's can refuse
+      targetTimeZone: string | null;
+      sourceTimeZone: string | null;
+    }
   | { ok: false; side: "source" | "target"; errorName: string }
 > {
   const viewWindow = expansionWindow();
@@ -298,11 +310,15 @@ async function preflightReads(
     return { ok: false, side: "source", errorName: name(err) };
   }
   let targetEvents: ListedEvents;
+  let targetTimeZone: string | null;
   try {
     targetEvents = await target.listEvents({ deadline, showDeleted: true, timeZone: APP_TIME_ZONE });
+    targetTimeZone = await target.calendarTimeZone({ deadline });
   } catch (err) {
     return { ok: false, side: "target", errorName: name(err) };
   }
+  // Report only: a failed read of the source's zone is simply "not reported".
+  const sourceTimeZone = await source.calendarTimeZone({ deadline }).catch(() => null);
   if (switchPreflight(pair.sourceEvents, targetEvents, pair.expanded, viewWindow).uncoveredOccurrences > 0) {
     try {
       pair = await readPair();
@@ -310,7 +326,7 @@ async function preflightReads(
       return { ok: false, side: "source", errorName: name(err) };
     }
   }
-  return { ok: true, sourceEvents: pair.sourceEvents, expanded: pair.expanded, targetEvents, viewWindow };
+  return { ok: true, sourceEvents: pair.sourceEvents, expanded: pair.expanded, targetEvents, viewWindow, targetTimeZone, sourceTimeZone };
 }
 
 async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarDeps, actor: string): Promise<ActionResult> {
@@ -358,7 +374,7 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
     console.error(`[admin-calendar] switch preflight ${reads.side} read failed:`, reads.errorName);
     return reads.side === "source" ? refuse(502, SWITCH_STEP_MESSAGES.read, "read") : refuse(502, PREFLIGHT_TARGET_FAILED_MESSAGE);
   }
-  const blockers = switchPreflight(reads.sourceEvents, reads.targetEvents, reads.expanded, reads.viewWindow);
+  const blockers = switchPreflight(reads.sourceEvents, reads.targetEvents, reads.expanded, reads.viewWindow, reads.targetTimeZone);
   if (blockers.targetConflicts > 0) return refuse(409, TARGET_CONFLICTS_MESSAGE);
   if (blockers.refusal) return refuse(409, blockers.refusal);
 

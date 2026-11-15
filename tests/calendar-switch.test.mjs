@@ -2160,3 +2160,31 @@ test("google client: expanded reads use a fields projection that keeps nextPageT
     assert.equal(q.get("timeZone"), "Asia/Bangkok");
   }
 });
+
+// ==== step 2 fix round 3: target calendar time zone ====
+test("switchPreflight refuses a target zone other than Asia/Bangkok, and a missing one; undefined = not checked", () => {
+  const ev = { ...structuredClone(EXTRA) };
+  assert.equal(sw.switchPreflight([ev], [], undefined, undefined, "Asia/Bangkok").refusal, null);
+  assert.equal(sw.switchPreflight([ev], [], undefined, undefined, "UTC").refusal, sw.TARGET_TIME_ZONE_MESSAGE);
+  assert.equal(sw.switchPreflight([ev], [], undefined, undefined, null).refusal, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE);
+  assert.equal(sw.switchPreflight([ev], []).refusal, null);
+  // the zone refusal wins over a plan refusal (the admin can fix it in Google Calendar settings)
+  const twin = { ...structuredClone(EXTRA), id: expectRemap(BAD_ID) };
+  assert.equal(sw.switchPreflight([BAD_LEGACY, twin], [], undefined, undefined, "UTC").refusal, sw.TARGET_TIME_ZONE_MESSAGE);
+});
+
+test("google client: calendarTimeZone reads the events.list top-level timeZone (fields=timeZone); missing → null; errors are fixed text", async () => {
+  let body = { timeZone: "Asia/Bangkok", items: [] };
+  const { seen, fetchFn } = fakeGoogle(() => (body === "error" ? Response.json({ error: { message: "SYNTH-GOOGLE-TEXT" } }, { status: 403 }) : Response.json(body)));
+  const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  assert.equal(await client.calendarTimeZone(), "Asia/Bangkok");
+  const q = new URL(seen.filter((x) => x.url.includes("/events")).at(-1).url).searchParams;
+  assert.equal(q.get("fields"), "timeZone");
+  assert.equal(q.get("maxResults"), "1");
+  body = { items: [] };
+  assert.equal(await client.calendarTimeZone(), null);
+  body = { timeZone: 5 };
+  assert.equal(await client.calendarTimeZone(), null);
+  body = "error";
+  await assert.rejects(() => client.calendarTimeZone(), (err) => !String(err.message).includes("SYNTH-GOOGLE-TEXT"));
+});
