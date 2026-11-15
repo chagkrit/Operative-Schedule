@@ -182,3 +182,16 @@ test("runbook (fix round 1): remapped ids are not 'kept', coverage of what the a
   assert.ok(runbook.includes("ยังไม่มีเอกสารของ Google ยืนยัน"), "states honestly that DELETE on an occurrence is observed, not documented");
   assert.ok(runbook.includes("ตรวจขั้นสุดท้าย"), "the final expanded check");
 });
+
+test("runbook + README (fix round 2): Bangkok time zone for the new calendar; the coverage window stated honestly", async () => {
+  const runbook = await read(RUNBOOK);
+  const readme = await read("README.md");
+  assert.ok(runbook.includes("(GMT+07:00) Bangkok"), "create the calendar in Bangkok time");
+  assert.ok(readme.includes("(GMT+07:00) Bangkok"));
+  for (const text of [runbook, readme]) {
+    assert.ok(text.includes("400 วัน"), "the window end");
+    assert.ok(text.includes("2000"), "the window start");
+    assert.ok(text.includes("12 เดือน"), "the app's own horizon");
+  }
+  assert.ok(!runbook.includes("**ทุกอย่างที่แอปอ่านได้ต้องอยู่ในแผนคัดลอก**"), "no unqualified claim");
+});
