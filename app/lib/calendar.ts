@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { AUTHORIZED_EMAIL } from "../../auth";
+import { CALENDAR_LOCKED_MESSAGE, MASTER_PLACEHOLDER, resolveCalendarTarget } from "./calendar-target";
+import { calendarSettingsStore } from "./calendar-settings-store";
 import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail, VIEWER_READ_ONLY_MESSAGE } from "./session";
 import { userStore } from "./user-store";
 import { canWrite } from "./users";
@@ -74,8 +77,6 @@ type GoogleEvent = LegacyCalendarEvent & {
   extendedProperties?: { private?: Record<string, string> };
 };
 
-const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || AUTHORIZED_EMAIL;
-
 export const STAFF_EVENT_COLORS: Record<string, string> = {
   "อ อารีวรรณ": "5", // yellow
   "อ กีรติ": "10", // green
@@ -126,10 +127,13 @@ function withStatus(message: string, status: number) {
 
 type GoogleTokenResponse = { access_token?: string; expires_in?: number; error?: string; error_description?: string };
 
-// With GOOGLE_REFRESH_TOKEN set, the server owns one long-lived Calendar grant for hnbcmu@gmail.com
-// instead of each device's session cookie carrying its own (which silently expires per device).
-let cachedServerToken: { token: string; expiresAt: number } | null = null;
-let inflightServerToken: Promise<string> | null = null;
+// With a server refresh token (settings master or GOOGLE_REFRESH_TOKEN), the server owns one long-lived
+// Calendar grant instead of each device's session cookie carrying its own (which silently expires per device).
+// Caches are per refresh token, keyed by a SHA-256 of it (never the token itself) so a master switch can't reuse
+// the old calendar's access token.
+const cachedServerTokens = new Map<string, { token: string; expiresAt: number }>();
+const inflightServerTokens = new Map<string, Promise<string>>();
+const tokenCacheKey = (refreshToken: string) => createHash("sha256").update(refreshToken).digest("hex");
 
 async function requestAccessToken(refreshToken: string) {
   const response = await fetch("https://oauth2.googleapis.com/token", {
@@ -148,29 +152,37 @@ async function requestAccessToken(refreshToken: string) {
 }
 
 async function serverAccessToken(refreshToken: string) {
-  if (cachedServerToken && cachedServerToken.expiresAt > Date.now() + 60_000) return cachedServerToken.token;
-  inflightServerToken ??= (async () => {
-    const { ok, payload } = await requestAccessToken(refreshToken);
-    if (!ok || !payload.access_token) {
-      cachedServerToken = null;
-      throw withStatus(
-        payload.error === "invalid_grant"
-          ? "การเชื่อม Google Calendar ของระบบหมดอายุหรือถูกเพิกถอน ผู้ดูแลระบบต้องต่ออายุ ดูวิธีใน README"
-          : "ต่ออายุการเชื่อม Google Calendar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
-        503,
-      );
-    }
-    cachedServerToken = { token: payload.access_token, expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000 };
-    return payload.access_token;
-  })().finally(() => {
-    inflightServerToken = null;
-  });
-  return inflightServerToken;
+  const key = tokenCacheKey(refreshToken);
+  const cached = cachedServerTokens.get(key);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+  let inflight = inflightServerTokens.get(key);
+  if (!inflight) {
+    inflight = (async () => {
+      const { ok, payload } = await requestAccessToken(refreshToken);
+      if (!ok || !payload.access_token) {
+        cachedServerTokens.delete(key);
+        throw withStatus(
+          payload.error === "invalid_grant"
+            ? "การเชื่อม Google Calendar ของระบบหมดอายุหรือถูกเพิกถอน ผู้ดูแลระบบต้องต่ออายุ ดูวิธีใน README"
+            : "ต่ออายุการเชื่อม Google Calendar ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+          503,
+        );
+      }
+      cachedServerTokens.set(key, { token: payload.access_token, expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000 });
+      return payload.access_token;
+    })().finally(() => {
+      inflightServerTokens.delete(key);
+    });
+    inflightServerTokens.set(key, inflight);
+  }
+  return inflight;
 }
+
+type AuthorizedCalendarAccess = { accessToken: string; calendarId: string };
 
 // The single chokepoint for every Calendar API call: verified session + allowlist (cached ≤30 s,
 // so a removed/deactivated user loses API access within ~30 s). A deny only rejects this request.
-async function authorizedAccessToken(request: Request, method = "GET") {
+async function authorizedAccessToken(request: Request, method = "GET"): Promise<AuthorizedCalendarAccess> {
   const token = await requestToken(request);
   const email = tokenEmail(token);
   const access = token && email ? await userStore.getAccess(email) : null;
@@ -181,16 +193,32 @@ async function authorizedAccessToken(request: Request, method = "GET") {
   if (!canWrite(access.role) && method.toUpperCase() !== "GET") {
     throw withStatus(VIEWER_READ_ONLY_MESSAGE, 403);
   }
-  if (process.env.GOOGLE_REFRESH_TOKEN) {
+  // Which calendar + grant: the settings file when present, else the environment exactly as before.
+  const target = await resolveCalendarTarget({
+    store: calendarSettingsStore,
+    env: {
+      GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID,
+      AUTHORIZED_EMAIL,
+      GOOGLE_REFRESH_TOKEN: process.env.GOOGLE_REFRESH_TOKEN,
+      CALENDAR_SETTINGS_KEY: process.env.CALENDAR_SETTINGS_KEY,
+    },
+    now: Date.now(),
+  });
+  // While the Admin switches calendars, writes pause; reads keep working.
+  if (target.locked && method.toUpperCase() !== "GET") {
+    throw withStatus(CALENDAR_LOCKED_MESSAGE, 503);
+  }
+  const { calendarId } = target;
+  if (target.refreshToken) {
     if (!process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
       throw withStatus("ระบบยังตั้งค่า Google OAuth ไม่ครบ ผู้ดูแลระบบต้องตรวจสอบ", 503);
     }
-    return serverAccessToken(process.env.GOOGLE_REFRESH_TOKEN);
+    return { accessToken: await serverAccessToken(target.refreshToken), calendarId };
   }
 
   // Fallback while GOOGLE_REFRESH_TOKEN is not configured: per-device token from the session cookie.
   if (token.accessToken && Number(token.expiresAt || 0) * 1000 > Date.now() + 30_000) {
-    return String(token.accessToken);
+    return { accessToken: String(token.accessToken), calendarId };
   }
   if (!token.refreshToken || !process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
     throw withStatus("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่", 401);
@@ -204,15 +232,16 @@ async function authorizedAccessToken(request: Request, method = "GET") {
       payload.error === "invalid_grant" ? 401 : 502,
     );
   }
-  return payload.access_token;
+  return { accessToken: payload.access_token, calendarId };
 }
 
 async function googleFetch(request: Request, path: string, init?: RequestInit) {
-  const token = await authorizedAccessToken(request, init?.method ?? "GET");
-  const response = await fetch(`https://www.googleapis.com/calendar/v3${path}`, {
+  const { accessToken, calendarId } = await authorizedAccessToken(request, init?.method ?? "GET");
+  const resolvedPath = path.replace(`/calendars/${MASTER_PLACEHOLDER}/`, `/calendars/${encodeURIComponent(calendarId)}/`);
+  const response = await fetch(`https://www.googleapis.com/calendar/v3${resolvedPath}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${accessToken}`,
       ...(init?.body ? { "content-type": "application/json" } : {}),
       ...init?.headers,
     },
@@ -241,7 +270,7 @@ async function listTaggedEvents(request: Request, tag: "booking" | "extra_day" |
     if (pageToken) params.set("pageToken", pageToken);
     const response = await googleFetch(
       request,
-      `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params.toString()}`,
+      `/calendars/@master/events?${params.toString()}`,
     );
     const payload = (await response.json()) as { items?: GoogleEvent[]; nextPageToken?: string };
     events.push(...(payload.items || []));
@@ -262,7 +291,7 @@ async function listAllEvents(request: Request, from: string, to?: string, query 
     if (to) params.set("timeMax", `${addDays(to, 1)}T00:00:00+07:00`);
     if (query) params.set("q", query);
     if (pageToken) params.set("pageToken", pageToken);
-    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params.toString()}`);
+    const response = await googleFetch(request, `/calendars/@master/events?${params.toString()}`);
     const payload = (await response.json()) as { items?: GoogleEvent[]; nextPageToken?: string };
     events.push(...(payload.items || []));
     pageToken = payload.nextPageToken || "";
@@ -404,7 +433,7 @@ export async function createBookingEvent(
   const room = booking.queueType === "OR17" ? "OR 17" : "OR Extra";
   const timing = bookingEventTiming(booking.scheduleDate, booking.slotNo);
   try {
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events?sendUpdates=none`, {
+    await googleFetch(request, `/calendars/@master/events?sendUpdates=none`, {
       method: "POST",
       body: JSON.stringify({
         id,
@@ -484,7 +513,7 @@ export async function listRecentMoves(request: Request, from: string, to: string
 export async function getCalendarBooking(request: Request, id: string) {
   const response = await googleFetch(
     request,
-    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`,
+    `/calendars/@master/events/${encodeURIComponent(id)}`,
   );
   const event = (await response.json()) as GoogleEvent;
   const booking = bookingFromEvent(event) || parseLegacyCalendarEvent(event);
@@ -548,7 +577,7 @@ async function patchBookingEvent(request: Request, id: string, booking: Calendar
   const timing = bookingEventTiming(booking.scheduleDate, booking.slotNo);
   await googleFetch(
     request,
-    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    `/calendars/@master/events/${encodeURIComponent(id)}?sendUpdates=none`,
     {
       method: "PATCH",
       body: JSON.stringify({
@@ -603,7 +632,7 @@ export async function restoreCalendarBooking(
   const timing = bookingEventTiming(booking.scheduleDate, booking.slotNo);
   await googleFetch(
     request,
-    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    `/calendars/@master/events/${encodeURIComponent(id)}?sendUpdates=none`,
     {
       method: "PATCH",
       body: JSON.stringify({
@@ -650,16 +679,16 @@ export async function upsertExtraDayEvent(request: Request, extra: Omit<Calendar
     } },
   });
   try {
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${id}`, { method: "PUT", body });
+    await googleFetch(request, `/calendars/@master/events/${id}`, { method: "PUT", body });
   } catch (error) {
     if ((error as { status?: number }).status !== 404) throw error;
-    await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
+    await googleFetch(request, `/calendars/@master/events`, { method: "POST", body });
   }
   return id;
 }
 
 export async function deleteExtraDayEvent(request: Request, id: string) {
-  await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await googleFetch(request, `/calendars/@master/events/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function saveScheduleClosureEvent(
@@ -688,7 +717,7 @@ export async function saveScheduleClosureEvent(
   const body = JSON.stringify(closure.id ? fields : { id, ...fields });
   if (closure.id) {
     // With ifMatch, Google answers 412 when the event changed since that etag (someone else edited it).
-    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, {
+    const response = await googleFetch(request, `/calendars/@master/events/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body,
       ...(options.ifMatch ? { headers: { "if-match": options.ifMatch } } : {}),
@@ -699,17 +728,17 @@ export async function saveScheduleClosureEvent(
   // The per-date id may still belong to a live closure that was later moved to another date by an
   // edit. Writing to that id would drag it back here and overwrite it, so use a Google-assigned id.
   if (await getEventVersion(request, id)) {
-    const created = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body: JSON.stringify(fields) });
+    const created = await googleFetch(request, `/calendars/@master/events`, { method: "POST", body: JSON.stringify(fields) });
     const event = (await created.json()) as { id?: string; etag?: string };
     if (!event.id) throw new Error("Google Calendar ไม่ส่งรหัสรายการกลับมา");
     return { id: event.id, etag: event.etag || "", sharedId: false };
   }
   let response: Response;
   try {
-    response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${id}`, { method: "PUT", body });
+    response = await googleFetch(request, `/calendars/@master/events/${id}`, { method: "PUT", body });
   } catch (error) {
     if ((error as { status?: number }).status !== 404) throw error;
-    response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
+    response = await googleFetch(request, `/calendars/@master/events`, { method: "POST", body });
   }
   const saved = (await response.json().catch(() => ({}))) as { etag?: string };
   // sharedId: every create for this date writes this same event, so a concurrent create may rely on it.
@@ -744,7 +773,7 @@ export async function getEventVersion(
   id: string,
 ): Promise<{ etag: string; startDate: string; endDate: string } | null> {
   try {
-    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`);
+    const response = await googleFetch(request, `/calendars/@master/events/${encodeURIComponent(id)}`);
     const event = (await response.json()) as { etag?: string; status?: string; start?: { date?: string }; end?: { date?: string } };
     if (event.status === "cancelled" || !event.start?.date || !event.end?.date) return null;
     return { etag: event.etag || "", startDate: event.start.date, endDate: addDays(event.end.date, -1) };
@@ -756,7 +785,7 @@ export async function getEventVersion(
 }
 
 export async function deleteScheduleClosureEvent(request: Request, id: string) {
-  await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await googleFetch(request, `/calendars/@master/events/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function saveStaffUnavailabilityEvent(
@@ -789,7 +818,7 @@ export async function saveStaffUnavailabilityEvent(
   });
   if (entry.id) {
     // With ifMatch, Google answers 412 when the event changed since that etag (someone else edited it).
-    const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(entry.id)}`, {
+    const response = await googleFetch(request, `/calendars/@master/events/${encodeURIComponent(entry.id)}`, {
       method: "PATCH",
       body,
       ...(options.ifMatch ? { headers: { "if-match": options.ifMatch } } : {}),
@@ -797,20 +826,20 @@ export async function saveStaffUnavailabilityEvent(
     const patched = (await response.json().catch(() => ({}))) as { etag?: string };
     return { id: entry.id, etag: patched.etag || "" };
   }
-  const response = await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events`, { method: "POST", body });
+  const response = await googleFetch(request, `/calendars/@master/events`, { method: "POST", body });
   const created = (await response.json()) as { id?: string; etag?: string };
   if (!created.id) throw new Error("Google Calendar ไม่ส่งรหัสรายการกลับมา");
   return { id: created.id, etag: created.etag || "" };
 }
 
 export async function deleteStaffUnavailabilityEvent(request: Request, id: string): Promise<void> {
-  await googleFetch(request, `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await googleFetch(request, `/calendars/@master/events/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function deleteBookingEvent(request: Request, id: string) {
   await googleFetch(
     request,
-    `/calendars/${encodeURIComponent(CALENDAR_ID)}/events/${encodeURIComponent(id)}?sendUpdates=none`,
+    `/calendars/@master/events/${encodeURIComponent(id)}?sendUpdates=none`,
     { method: "DELETE" },
   );
 }

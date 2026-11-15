@@ -57,7 +57,8 @@ test("the Calendar API chokepoint checks the allowlist before any Google token w
   const calendar = await read("app/lib/calendar.ts");
   const fn = block(calendar, "async function authorizedAccessToken(");
   assert.match(fn, /userStore\.getAccess\(/);
-  assert.ok(fn.indexOf("userStore.getAccess(") < fn.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
+  assert.ok(fn.indexOf("userStore.getAccess(") < fn.indexOf("resolveCalendarTarget("));
+  assert.ok(fn.indexOf("userStore.getAccess(") < fn.indexOf("serverAccessToken("));
   assert.match(fn, /withStatus\(SIGN_IN_REQUIRED_MESSAGE, 401\)/);
   assert.doesNotMatch(calendar, /กรุณาเข้าสู่ระบบด้วย hnbcmu/);
   const session = await read("app/lib/session.ts");
@@ -317,4 +318,26 @@ test("calendar chokepoint also blocks viewers from non-GET Google calls", async 
   assert.ok(auth.indexOf("SIGN_IN_REQUIRED_MESSAGE, 401") < auth.indexOf("VIEWER_READ_ONLY_MESSAGE"));
   const fetchFn = block(calendar, "async function googleFetch(");
   assert.match(fetchFn, /authorizedAccessToken\(request, init\?\.method \?\? "GET"\)/);
+});
+
+test("calendar target is resolved per request: after allowlist+viewer checks, before any Google fetch", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  assert.doesNotMatch(calendar, /\bCALENDAR_ID\b/);
+  assert.match(calendar, /\/calendars\/@master\//);
+  assert.doesNotMatch(calendar, /`\/calendars\/\$\{(?!MASTER_PLACEHOLDER|encodeURIComponent\(calendarId\))/);
+  const auth = block(calendar, "async function authorizedAccessToken(");
+  const i = (needle) => auth.indexOf(needle);
+  assert.ok(i("SIGN_IN_REQUIRED_MESSAGE, 401") < i("VIEWER_READ_ONLY_MESSAGE"));
+  assert.ok(i("VIEWER_READ_ONLY_MESSAGE") < i("resolveCalendarTarget("));
+  assert.ok(i("resolveCalendarTarget(") < i("serverAccessToken("));
+  // the lock only stops writes; GET reads keep working while locked
+  assert.match(auth, /target\.locked && method\.toUpperCase\(\) !== "GET"/);
+  assert.match(auth, /CALENDAR_LOCKED_MESSAGE, 503/);
+  const fetchFn = block(calendar, "async function googleFetch(");
+  assert.ok(fetchFn.indexOf("authorizedAccessToken(") < fetchFn.indexOf("await fetch("));
+  assert.match(fetchFn, /MASTER_PLACEHOLDER/);
+  assert.match(fetchFn, /encodeURIComponent\(calendarId\)/);
+  // caches are keyed by a hash of the refresh token, never the token itself
+  assert.match(calendar, /createHash\("sha256"\)/);
+  assert.doesNotMatch(calendar, /cachedServerToken\b|inflightServerToken\b/);
 });
