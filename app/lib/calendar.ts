@@ -4,6 +4,7 @@ import { CALENDAR_LOCKED_MESSAGE, CALENDAR_WRITE_DEADLINE_MS, MASTER_PLACEHOLDER
 import { calendarSettingsStore } from "./calendar-settings-store";
 import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail, VIEWER_READ_ONLY_MESSAGE } from "./session";
 import { userStore } from "./user-store";
+import { isWriteDeadlineError, RECOVERY_LOOKUP_TIMEOUT_MS, resolveAbortedCreate, writeDeadlineError } from "./write-recovery";
 import { canWrite } from "./users";
 import { addDays, daysBetween, orderedStaffMembers } from "./schedule";
 import { parseDurationMinutes } from "./minutes";
@@ -244,9 +245,11 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
 }
 
 async function googleFetch(request: Request, path: string, init?: RequestInit) {
-  // A write is sent within CALENDAR_WRITE_DEADLINE_MS of its lock check or abandoned unsent: the deadline
-  // starts before the check, so a master switch's settle wait (SETTLE_MS) outlasts any write that passed
-  // the check just before the lock was set. Reads keep their old behavior (no deadline).
+  // A write is aborted CALENDAR_WRITE_DEADLINE_MS after the deadline starts (before the lock check), so a
+  // master switch's settle wait (SETTLE_MS) outlasts any write that passed the check just before the lock
+  // was set. Aborting a request Google already received does NOT stop Google from committing it: callers
+  // that create with a client-chosen id must look the id up after a deadline error (createBookingEvent).
+  // Reads keep their old behavior (no deadline).
   const deadline = (init?.method ?? "GET").toUpperCase() === "GET" ? undefined : AbortSignal.timeout(CALENDAR_WRITE_DEADLINE_MS);
   const { accessToken, calendarId } = await authorizedAccessToken(request, init?.method ?? "GET");
   const resolvedPath = path.replace(`/calendars/${MASTER_PLACEHOLDER}/`, `/calendars/${encodeURIComponent(calendarId)}/`);
@@ -263,7 +266,7 @@ async function googleFetch(request: Request, path: string, init?: RequestInit) {
       cache: "no-store",
     });
   } catch (error) {
-    if (deadline?.aborted) throw withStatus("บันทึกไปยัง Google Calendar ใช้เวลานานเกินไป กรุณาตรวจสอบข้อมูลแล้วลองใหม่", 504);
+    if (deadline?.aborted) throw writeDeadlineError();
     throw error;
   }
   if (!response.ok) {
@@ -488,6 +491,14 @@ export async function createBookingEvent(
       }),
     });
   } catch (error) {
+    // The POST may still have been committed after its abort: look the id up before reporting a failure,
+    // or a retry would book the same patient twice.
+    if (isWriteDeadlineError(error)) {
+      await resolveAbortedCreate(error, () =>
+        googleFetch(request, `/calendars/@master/events/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(RECOVERY_LOOKUP_TIMEOUT_MS) }),
+      );
+      return id;
+    }
     if ((error as { status?: number }).status === 409) {
       throw new Error("มีผู้ลงคิวช่องนี้พร้อมกัน กรุณากดบันทึกอีกครั้ง");
     }
