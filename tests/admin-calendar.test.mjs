@@ -60,6 +60,18 @@ function fakeCalendars(initial = {}) {
         events.set(e.id, structuredClone(e));
         return result;
       },
+      // recurring-instance writes: the master must already be in this calendar (else Google answers 404)
+      async patchInstance(id, body) {
+        const masterId = id.slice(0, id.indexOf("_"));
+        if (!events.get(masterId)?.recurrence) throw Object.assign(new Error("SYNTH 404"), { status: 404, instanceMissing: true });
+        events.set(id, { ...(events.get(id) ?? {}), ...structuredClone(body), id, recurringEventId: masterId });
+      },
+      async deleteInstance(id) {
+        const masterId = id.slice(0, id.indexOf("_"));
+        if (!events.get(masterId)?.recurrence || events.get(id)?.status === "cancelled") return "gone";
+        events.set(id, { id, status: "cancelled", recurringEventId: masterId });
+        return "deleted";
+      },
     };
   };
   return { cals, made, makeClient };
@@ -405,6 +417,8 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       targetConflicts: 0,
       invalidIds: 0,
       recurring: 0,
+      exceptions: { modify: 0, cancel: 0 },
+      planBlocked: null,
       diagnostics: {
         invalidIds: {
           reasons: { uppercase: 0, hyphen: 0, underscore: 0, tooShort: 0, tooLong: 0, otherChars: 0 },
@@ -421,6 +435,7 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
           exceptionsCancelled: 0,
         },
         skippedReasons: { cancelled: 0, recurringException: 0, notReadable: 1 },
+        exceptions: { modify: 0, cancel: 0 },
       },
     });
     for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
@@ -725,21 +740,58 @@ test("switch back into the OLD populated calendar after a delete on the new mast
   assert.deepEqual([...h.google.cals.get("cal-c").keys()].sort(), ["ev1aaaaa", "ev3aaaaa"]);
 });
 
-test("source events whose ids Google's insert-with-id rejects: preview counts them, switch refuses BEFORE the lock", async () => {
+test("source events whose ids Google's insert-with-id rejects: preview counts them (not blocking) and the switch copies them under new ids", async () => {
+  // step 2: the invalid-id refusal is gone; such events are remapped (oi + hash) with orig_id = the old id
+  assert.equal(sw.INVALID_EVENT_IDS_MESSAGE, undefined);
   const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), evX("Outlook-Imported-1"), evX("ab-cd-ef")] } });
-  const seen = countUpserts(h);
   const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
   assert.equal(p.status, 200);
   assert.equal(p.json.invalidIds, 2);
+  assert.equal(p.json.planBlocked, null);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.copied, 4);
+  const copied = [...h.google.cals.get("cal-new@group.calendar.google.com").values()];
+  assert.equal(copied.length, 4);
+  for (const e of copied) assert.match(e.id, sw.GOOGLE_EVENT_ID_PATTERN);
+  assert.deepEqual(copied.map((e) => e.extendedProperties?.private?.orig_id).filter(Boolean).sort(), ["Outlook-Imported-1", "ab-cd-ef"]);
+  assert.ok(!r.text.includes("Outlook-Imported-1"));
+  assert.equal(h.state.data.master.calendarId, "cal-new@group.calendar.google.com");
+});
+
+test("preview counts recurring exceptions that will be applied; the switch applies them", async () => {
+  const master = { ...EV.extra, id: "rm0001aa", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const mod = { ...EV.extra, id: "rm0001aa_20270111", recurringEventId: "rm0001aa", originalStartTime: { date: "2027-01-11" }, status: "confirmed", start: { date: "2027-01-12" }, end: { date: "2027-01-13" } };
+  const cxl = { id: "rm0001aa_20270118", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2027-01-18" } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), master, mod, cxl] } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.deepEqual(p.json.exceptions, { modify: 1, cancel: 1 });
+  assert.deepEqual(p.json.diagnostics.exceptions, { modify: 1, cancel: 1 });
+  assert.equal(p.json.planBlocked, null);
+  for (const leak of ["rm0001aa", "SYNTH-SUMMARY"]) assert.ok(!p.text.includes(leak), leak);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.exceptions, { modify: 1, cancel: 1, applied: 2, unchanged: 0 });
+  const cal = h.google.cals.get("cal-new@group.calendar.google.com");
+  assert.equal(cal.get("rm0001aa_20270118").status, "cancelled");
+  assert.deepEqual(cal.get("rm0001aa_20270111").start, { date: "2027-01-12" });
+});
+
+test("an exception of a remapped master: preview shows the blocker and the switch refuses BEFORE the lock", async () => {
+  const master = { ...EV.extra, id: "Bad-Master-1", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const cxl = { id: "Bad-Master-1_20270118", status: "cancelled", recurringEventId: "Bad-Master-1", originalStartTime: { date: "2027-01-18" } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), master, cxl] } });
+  const seen = countUpserts(h);
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.planBlocked, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
+  assert.ok(!p.text.includes("Bad-Master-1"));
   const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
   assert.equal(r.status, 409, r.text);
   assert.equal(r.json.step, "preflight");
-  assert.equal(r.json.error, sw.INVALID_EVENT_IDS_MESSAGE);
-  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /หยุด/);
-  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /ติดต่อผู้พัฒนา/);
-  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /ห้ามแก้ไขหรือลบ/);
+  assert.equal(r.json.switched, false);
+  assert.equal(r.json.error, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
   assert.equal(h.state.writes, 0);
-  assert.equal(h.state.data.lock, undefined);
   assert.equal(Object.keys(seen.upserts).length, 0);
 });
 

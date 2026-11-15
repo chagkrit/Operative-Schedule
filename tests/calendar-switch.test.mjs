@@ -29,7 +29,7 @@ const BOOKING = {
   attendees: [{ email: "someone@example.com" }],
   organizer: { email: "org@example.com" },
 };
-const EXTRA = { id: "ex0001aa", summary: "SYNTH extra", start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } };
+const EXTRA = { id: "ea0001aa", summary: "SYNTH extra", start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } };
 const CLOSURE = { id: "cl0001aa", summary: "ปิดรับคิว • SYNTH", start: { date: "2027-01-05" }, end: { date: "2027-01-06" }, extendedProperties: { private: { or_queue: "schedule_closure", name: "SYNTH" } } };
 const UNAVAIL = { id: "su0001aa", summary: "SYNTH leave", start: { date: "2027-01-06" }, end: { date: "2027-01-08" }, extendedProperties: { private: { or_queue: "staff_unavailable", staff: "SYNTH" } } };
 // Untagged legacy event the app's legacy parser accepts (Thursday, 7-digit synthetic number).
@@ -88,13 +88,15 @@ test("countRecurring counts recurring masters and exception instances", () => {
   assert.equal(sw.countRecurring([master, CANCELLED_INSTANCE, BOOKING, LEGACY]), 2);
 });
 
-test("planCopy carries a recurring master's recurrence and skips exception instances", () => {
+test("planCopy carries a recurring master's recurrence; its exception instances become exception items (not copied as events)", () => {
   const master = { ...structuredClone(LEGACY), id: "rm0001aa", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=2"] };
   const exception = { ...structuredClone(LEGACY), id: "rm0001aa_20261210", recurringEventId: "rm0001aa" };
   const plan = sw.planCopy([master, exception]);
   assert.deepEqual(plan.copy.map((e) => e.id), ["rm0001aa"]);
   assert.deepEqual(plan.copy[0].recurrence, master.recurrence);
-  assert.equal(plan.skipped, 1);
+  // step 2: an exception of a planned master is applied after the copy, no longer skipped
+  assert.equal(plan.skipped, 0);
+  assert.deepEqual(plan.exceptions.map((x) => [x.kind, x.id]), [["modify", "rm0001aa_20261210"]]);
 });
 
 // ---- fakes ----------------------------------------------------------------------
@@ -124,6 +126,45 @@ function fakeCalendar(name, log, events = []) {
       c.events.set(e.id, structuredClone(e));
       c.upserts.push({ id: e.id, result });
       return result;
+    },
+    // Recurring-instance writes, strict like Google: the master (with recurrence) must already be in this
+    // calendar, otherwise the instance id is unknown (404). Stored instances carry recurringEventId and
+    // originalStartTime, as Google lists them (singleEvents=false).
+    instanceOps: [],
+    missingInstances: new Set(),
+    swallowDelete: false,
+    failOnInstanceOp: null,
+    instance(id) {
+      const masterId = id.slice(0, id.indexOf("_"));
+      const master = c.events.get(masterId);
+      const known = !!master && Array.isArray(master.recurrence) && master.recurrence.length > 0 && !c.missingInstances.has(id);
+      return { masterId, known, suffix: id.slice(id.indexOf("_") + 1) };
+    },
+    async patchInstance(id, body) {
+      log.push(`${name}.patch`);
+      const n = c.instanceOps.length + 1;
+      c.instanceOps.push({ op: "patch", id });
+      if (c.failOnInstanceOp === n) throw new Error(`SYNTH google patch failed token=${name}-SECRET`);
+      const { masterId, known, suffix } = c.instance(id);
+      if (!known) throw Object.assign(new Error(`SYNTH 404 token=${name}-SECRET`), { status: 404, instanceMissing: true });
+      const prev = c.events.get(id);
+      const merged = { ...(prev ?? {}), ...structuredClone(body) };
+      if (prev?.extendedProperties || body.extendedProperties) {
+        merged.extendedProperties = { private: { ...(prev?.extendedProperties?.private ?? {}), ...(body.extendedProperties?.private ?? {}) } };
+      }
+      c.events.set(id, { ...merged, id, recurringEventId: masterId, originalStartTime: prev?.originalStartTime ?? { synth: suffix } });
+    },
+    async deleteInstance(id) {
+      log.push(`${name}.delete`);
+      const n = c.instanceOps.length + 1;
+      c.instanceOps.push({ op: "delete", id });
+      if (c.failOnInstanceOp === n) throw new Error(`SYNTH google delete failed token=${name}-SECRET`);
+      const { masterId, known, suffix } = c.instance(id);
+      if (!known || c.swallowDelete) return "gone"; // 404
+      const prev = c.events.get(id);
+      if (prev?.status === "cancelled") return "gone"; // 410
+      c.events.set(id, { id, status: "cancelled", recurringEventId: masterId, originalStartTime: prev?.originalStartTime ?? { synth: suffix } });
+      return "deleted";
     },
   };
   return c;
@@ -1049,11 +1090,13 @@ test("planCopy counts planned events whose id Google's insert-with-id rejects (i
   assert.equal(sw.GOOGLE_EVENT_ID_PATTERN.source, "^[a-v0-9]{5,1024}$");
 });
 
-test("switchPreflight reports target app events missing from the source and invalid source ids (shared by preview and switch)", () => {
+test("switchPreflight reports target app events missing from the source, remapped ids, exceptions and plan refusals (shared by preview and switch)", () => {
   const ev = (id) => ({ id, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } });
-  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("ev3aaaaa")], [ev("ev1aaaaa"), ev("ev2aaaaa"), PERSONAL]), { targetConflicts: 1, invalidIds: 0 });
-  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("EV-bad")], []), { targetConflicts: 0, invalidIds: 1 });
-  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa")], [PERSONAL]), { targetConflicts: 0, invalidIds: 0 });
+  const none = { modify: 0, cancel: 0 };
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("ev3aaaaa")], [ev("ev1aaaaa"), ev("ev2aaaaa"), PERSONAL]), { targetConflicts: 1, invalidIds: 0, exceptions: none, refusal: null });
+  // step 2: an invalid id is remapped (informational count), not a refusal
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("EV-bad")], []), { targetConflicts: 0, invalidIds: 1, exceptions: none, refusal: null });
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa")], [PERSONAL]), { targetConflicts: 0, invalidIds: 0, exceptions: none, refusal: null });
 });
 
 test("switch back into the OLD calendar after a delete on the new master: refused with the specific message, master unchanged, lock released (engine second line)", async () => {
@@ -1250,4 +1293,407 @@ test("diagnostics: output never contains event text or a full id and is JSON-saf
   assert.deepEqual(JSON.parse(text), plan.diagnostics);
   for (const leak of ["SECRET", "secret", SECRET_ID, "Another-Secret_Id2", "SYNTH", "SecretID", "Alpha"]) assert.ok(!text.includes(leak), leak);
   assert.equal(plan.diagnostics.invalidIds.shapes.length, 2);
+});
+
+// ==== step 2: remap ids Google rejects; copy recurring exceptions of planned masters ====
+const { createHash } = await import("node:crypto");
+// The production shape: "_" + 58 lowercase letters/digits (hand-typed legacy events). Synthetic.
+const BAD_ID = "_" + "a1b2c3d4e5".repeat(5) + "zyxwvuts";
+const BAD_ID_2 = "_" + "f6g7h8i9j0".repeat(5) + "qrstuvwx";
+const BAD_LEGACY = { ...structuredClone(LEGACY), id: BAD_ID, extendedProperties: { private: { custom: "keep" } } };
+const expectRemap = (id) => `oi${createHash("sha256").update(id, "utf8").digest("hex").slice(0, 40)}`;
+
+test("remapEventId: deterministic oi + 40 hex of sha256, always a valid Google id; valid ids keep their id", () => {
+  assert.equal(sw.remapEventId(BAD_ID), expectRemap(BAD_ID));
+  assert.equal(sw.remapEventId(BAD_ID), sw.remapEventId(BAD_ID));
+  assert.notEqual(sw.remapEventId(BAD_ID), sw.remapEventId(BAD_ID_2));
+  for (const id of [BAD_ID, "Outlook-1", "ab", "x".repeat(2000), "สมชาย"]) {
+    const out = sw.remapEventId(id);
+    assert.match(out, sw.GOOGLE_EVENT_ID_PATTERN);
+    assert.equal(out.length, 42);
+  }
+  assert.equal(sw.planTargetId("ab01cd23"), "ab01cd23");
+  assert.equal(sw.planTargetId(BAD_ID), expectRemap(BAD_ID));
+});
+
+test("planCopy remaps an invalid id: body id = targetId, orig_id = source id, other private props and orig_* kept", () => {
+  const plan = sw.planCopy([BAD_LEGACY, structuredClone(BOOKING)]);
+  const byId = new Map(plan.copy.map((e) => [e.id, e]));
+  const remapped = byId.get(expectRemap(BAD_ID));
+  assert.ok(remapped, "copied under the new id");
+  assert.equal(remapped.extendedProperties.private.orig_id, BAD_ID);
+  assert.equal(remapped.extendedProperties.private.custom, "keep");
+  assert.equal(remapped.extendedProperties.private.orig_created, LEGACY.created);
+  assert.equal(plan.invalidIds, 1);
+  assert.equal(plan.refusal, null);
+  // a valid id is copied as before, without orig_id
+  assert.equal(byId.get(BOOKING.id).extendedProperties.private.orig_id, undefined);
+  // an orig_id the source already carries wins (a later switch keeps the first id)
+  const chained = { ...structuredClone(BAD_LEGACY), extendedProperties: { private: { orig_id: "first-id" } } };
+  assert.equal(sw.planCopy([chained]).copy[0].extendedProperties.private.orig_id, "first-id");
+});
+
+test("a remapped legacy event is still read by the app's legacy parser after the copy (only the id differs)", () => {
+  const copied = asCopiedInTarget(BAD_LEGACY);
+  assert.equal(copied.id, expectRemap(BAD_ID));
+  const before = legacyMod.parseLegacyCalendarEvent(BAD_LEGACY);
+  const after = legacyMod.parseLegacyCalendarEvent(copied);
+  assert.ok(before && after);
+  assert.deepEqual({ ...after, id: "x" }, { ...before, id: "x" });
+  assert.equal(after.id, expectRemap(BAD_ID));
+  assert.equal(sw.classifyEvent(copied), "legacy");
+});
+
+test("two source ids mapping to the same target id are refused (collision), before any write", async () => {
+  const twin = { ...structuredClone(EXTRA), id: expectRemap(BAD_ID) }; // a valid id equal to BAD_ID's remap
+  const plan = sw.planCopy([BAD_LEGACY, twin]);
+  assert.equal(plan.refusal, sw.ID_COLLISION_MESSAGE);
+  assert.equal(sw.switchPreflight([BAD_LEGACY, twin], []).refusal, sw.ID_COLLISION_MESSAGE);
+  assert.match(sw.ID_COLLISION_MESSAGE, /ยังไม่ได้เปลี่ยนปฏิทิน/);
+  // the engine's second line: no upsert, master unchanged, lock released
+  const h = harness({ sourceEvents: [BAD_LEGACY, twin] });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, sw.ID_COLLISION_MESSAGE);
+  assert.equal(h.target.upserts.length, 0);
+  assert.deepEqual(h.mem.st.data, { master: MASTER, candidate: CANDIDATE });
+});
+
+test("runSwitch copies a remapped event under its target id; verify, final re-read and a re-run all use target ids", async () => {
+  const h = harness({ sourceEvents: [...ALL(), structuredClone(BAD_LEGACY)] });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.copied, 6);
+  assert.ok(h.target.events.has(expectRemap(BAD_ID)));
+  assert.ok(!h.target.events.has(BAD_ID));
+  assert.equal(h.target.events.get(expectRemap(BAD_ID)).extendedProperties.private.orig_id, BAD_ID);
+  // the copied target holds no conflict for the same source
+  assert.equal(sw.switchPreflight([...h.source.events.values()], [...h.target.events.values()]).targetConflicts, 0);
+  // re-run (flip pretended away): zero upserts
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  const before = h.target.upserts.length;
+  const r2 = await sw.runSwitch(h.deps);
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(h.target.upserts.length, before);
+  assert.equal(r2.unchanged, 6);
+});
+
+test("verify fails when a remapped event is missing from the target", async () => {
+  const h = harness({ sourceEvents: [...ALL(), structuredClone(BAD_LEGACY)] });
+  const realList = h.target.listEvents;
+  h.target.listEvents = async (opts) => (await realList(opts)).filter((e) => e.id !== expectRemap(BAD_ID));
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "verify");
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+});
+
+// ---- recurring exceptions ----
+const R_MASTER = { id: "rm0001aa", status: "confirmed", summary: "A ทดสอบ 1234567 SYNTH-weekly", start: { date: "2026-12-03" }, end: { date: "2026-12-04" }, recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"], created: "2025-05-05T00:00:00Z", updated: "2025-06-06T00:00:00Z" };
+const R_MOD = { id: "rm0001aa_20261210", status: "confirmed", recurringEventId: "rm0001aa", originalStartTime: { date: "2026-12-10" }, summary: "A ทดสอบ 1234567 SYNTH-moved", start: { date: "2026-12-14" }, end: { date: "2026-12-15" }, created: "2025-05-05T00:00:00Z", updated: "2025-07-07T00:00:00Z", etag: "\"9\"", extendedProperties: { private: { custom: "x" } } };
+const R_CXL = { id: "rm0001aa_20261217", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2026-12-17" } };
+const T_MASTER = { id: "tm0001aa", status: "confirmed", summary: "SYNTH timed", start: { dateTime: "2026-12-01T08:00:00+07:00", timeZone: "Asia/Bangkok" }, end: { dateTime: "2026-12-01T09:00:00+07:00", timeZone: "Asia/Bangkok" }, recurrence: ["RRULE:FREQ=WEEKLY"], extendedProperties: { private: { or_queue: "extra_day", note: "" } } };
+const T_MOD = { id: "tm0001aa_20261208T010000Z", status: "confirmed", recurringEventId: "tm0001aa", originalStartTime: { dateTime: "2026-12-08T08:00:00+07:00", timeZone: "Asia/Bangkok" }, summary: "SYNTH timed moved", start: { dateTime: "2026-12-09T08:00:00+07:00", timeZone: "Asia/Bangkok" }, end: { dateTime: "2026-12-09T09:00:00+07:00", timeZone: "Asia/Bangkok" }, extendedProperties: { private: { or_queue: "extra_day", note: "moved" } } };
+const REC = () => structuredClone([R_MOD, R_CXL, R_MASTER, T_MASTER, T_MOD]); // exceptions listed BEFORE their masters on purpose
+
+test("planCopy builds exception items for planned masters (modify / cancel) and no longer counts them as skipped", () => {
+  const plan = sw.planCopy(REC());
+  assert.deepEqual(plan.copy.map((e) => e.id).sort(), ["rm0001aa", "tm0001aa"]);
+  const items = Object.fromEntries(plan.exceptions.map((x) => [x.id, x]));
+  assert.deepEqual(Object.keys(items).sort(), ["rm0001aa_20261210", "rm0001aa_20261217", "tm0001aa_20261208T010000Z"]);
+  assert.equal(items.rm0001aa_20261210.kind, "modify");
+  assert.equal(items.rm0001aa_20261217.kind, "cancel");
+  assert.equal(items.rm0001aa_20261210.masterId, "rm0001aa");
+  // the modify body carries the exception's fields (+ orig_*), never id / recurringEventId / originalStartTime
+  const body = items.rm0001aa_20261210.body;
+  for (const k of ["id", "recurringEventId", "originalStartTime", "etag", "created", "updated", "recurrence"]) assert.ok(!(k in body), k);
+  assert.deepEqual(body.start, R_MOD.start);
+  assert.equal(body.summary, R_MOD.summary);
+  assert.equal(body.status, "confirmed");
+  assert.equal(body.extendedProperties.private.custom, "x");
+  assert.equal(body.extendedProperties.private.orig_updated, R_MOD.updated);
+  assert.equal(plan.skipped, 0);
+  assert.deepEqual(plan.diagnostics.skippedReasons, { cancelled: 0, recurringException: 0, notReadable: 0 });
+  assert.deepEqual(plan.diagnostics.exceptions, { modify: 2, cancel: 1 });
+  assert.equal(plan.refusal, null);
+  // diagnostics.recurring still describes every source exception
+  assert.equal(plan.diagnostics.recurring.exceptionInstances, 3);
+  assert.equal(plan.diagnostics.recurring.exceptionsCancelled, 1);
+});
+
+test("exceptions of masters that are not planned stay skipped (by their old reason)", () => {
+  const orphanMod = { ...structuredClone(R_MOD), id: "zz0001aa_20261210", recurringEventId: "zz0001aa" };
+  const orphanCxl = { ...structuredClone(R_CXL), id: "zz0001aa_20261217", recurringEventId: "zz0001aa" };
+  const personalMaster = { id: "pm0001aa", summary: "Lunch", start: { date: "2026-12-03" }, end: { date: "2026-12-04" }, recurrence: ["RRULE:FREQ=WEEKLY"] };
+  const personalExc = { id: "pm0001aa_20261210", recurringEventId: "pm0001aa", status: "confirmed", summary: "Lunch", start: { date: "2026-12-11" }, end: { date: "2026-12-12" } };
+  const plan = sw.planCopy([orphanMod, orphanCxl, personalMaster, personalExc]);
+  assert.equal(plan.exceptions.length, 0);
+  assert.equal(plan.skipped, 4);
+  assert.deepEqual(plan.diagnostics.skippedReasons, { cancelled: 1, recurringException: 2, notReadable: 1 });
+  assert.deepEqual(plan.diagnostics.exceptions, { modify: 0, cancel: 0 });
+});
+
+test("instance id: suffix from the exception id; else from originalStartTime (dateTime → UTC basic, date → YYYYMMDD); else refusal", () => {
+  const odd = (id, ost) => ({ id, status: "confirmed", recurringEventId: "rm0001aa", originalStartTime: ost, summary: "x", start: { date: "2026-12-11" }, end: { date: "2026-12-12" } });
+  const plan = sw.planCopy([
+    structuredClone(R_MASTER),
+    odd("rm0001aa_20261210", { date: "2026-12-10" }),
+    odd("weird0001", { dateTime: "2026-12-24T08:30:00+07:00" }),
+    odd("weird0002", { date: "2026-12-31" }),
+  ]);
+  assert.deepEqual(plan.exceptions.map((x) => x.id).sort(), ["rm0001aa_20261210", "rm0001aa_20261224T013000Z", "rm0001aa_20261231"]);
+  assert.equal(plan.refusal, null);
+  const bad = sw.planCopy([structuredClone(R_MASTER), odd("weird0003", {})]);
+  assert.equal(bad.refusal, sw.EXCEPTION_INSTANCE_ID_MESSAGE);
+  const bad2 = sw.planCopy([structuredClone(R_MASTER), odd("weird0004", { dateTime: "not a date" })]);
+  assert.equal(bad2.refusal, sw.EXCEPTION_INSTANCE_ID_MESSAGE);
+  // a remapped master maps its exceptions under the NEW id: refused (never silently misapplied)
+  const badMaster = { ...structuredClone(R_MASTER), id: BAD_ID };
+  const badExc = { ...structuredClone(R_MOD), id: `${BAD_ID}_20261210`, recurringEventId: BAD_ID };
+  const p3 = sw.planCopy([badMaster, badExc]);
+  assert.equal(p3.refusal, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
+  assert.equal(sw.switchPreflight([badMaster, badExc], []).refusal, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
+  // a remapped master without exceptions is fine
+  assert.equal(sw.planCopy([badMaster]).refusal, null);
+  for (const m of [sw.EXCEPTION_INSTANCE_ID_MESSAGE, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE, sw.ID_COLLISION_MESSAGE]) {
+    assert.match(m, /ยังไม่ได้เปลี่ยนปฏิทิน/);
+    assert.doesNotMatch(m, /กดเปลี่ยนอีกครั้ง/);
+  }
+});
+
+test("runSwitch refuses an exception of a remapped master before any write to the target", async () => {
+  const badMaster = { ...structuredClone(R_MASTER), id: BAD_ID };
+  const badExc = { ...structuredClone(R_MOD), id: `${BAD_ID}_20261210`, recurringEventId: BAD_ID };
+  const h = harness({ sourceEvents: [...ALL(), badMaster, badExc] });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
+  assert.equal(h.target.upserts.length + h.target.instanceOps.length, 0);
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("runSwitch applies modify and cancel exceptions AFTER every master/normal upsert and before the second source read", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const lastUpsert = h.log.lastIndexOf("target.upsert");
+  const firstInstance = h.log.findIndex((l) => l === "target.patch" || l === "target.delete");
+  assert.ok(firstInstance > lastUpsert, "instances after all upserts");
+  const secondSourceRead = h.log.indexOf("source.list", h.log.indexOf("source.list") + 1);
+  assert.ok(firstInstance < secondSourceRead, "instances before the second source read");
+  const mod = h.target.events.get("rm0001aa_20261210");
+  assert.equal(mod.summary, R_MOD.summary);
+  assert.deepEqual(mod.start, R_MOD.start);
+  assert.equal(mod.recurringEventId, "rm0001aa");
+  assert.equal(h.target.events.get("rm0001aa_20261217").status, "cancelled");
+  assert.equal(h.target.events.get("tm0001aa_20261208T010000Z").extendedProperties.private.note, "moved");
+  assert.deepEqual(h.target.instanceOps.map((o) => o.op).sort(), ["delete", "patch", "patch"]);
+  assert.deepEqual(r.exceptions, { modify: 2, cancel: 1, applied: 3, unchanged: 0 });
+  assert.equal(r.skipped, 3);
+  assert.ok(!JSON.stringify(r).includes("rm0001aa"), "no ids in the result");
+});
+
+test("re-run is idempotent: already-correct exceptions are skipped; a cancel answered 404/410 counts as done", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  const ops = h.target.instanceOps.length;
+  const ups = h.target.upserts.length;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.instanceOps.length, ops, "zero instance writes");
+  assert.equal(h.target.upserts.length, ups, "zero upserts");
+  assert.deepEqual(r.exceptions, { modify: 2, cancel: 1, applied: 0, unchanged: 3 });
+  // the engine itself treats "gone" (404/410) as a completed cancel
+  const h2 = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const realDelete = h2.target.deleteInstance;
+  h2.target.deleteInstance = async (id) => { await realDelete(id); return "gone"; };
+  assert.equal((await sw.runSwitch(h2.deps)).ok, true);
+});
+
+test("a re-sent master gets its exceptions re-applied even when the target copy looked right", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  h.mem.st.data = { master: MASTER, candidate: CANDIDATE };
+  h.source.events.get("rm0001aa").description = "SYNTH changed master";
+  const ops = h.target.instanceOps.length;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(h.target.instanceOps.slice(ops).map((o) => o.id).sort(), ["rm0001aa_20261210", "rm0001aa_20261217"]);
+});
+
+test("a cancel answered 404 with nothing cancelled in the target fails verify (wrong instance id never passes)", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h.target.swallowDelete = true;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "verify");
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("a modify answered 404 (instance unknown) stops at copy with a fixed, non-resumable message", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h.target.missingInstances.add("rm0001aa_20261210");
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.EXCEPTION_APPLY_FAILED_MESSAGE);
+  assert.doesNotMatch(r.error, /กดเปลี่ยนอีกครั้ง/);
+  assert.ok(!JSON.stringify(r).includes("SECRET"));
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+});
+
+test("verify fails when a modified exception is missing or differs in the target", async () => {
+  for (const mutate of [
+    (events) => events.filter((e) => e.id !== "rm0001aa_20261210"),
+    (events) => events.map((e) => (e.id === "rm0001aa_20261210" ? { ...e, start: { date: "2026-12-10" }, end: { date: "2026-12-11" } } : e)),
+    (events) => events.map((e) => (e.id === "rm0001aa_20261210" ? { ...e, summary: "other" } : e)),
+    (events) => events.map((e) => (e.id === "rm0001aa_20261217" ? { ...e, status: "confirmed" } : e)),
+  ]) {
+    const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+    const realList = h.target.listEvents;
+    let n = 0;
+    h.target.listEvents = async (opts) => { n += 1; const events = await realList(opts); return n < 2 ? events : mutate(events); };
+    const r = await sw.runSwitch(h.deps);
+    assert.equal(r.step, "verify", JSON.stringify(r));
+    assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  }
+});
+
+test("the verify read of the target asks for deleted entries (showDeleted) so cancelled instances are visible", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const seen = [];
+  const realList = h.target.listEvents;
+  h.target.listEvents = async (opts) => { seen.push(opts?.showDeleted); return realList(opts); };
+  const srcSeen = [];
+  const realSrc = h.source.listEvents;
+  h.source.listEvents = async (opts) => { srcSeen.push(opts?.showDeleted); return realSrc(opts); };
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  assert.deepEqual(seen, [true, true]);
+  assert.ok(srcSeen.every((x) => !x), "source reads never ask for deleted events");
+});
+
+test("an exception added to the source between the first and second read is applied via the delta", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const late = { id: "rm0001aa_20261224", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2026-12-24" } };
+  h.source.onList = (n, c) => { if (n === 2) c.events.set(late.id, structuredClone(late)); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.events.get(late.id).status, "cancelled");
+  assert.equal(r.exceptions.cancel, 2);
+});
+
+test("an exception appearing in the source after the second read (final re-read) aborts the switch", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const late = { id: "rm0001aa_20261224", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2026-12-24" } };
+  h.source.onList = (n, c) => { if (n === 3) c.events.set(late.id, structuredClone(late)); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "verify");
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("target conflicts: an exception of a planned master that the source does not have is a conflict; planned ones are not", () => {
+  const src = [structuredClone(R_MASTER), structuredClone(R_MOD)];
+  const stray = { id: "rm0001aa_20261224", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2026-12-24" } };
+  assert.equal(sw.switchPreflight(src, [structuredClone(R_MASTER), structuredClone(R_MOD)]).targetConflicts, 0);
+  assert.equal(sw.switchPreflight(src, [structuredClone(R_MASTER), structuredClone(R_MOD), stray]).targetConflicts, 1);
+  // exceptions of masters the app does not copy are ignored
+  const other = { id: "pm0001aa_20261210", recurringEventId: "pm0001aa", status: "cancelled" };
+  assert.equal(sw.switchPreflight(src, [other]).targetConflicts, 0);
+  assert.deepEqual(sw.switchPreflight(REC(), []).exceptions, { modify: 2, cancel: 1 });
+});
+
+test("exception writes respect the 5-concurrency limit", async () => {
+  const many = Array.from({ length: 23 }, (_, i) => ({ id: `rm0001aa_202612${String(i + 1).padStart(2, "0")}`, status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: `2026-12-${String(i + 1).padStart(2, "0")}` } }));
+  const h = harness({ sourceEvents: [structuredClone(R_MASTER), ...many] });
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const realDelete = h.target.deleteInstance;
+  h.target.deleteInstance = async (id) => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 1 + (id.charCodeAt(id.length - 1) % 3)));
+    try { return await realDelete(id); } finally { inFlight -= 1; }
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(maxInFlight, 5);
+  assert.equal(r.exceptions.cancel, 23);
+});
+
+test("copy budget hit during the exception writes ⇒ step copy, resumable, lock released; the re-run finishes only the rest", async () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({ id: `rm0001aa_202612${String(i + 1).padStart(2, "0")}`, status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: `2026-12-${String(i + 1).padStart(2, "0")}` } }));
+  const h = harness({ sourceEvents: [structuredClone(R_MASTER), ...many], advancing: true });
+  let slow = true;
+  const realDelete = h.target.deleteInstance;
+  h.target.deleteInstance = async (id) => { if (slow) h.clock.t += 20_000; return realDelete(id); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+  const done = [...h.target.events.values()].filter((e) => e.status === "cancelled").length;
+  assert.ok(done > 0 && done < 20, `${done} cancelled in the first press`);
+  slow = false;
+  const ops = h.target.instanceOps.length;
+  const r2 = await sw.runSwitch(h.deps);
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  assert.equal(h.target.instanceOps.length - ops, 20 - done);
+});
+
+test("an exception write failure stops at copy (resumable), releases the lock, never leaks the token", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  h.target.failOnInstanceOp = 1;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.SWITCH_STEP_MESSAGES.copy);
+  assert.ok(!JSON.stringify(r).includes("SECRET"));
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("google client: patchInstance = PATCH on the instance id (sendUpdates=none); 404 is flagged instanceMissing", async () => {
+  const { seen, fetchFn } = fakeGoogle((url, init) => {
+    if (init.method === "PATCH") return url.includes("missing") ? new Response("{}", { status: 404 }) : Response.json({ id: "x" });
+    return new Response("{}", { status: 500 });
+  });
+  const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  await client.patchInstance("rm0001aa_20261210", { summary: "s", start: { date: "2026-12-14" } });
+  const patch = seen.find((s) => s.init.method === "PATCH");
+  assert.equal(new URL(patch.url).pathname, "/calendar/v3/calendars/c1/events/rm0001aa_20261210");
+  assert.equal(new URL(patch.url).searchParams.get("sendUpdates"), "none");
+  assert.deepEqual(JSON.parse(patch.init.body), { summary: "s", start: { date: "2026-12-14" } });
+  await assert.rejects(() => client.patchInstance("missing0001_20261210", { summary: "s" }), (err) => err.instanceMissing === true && !/s"/.test(err.message));
+});
+
+test("google client: deleteInstance = DELETE (sendUpdates=none); 204 → deleted, 404/410 → gone, other errors throw fixed text", async () => {
+  const { seen, fetchFn } = fakeGoogle((url, init) => {
+    if (init.method !== "DELETE") return new Response("{}", { status: 500 });
+    if (url.includes("gone404")) return new Response("{}", { status: 404 });
+    if (url.includes("gone410")) return new Response("{}", { status: 410 });
+    if (url.includes("bad")) return Response.json({ error: { message: "SYNTH-GOOGLE-TEXT" } }, { status: 403 });
+    return new Response(null, { status: 204 });
+  });
+  const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  assert.equal(await client.deleteInstance("ok0001aa_20261210"), "deleted");
+  const del = seen.find((s) => s.init.method === "DELETE");
+  assert.equal(new URL(del.url).pathname, "/calendar/v3/calendars/c1/events/ok0001aa_20261210");
+  assert.equal(new URL(del.url).searchParams.get("sendUpdates"), "none");
+  assert.equal(await client.deleteInstance("gone404_20261210"), "gone");
+  assert.equal(await client.deleteInstance("gone410_20261210"), "gone");
+  await assert.rejects(() => client.deleteInstance("bad0001_20261210"), (err) => !String(err.message).includes("SYNTH-GOOGLE-TEXT"));
+});
+
+test("google client: listEvents({ showDeleted: true }) asks Google for deleted entries; default stays false", async () => {
+  const { seen, fetchFn } = fakeGoogle(() => Response.json({ items: [] }));
+  const client = sw.createGoogleCalendarClient({ calendarId: "c1", refreshToken: "r" }, { fetch: fetchFn, clientId: "cid", clientSecret: "cs", sleep: async () => {} });
+  await client.listEvents();
+  await client.listEvents({ showDeleted: true });
+  const lists = seen.filter((s) => s.url.includes("/events"));
+  assert.equal(new URL(lists[0].url).searchParams.get("showDeleted"), "false");
+  assert.equal(new URL(lists[1].url).searchParams.get("showDeleted"), "true");
+  assert.equal(new URL(lists[1].url).searchParams.get("singleEvents"), "false");
 });

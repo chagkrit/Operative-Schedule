@@ -6,7 +6,7 @@
 //   POST { action: "connect", email, calendarId, refreshToken } → status  (stores a sealed candidate)
 //   POST { action: "preview" }   → counts / skipped / byMonth / target info (never event content), or
 //                                  { tokenOnly: true } when the candidate is the master's own calendar
-//   POST { action: "switch" }    → preflight (no lock: refuses target conflicts / invalid ids) then
+//   POST { action: "switch" }    → preflight (no lock: refuses target conflicts / a plan refusal) then
 //                                  copy + verify + flip (calendar-switch.ts), or a token-only refresh
 //   POST { action: "clearLock" } → status  (clears a switch lock; a lock-only file is deleted, never {})
 //   errors → { error: Thai }  400 bad body / token rejected · 401 not signed in · 403 not admin ·
@@ -38,7 +38,6 @@ import type { CalendarSettingsStore } from "./calendar-settings-store";
 import {
   COPY_PHASE_BUDGET_MS,
   countRecurring,
-  INVALID_EVENT_IDS_MESSAGE,
   isSameCalendar,
   planCopy,
   PREFLIGHT_TARGET_FAILED_MESSAGE,
@@ -256,7 +255,8 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
   }
   // Counts and month keys only: events carry patient identifiers and never leave the server.
   // Same rule as the switch's preflight (switchPreflight), so preview and switch cannot drift.
-  const { targetConflicts, invalidIds } = switchPreflight(sourceEvents, targetEvents);
+  // invalidIds = events copied under a new id (informational); planBlocked = fixed Thai refusal or null.
+  const { targetConflicts, invalidIds, exceptions, refusal } = switchPreflight(sourceEvents, targetEvents);
   return {
     status: 200,
     body: {
@@ -269,6 +269,8 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
       targetConflicts,
       invalidIds,
       recurring,
+      exceptions,
+      planBlocked: refusal,
       diagnostics: plan.diagnostics,
     },
   };
@@ -330,7 +332,7 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
   }
   const blockers = switchPreflight(sourceEvents, targetEvents);
   if (blockers.targetConflicts > 0) return refuse(409, TARGET_CONFLICTS_MESSAGE);
-  if (blockers.invalidIds > 0) return refuse(409, INVALID_EVENT_IDS_MESSAGE);
+  if (blockers.refusal) return refuse(409, blockers.refusal);
 
   const result = await runSwitch({
     settings: deps.settings,
@@ -377,6 +379,7 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
       unchanged: result.unchanged,
       counts: result.counts,
       skipped: result.skipped,
+      exceptions: result.exceptions,
       lockCleared: result.lockCleared,
       status,
     },
