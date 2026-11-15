@@ -85,19 +85,19 @@ test("pages and presence use the allowlist; a deny never signs the user out", as
 test("new bookings record the signed-in booker, not the calendar owner", async () => {
   const route = await read("app/api/schedule/route.ts");
   const post = route.slice(route.indexOf("export async function POST"));
-  assert.match(post, /const bookedByEmail = await requestUserEmail\(request\);/);
+  assert.match(post, /const bookedByEmail = await requestWriterEmail\(request\);/);
   const create = post.slice(post.indexOf("createBookingEvent("), post.indexOf("});", post.indexOf("createBookingEvent(")));
   assert.match(create, /\n\s*bookedByEmail,\n/);
   assert.doesNotMatch(route, /bookedByEmail: AUTHORIZED_EMAIL/);
   // Inside the try, so statusFor() turns the 401 into a JSON 401.
-  assert.ok(post.indexOf("try {") < post.indexOf("requestUserEmail(request)"));
+  assert.ok(post.indexOf("try {") < post.indexOf("requestWriterEmail(request)"));
 });
 
 test("closures and staff-unavailability saves record the acting user", async () => {
   for (const path of ["app/api/schedule-closures/route.ts", "app/api/staff-unavailability/route.ts"]) {
     const route = await read(path);
     assert.doesNotMatch(route, /AUTHORIZED_EMAIL/, path);
-    assert.match(route, /const actorEmail = await requestUserEmail\(request\);/, path);
+    assert.match(route, /const actorEmail = await requestWriterEmail\(request\);/, path);
     assert.match(route, /updatedBy: actorEmail,/, path);
     // An undo restores the record as it was, including who last changed it.
     assert.match(route, /updatedBy: existing!\.updatedBy,/, path);
@@ -188,4 +188,90 @@ test("emailAccess maps the allowlist to {email, role} or null", async () => {
   assert.equal(await session.emailAccess("off@cmu.ac.th", store), null);
   assert.equal(await session.emailAccess("", store), null);
   assert.equal(await session.emailAccess(undefined, store), null);
+});
+
+// ---- viewer role: server-side write guard ----
+
+const VIEWER_MESSAGE = "บัญชีนี้ดูตารางได้อย่างเดียว ไม่มีสิทธิ์แก้ไข";
+const VLIST = [...LIST, { email: "view@cmu.ac.th", role: "viewer", active: true }];
+
+test("requestWriterEmail lets user and admin through with their lower-cased email", async () => {
+  const store = memoryStore(VLIST);
+  assert.equal(session.VIEWER_READ_ONLY_MESSAGE, VIEWER_MESSAGE);
+  assert.equal(await session.requestWriterEmail(await requestWith({ email: "HnBcMu@Gmail.com" }), store), "hnbcmu@gmail.com");
+  assert.equal(await session.requestWriterEmail(await requestWith({ email: "nansurg7@gmail.com" }), store), "nansurg7@gmail.com");
+});
+
+test("requestWriterEmail rejects a viewer with 403 and the Thai read-only message", async () => {
+  const store = memoryStore(VLIST);
+  await assert.rejects(
+    session.requestWriterEmail(await requestWith({ email: "View@cmu.ac.th" }), store),
+    (err) => err.status === 403 && err.message === VIEWER_MESSAGE,
+  );
+});
+
+test("requestWriterEmail keeps 401 for no cookie, unknown and inactive emails", async () => {
+  const store = memoryStore(VLIST);
+  await rejects401(session.requestWriterEmail(await requestWith(null), store));
+  await rejects401(session.requestWriterEmail(await requestWith({ email: "stranger@gmail.com" }), store));
+  await rejects401(session.requestWriterEmail(await requestWith({ email: "off@cmu.ac.th" }), store));
+});
+
+const WRITE_HANDLERS = [
+  ["app/api/schedule/route.ts", ["POST"]],
+  ["app/api/extra-days/route.ts", ["POST", "DELETE"]],
+  ["app/api/schedule-closures/route.ts", ["POST", "DELETE"]],
+  ["app/api/staff-unavailability/route.ts", ["POST", "DELETE"]],
+  ["app/api/cases/[id]/route.ts", ["PATCH", "DELETE"]],
+  ["app/api/cases/[id]/move/route.ts", ["PATCH"]],
+];
+
+test("every write handler awaits requestWriterEmail inside its try before any Calendar or store work", async () => {
+  for (const [path, methods] of WRITE_HANDLERS) {
+    const source = await read(path);
+    for (const method of methods) {
+      const fn = block(source, `export async function ${method}`);
+      const guard = fn.indexOf("await requestWriterEmail(request)");
+      assert.ok(guard !== -1, `${path} ${method} lacks await requestWriterEmail(request)`);
+      assert.ok(fn.indexOf("try {") !== -1 && fn.indexOf("try {") < guard, `${path} ${method}: guard must be inside the try`);
+      for (const work of ["listCalendarData(", "getCalendarBooking(", "createBookingEvent(", "moveCalendarBooking(", "deleteBookingEvent(", "upsert", "save", "delete"]) {
+        const at = fn.indexOf(work);
+        if (at !== -1) assert.ok(guard < at, `${path} ${method}: ${work} runs before the guard`);
+      }
+    }
+  }
+});
+
+test("sweep: every mutating route handler is guarded, except admin users and presence", async () => {
+  const routes = (await sourceFiles("app/api")).filter((path) => path.endsWith("/route.ts"));
+  assert.ok(routes.length >= 10);
+  for (const path of routes) {
+    if (path === "app/api/admin/users/route.ts" || path === "app/api/presence/route.ts") continue;
+    const source = await read(path);
+    for (const match of source.matchAll(/export async function (PATCH|POST|PUT|DELETE)\b/g)) {
+      const fn = block(source, match[0]);
+      assert.match(fn, /requestWriterEmail\(/, `${path} ${match[1]} is not guarded`);
+    }
+  }
+});
+
+test("route error mappers pass the 403 status and message through", async () => {
+  for (const path of ["app/api/schedule/route.ts", "app/api/cases/[id]/route.ts"]) {
+    const mapper = block(await read(path), "function statusFor(");
+    assert.match(mapper, /status >= 400|typeof status === "number"/, path);
+  }
+  for (const path of ["app/api/extra-days/route.ts", "app/api/schedule-closures/route.ts", "app/api/staff-unavailability/route.ts", "app/api/cases/[id]/move/route.ts"]) {
+    assert.match(await read(path), /\(error as \{ status\?: number \}\)\.status \|\| 500/, path);
+  }
+});
+
+test("calendar chokepoint also blocks viewers from non-GET Google calls", async () => {
+  const calendar = await read("app/lib/calendar.ts");
+  const auth = block(calendar, "async function authorizedAccessToken(");
+  assert.match(auth, /VIEWER_READ_ONLY_MESSAGE, 403/);
+  assert.match(auth, /role === "viewer"/);
+  assert.match(auth, /method !== "GET"/);
+  assert.ok(auth.indexOf("SIGN_IN_REQUIRED_MESSAGE, 401") < auth.indexOf("VIEWER_READ_ONLY_MESSAGE"));
+  const fetchFn = block(calendar, "async function googleFetch(");
+  assert.match(fetchFn, /authorizedAccessToken\(request, init\?\.method \?\? "GET"\)/);
 });

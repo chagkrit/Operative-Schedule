@@ -1,5 +1,5 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
-import { requestUserEmail } from "../../lib/session";
+import { requestWriterEmail } from "../../lib/session";
 import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot, roomDayDurations, staffBlockedOn } from "../../lib/queue";
 import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../lib/minutes";
@@ -70,8 +70,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    // The signed-in booker (401 via statusFor when not allowed); stored as booked_by.
-    const bookedByEmail = await requestUserEmail(request);
+    // The signed-in booker (401 not allowed, 403 viewer, via statusFor); stored as booked_by.
+    const bookedByEmail = await requestWriterEmail(request);
     const payload = (await request.json()) as Record<string, unknown>;
     const diagnosis = String(payload.diagnosis || "").trim();
     const hn = String(payload.hn || "").trim();

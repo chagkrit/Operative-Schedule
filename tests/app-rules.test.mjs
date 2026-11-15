@@ -378,7 +378,8 @@ test("uses one server-held Calendar refresh token when GOOGLE_REFRESH_TOKEN is s
   assert.match(auth, /SERVER_CALENDAR_TOKEN\s*\?\s*\{\}/);
   assert.match(auth, /account && !SERVER_CALENDAR_TOKEN/);
   // The session identity check stays in front of every Calendar call.
-  assert.match(calendar, /!\(await userStore\.getAccess\(email\)\)\.allowed/);
+  // (the access record is read once, so the viewer backstop sees the role from the same lookup)
+  assert.match(calendar, /const access = token && email \? await userStore\.getAccess\(email\) : null;\s*if \(!token \|\| !access \|\| !access\.allowed\)/);
   assert.ok(calendar.indexOf("userStore.getAccess(email)") < calendar.indexOf("process.env.GOOGLE_REFRESH_TOKEN) {"));
   assert.match(calendar, /cachedServerToken/);
   // A dead server token is an admin problem (503), not a "sign in again" 401 that would loop.

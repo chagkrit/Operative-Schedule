@@ -7,7 +7,7 @@ import {
 import { undoCalendarWrite, type UndoOutcome } from "../../lib/calendar-undo";
 import { dateOnly, endOfRollingHorizon } from "../../lib/schedule";
 import { affectedBookingView } from "../../lib/affected-booking";
-import { requestUserEmail } from "../../lib/session";
+import { requestWriterEmail } from "../../lib/session";
 
 function validIsoDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -17,7 +17,7 @@ function validIsoDate(value: string) {
 
 export async function POST(request: Request) {
   try {
-    const actorEmail = await requestUserEmail(request);
+    const actorEmail = await requestWriterEmail(request);
     const payload = (await request.json()) as {
       id?: string;
       date?: string;
@@ -125,6 +125,7 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    await requestWriterEmail(request);
     const id = new URL(request.url).searchParams.get("id")?.trim() || "";
     if (!id) return Response.json({ error: "ไม่พบวันปิดรับคิว" }, { status: 400 });
     const today = dateOnly();
