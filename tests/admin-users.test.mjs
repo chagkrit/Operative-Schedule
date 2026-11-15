@@ -368,3 +368,13 @@ test("new admin classes meet the phone 12px text and 44px target floors", async 
     assert.ok(inputs.slice(0, inputs.indexOf("font-size: 16px;")).includes(cls), `${cls} in 16px input list`);
   }
 });
+
+test("viewer role is accepted by POST and PATCH; unknown roles still 400", async () => {
+  const { store } = memory();
+  const added = await call(store, "POST", { as: ADMIN, body: { email: "v@example.com", role: "viewer" } });
+  assert.equal(added.status, 200);
+  const patched = await call(store, "PATCH", { as: ADMIN, body: { email: HN, role: "viewer" } });
+  assert.equal(patched.status, 200);
+  const bad = await call(store, "PATCH", { as: ADMIN, body: { email: HN, role: "root" } });
+  assert.equal(bad.status, 400);
+});

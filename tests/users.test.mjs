@@ -4,6 +4,7 @@ import {
   BOOTSTRAP_ADMIN,
   SEED_USERS,
   addUser,
+  canWrite,
   findAccess,
   isValidEmail,
   normalizeEmail,
@@ -189,4 +190,40 @@ test("setActive rejects deactivating bootstrap, self, unknown, last active admin
   expectError(setActive(list, HN, "false", ADMIN), /สถานะไม่ถูกต้อง/);
   const noBoot = frozen([u("a@x.com", "admin"), u("b@x.com", "admin", false), u("c@x.com")]);
   expectError(setActive(noBoot, "a@x.com", false, "c@x.com"), /ผู้ดูแลระบบที่ใช้งานอยู่อย่างน้อย 1 คน/);
+});
+
+// ---- viewer role (read-only) ----
+
+test("viewer role: addUser, setRole, withBootstrap and findAccess accept it", () => {
+  const list = [u(ADMIN, "admin"), u("other@example.com", "admin"), u("v@example.com")];
+  const added = addUser([u(ADMIN, "admin")], "v@example.com", "viewer");
+  assert.equal(added.ok, true);
+  assert.equal(added.users.find((r) => r.email === "v@example.com").role, "viewer");
+  const set = setRole(list, "v@example.com", "viewer", ADMIN);
+  assert.equal(set.ok, true);
+  assert.equal(set.users.find((r) => r.email === "v@example.com").role, "viewer");
+  const kept = withBootstrap([{ email: "v@example.com", role: "viewer", active: true }]);
+  assert.equal(kept.find((r) => r.email === "v@example.com").role, "viewer");
+  assert.deepEqual(findAccess(kept, "v@example.com"), { allowed: true, role: "viewer" });
+});
+
+test("viewer role: demoting the only active admin or the bootstrap admin to viewer is refused", () => {
+  const onlyAdmin = setRole([u("solo@example.com", "admin"), u(HN)], "solo@example.com", "viewer", HN);
+  assert.equal(onlyAdmin.ok, false);
+  assert.match(onlyAdmin.error, /อย่างน้อย 1 คน/);
+  const boot = setRole([u(ADMIN, "admin"), u("other@example.com", "admin")], ADMIN, "viewer", "other@example.com");
+  assert.equal(boot.ok, false);
+  assert.match(boot.error, /ผู้ดูแลระบบหลัก/);
+});
+
+test("withBootstrap still coerces a misspelled role to user", () => {
+  const out = withBootstrap([{ email: "v@example.com", role: "vieweer", active: true }]);
+  assert.equal(out.find((r) => r.email === "v@example.com").role, "user");
+});
+
+test("canWrite is true for user/admin only", () => {
+  assert.equal(canWrite("user"), true);
+  assert.equal(canWrite("admin"), true);
+  assert.equal(canWrite("viewer"), false);
+  assert.equal(canWrite(null), false);
 });
