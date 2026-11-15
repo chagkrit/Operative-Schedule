@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AUTHORIZED_EMAIL } from "../../auth";
-import { CALENDAR_LOCKED_MESSAGE, CALENDAR_WRITE_DEADLINE_MS, resolveCalendarPath, resolveCalendarTarget } from "./calendar-target";
+import { CALENDAR_LOCKED_MESSAGE, CALENDAR_WRITE_DEADLINE_MS, calendarOwnerEmail, resolveCalendarPath, resolveCalendarTarget } from "./calendar-target";
 import { calendarSettingsStore } from "./calendar-settings-store";
 import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail, VIEWER_READ_ONLY_MESSAGE } from "./session";
 import { userStore } from "./user-store";
@@ -257,6 +257,12 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
     );
   }
   return { accessToken: payload.access_token, calendarId, sendBy };
+}
+
+// The main calendar's Google account email for the header chip (settings master, else the env account);
+// null when the settings cannot be read. Email only: never the calendar id or a token.
+export async function currentCalendarOwnerEmail(): Promise<string | null> {
+  return calendarOwnerEmail({ store: calendarSettingsStore, env: { AUTHORIZED_EMAIL } });
 }
 
 async function googleFetch(request: Request, path: string, init?: RequestInit) {

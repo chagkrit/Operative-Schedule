@@ -412,3 +412,25 @@ test("shows the full first name but only the surname initial on screen", async (
     assert.doesNotMatch(source, /\$\{[^}]*lastName\}/, `${file} must not expose the full surname`);
   }
 });
+
+// ---- header chip: the main calendar's real account ----
+test("schedule GET returns the main calendar's account email (email only) and the header chip shows it", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const route = await readFile(new URL("../app/api/schedule/route.ts", import.meta.url), "utf8");
+  assert.match(route, /currentCalendarOwnerEmail\(\)/);
+  assert.match(route, /calendarOwnerEmail,/);
+  assert.doesNotMatch(route, /calendarName: AUTHORIZED_EMAIL/);
+  const calendar = await readFile(new URL("../app/lib/calendar.ts", import.meta.url), "utf8");
+  const fn = calendar.slice(calendar.indexOf("export async function currentCalendarOwnerEmail("));
+  assert.match(fn.slice(0, 600), /calendarOwnerEmail\(\{ store: calendarSettingsStore/);
+  assert.doesNotMatch(fn.slice(0, 600), /sealedRefreshToken|GOOGLE_REFRESH_TOKEN|calendarId/);
+  const app = await readFile(new URL("../app/SchedulerApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /calendarPillLabel\(/);
+  assert.doesNotMatch(app, /`Calendar พร้อม · \$\{authorizedEmail\}`/);
+  const { calendarPillLabel } = await import("../app/lib/calendar-label.ts");
+  assert.equal(calendarPillLabel({ calendarConnected: true, calendarOwnerEmail: "jakrit@example.com" }, "", "hnbcmu@gmail.com"), "Calendar พร้อม · jakrit@example.com");
+  assert.equal(calendarPillLabel({ calendarConnected: true }, "", "hnbcmu@gmail.com"), "Calendar พร้อม · hnbcmu@gmail.com");
+  assert.equal(calendarPillLabel({ calendarConnected: true, calendarOwnerEmail: "" }, "", "hnbcmu@gmail.com"), "Calendar พร้อม · hnbcmu@gmail.com");
+  assert.equal(calendarPillLabel(null, "boom", "hnbcmu@gmail.com"), "Calendar ยังไม่เชื่อม");
+  assert.equal(calendarPillLabel(null, "", "hnbcmu@gmail.com"), "กำลังเชื่อม Google Calendar");
+});

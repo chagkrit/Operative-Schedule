@@ -1,6 +1,6 @@
 import { AUTHORIZED_EMAIL } from "../../../auth";
 import { requestWriterEmail } from "../../lib/session";
-import { createBookingEvent, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
+import { createBookingEvent, currentCalendarOwnerEmail, deleteBookingEvent, listRecentMoves } from "../../lib/calendar";
 import { destinationError, getSchedule, nextAvailableSlot, roomDayDurations, staffBlockedOn } from "../../lib/queue";
 import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../lib/minutes";
 import { staffUnavailableMessage } from "../../lib/staff-unavailability";
@@ -24,6 +24,8 @@ export async function GET(request: Request) {
       getSchedule(request, today, horizonEnd),
       listRecentMoves(request, addDays(today, -730), horizonEnd),
     ]);
+    // The account of the calendar the app reads now (after a master switch it is no longer AUTHORIZED_EMAIL).
+    const calendarOwnerEmail = (await currentCalendarOwnerEmail().catch(() => null)) ?? AUTHORIZED_EMAIL;
     return Response.json({
       days,
       closures,
@@ -61,7 +63,8 @@ export async function GET(request: Request) {
       })),
       importedCount: bookings.filter((booking) => booking.importedFromCalendar).length,
       calendarConnected: true,
-      calendarName: AUTHORIZED_EMAIL,
+      calendarName: calendarOwnerEmail,
+      calendarOwnerEmail,
     });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "โหลดข้อมูลไม่สำเร็จ" }, { status: statusFor(error) });
