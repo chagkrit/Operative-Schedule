@@ -356,7 +356,7 @@ test("UserGuide carries the edit-through-the-app notice", async () => {
 });
 
 // ---- final fix wave: preview blockers (rollback rule, event ids) --------------------------------
-test("switchBlockReason: target conflicts and invalid ids block the switch with specific Thai text", () => {
+test("switchBlockReason: target conflicts and a plan refusal block the switch; remapped ids (invalidIds) no longer do", () => {
   assert.equal(ui.switchBlockReason(null), null);
   assert.equal(ui.switchBlockReason({ tokenOnly: false }), null);
   assert.equal(ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, invalidIds: 0 }), null);
@@ -366,26 +366,26 @@ test("switchBlockReason: target conflicts and invalid ids block the switch with 
   assert.match(conflicts, /ยกเลิกหรือลบ/); // the current master no longer has them (cancelled/deleted since)
   assert.match(conflicts, /ปฏิทินใหม่ที่ว่าง/); // the safe way: a NEW, EMPTY calendar
   assert.match(conflicts, /ห้ามสลับ/);
-  const ids = ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, invalidIds: 2 });
-  assert.match(ids, /2 รายการ/);
-  assert.match(ids, /รหัส/);
-  assert.match(ids, /หยุด/); // stop
-  assert.match(ids, /ติดต่อผู้พัฒนา/); // contact the developer
-  assert.match(ids, /ห้ามแก้ไขหรือลบ/); // do not edit/delete in Google Calendar
-  assert.doesNotMatch(ids, /ต้องแก้รายการ/);
-  // both: both reasons are shown
-  const both = ui.switchBlockReason({ tokenOnly: false, targetConflicts: 1, invalidIds: 1 });
-  assert.ok(both.includes(conflicts.replace("3 รายการ", "1 รายการ")) && both.includes(ids.replace("2 รายการ", "1 รายการ")));
+  // step 2: ids Google rejects are copied under new ids, so they never block
+  assert.equal(ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, invalidIds: 17 }), null);
+  // a plan refusal (fixed Thai text from the server) blocks and is shown as is
+  const refusal = "SYNTH-REFUSAL ยังไม่ได้เปลี่ยนปฏิทิน";
+  assert.equal(ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, planBlocked: refusal }), refusal);
+  assert.equal(ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, planBlocked: "" }), null);
+  assert.equal(ui.switchBlockReason({ tokenOnly: false, targetConflicts: 0, planBlocked: 5 }), null);
+  const both = ui.switchBlockReason({ tokenOnly: false, targetConflicts: 1, planBlocked: refusal });
+  assert.ok(both.includes(conflicts.replace("3 รายการ", "1 รายการ")) && both.includes(refusal));
 });
 
-test("canSwitchNow is false while the preview shows target conflicts or invalid ids", () => {
+test("canSwitchNow is false while the preview shows target conflicts or a plan refusal; remapped ids do not block", () => {
   const status = { master: { email: "a@x.com", calendarId: "a", source: "settings" }, candidate: { email: "b@x.com", calendarId: "b" }, locked: false, keyConfigured: true };
   assert.equal(ui.canSwitchNow(status, { tokenOnly: false, targetConflicts: 0, invalidIds: 0 }), true);
   assert.equal(ui.canSwitchNow(status, { tokenOnly: false, targetConflicts: 1, invalidIds: 0 }), false);
-  assert.equal(ui.canSwitchNow(status, { tokenOnly: false, targetConflicts: 0, invalidIds: 4 }), false);
+  assert.equal(ui.canSwitchNow(status, { tokenOnly: false, targetConflicts: 0, invalidIds: 4 }), true);
+  assert.equal(ui.canSwitchNow(status, { tokenOnly: false, targetConflicts: 0, planBlocked: "x" }), false);
 });
 
-test("AdminCalendar shows targetConflicts / invalidIds and the block reason; a preflight refusal drops the stale preview", () => {
+test("AdminCalendar shows targetConflicts, remapped ids (non-blocking), exceptions and the block reason; a preflight refusal drops the stale preview", () => {
   assert.match(COMPONENT, /targetConflicts: number;/);
   assert.match(COMPONENT, /invalidIds: number;/);
   assert.match(COMPONENT, /targetConflicts: num\(body\.targetConflicts\)/);
@@ -394,6 +394,12 @@ test("AdminCalendar shows targetConflicts / invalidIds and the block reason; a p
   assert.match(COMPONENT, /preview\.targetConflicts/);
   assert.match(COMPONENT, /preview\.invalidIds/);
   assert.match(COMPONENT, /step === "preflight"/);
+  assert.match(COMPONENT, /รหัส event ที่ต้องออกรหัสใหม่ \(ไม่บล็อก\)/);
+  assert.doesNotMatch(COMPONENT, /รหัส event ที่คัดลอกไม่ได้/);
+  assert.match(COMPONENT, /planBlocked/);
+  assert.match(COMPONENT, /preview\.exceptions\.modify/);
+  assert.match(COMPONENT, /preview\.exceptions\.cancel/);
+  assert.match(COMPONENT, /รายการยกเว้นของรายการซ้ำที่จะคัดลอก/);
 });
 
 test("AdminCalendar renders diagnostics in a closed <details> via parseDiagnostics, with tokens only", () => {
