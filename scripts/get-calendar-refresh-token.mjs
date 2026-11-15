@@ -1,11 +1,18 @@
-// One-off helper: prints a Google refresh token for hnbcmu@gmail.com's Calendar.
-// Run:  node --env-file=.env.local scripts/get-calendar-refresh-token.mjs
+// One-off helper: prints a Google refresh token for a Google account's Calendar
+// (default hnbcmu@gmail.com; pass --email <address> for another account).
+// Run:  node --env-file=.env.local scripts/get-calendar-refresh-token.mjs [--email <address>]
 // Needs AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET and the redirect URI below registered on the OAuth client.
 // The token is printed to the terminal only. It is never written to disk.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
+import { parseTokenScriptArgs } from "./calendar-token-args.mjs";
 
-const AUTHORIZED_EMAIL = "hnbcmu@gmail.com";
+const parsedArgs = parseTokenScriptArgs(process.argv.slice(2));
+if (parsedArgs.error) {
+  console.error(parsedArgs.error);
+  process.exit(1);
+}
+const AUTHORIZED_EMAIL = parsedArgs.email;
 const PORT = 3000;
 const REDIRECT_URI = `http://localhost:${PORT}/api/auth/callback/google`;
 const clientId = process.env.AUTH_GOOGLE_ID;
@@ -60,7 +67,7 @@ const server = createServer(async (req, res) => {
     const info = await (await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers: { authorization: `Bearer ${tokens.access_token}` } })).json();
     if (String(info.email || "").toLowerCase() !== AUTHORIZED_EMAIL) throw new Error(`Signed in as ${info.email}, expected ${AUTHORIZED_EMAIL}. Nothing printed.`);
     if (!tokens.refresh_token) throw new Error("Google returned no refresh_token. Remove the app at myaccount.google.com/permissions and run again.");
-    console.log("\nGOOGLE_REFRESH_TOKEN (set this in Vercel, then redeploy; do not commit or paste it anywhere else):\n");
+    console.log("\nRefresh token (paste it only into the Admin connect form or Vercel; never commit or share it):\n");
     console.log(tokens.refresh_token);
     console.log("");
     finish(200, "Done. Close this tab and return to the terminal.", 0);

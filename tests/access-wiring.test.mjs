@@ -276,7 +276,9 @@ function unguardedWriteHandlers(path, source) {
 
 // Exempt: the admin API has its own admin gate, presence is a heartbeat, and the Auth.js
 // handlers are the sign-in flow itself (they must not be write-guarded or nobody could sign in).
-const SWEEP_EXEMPT = new Set(["app/api/admin/users/route.ts", "app/api/presence/route.ts", "app/api/auth/[...nextauth]/route.ts"]);
+// app/api/admin/calendar/route.ts is admin-gated inside handleAdminCalendar (admin check before any
+// settings or Google access, asserted below), so it must not also require requestWriterEmail.
+const SWEEP_EXEMPT = new Set(["app/api/admin/users/route.ts", "app/api/admin/calendar/route.ts", "app/api/presence/route.ts", "app/api/auth/[...nextauth]/route.ts"]);
 
 test("sweep: every mutating route handler is guarded, except admin users, presence and Auth.js", async () => {
   const routes = (await sourceFiles("app/api")).filter((path) => path.endsWith("/route.ts"));
@@ -286,6 +288,18 @@ test("sweep: every mutating route handler is guarded, except admin users, presen
     if (SWEEP_EXEMPT.has(path)) continue;
     assert.deepEqual(unguardedWriteHandlers(path, await read(path)), []);
   }
+});
+
+test("admin calendar route is exempt because its handler is admin-gated before any settings or Google access", async () => {
+  const route = await read("app/api/admin/calendar/route.ts");
+  assert.match(route, /handleAdminCalendar\(request, "POST"/);
+  const lib = await read("app/lib/admin-calendar-api.ts");
+  const fn = lib.slice(lib.indexOf("export async function handleAdminCalendar"), lib.indexOf("// ---- production"));
+  const admin = fn.indexOf('role !== "admin"');
+  assert.ok(admin !== -1);
+  assert.ok(fn.indexOf("requestUserEmail(") < admin);
+  for (const work of ["deps.settings", "POST_ACTIONS[", "request.json("]) assert.ok(fn.indexOf(work) > admin, `${work} before admin check`);
+  assert.doesNotMatch(fn, /verifyAccount/);
 });
 
 test("sweep detector flags every export form of an unguarded write handler", () => {
