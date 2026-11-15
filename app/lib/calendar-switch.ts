@@ -116,8 +116,47 @@ const emptyCounts = (): CopyCounts => ({ booking: 0, extra_day: 0, schedule_clos
 // import) may carry other ids; those cannot be copied with the same id, so a switch refuses up front.
 export const GOOGLE_EVENT_ID_PATTERN = /^[a-v0-9]{5,1024}$/;
 
+// Read-only diagnostics of a plan: counts and MASKED id shapes only. Never any event text or a full id.
+export type IdReasons = { uppercase: number; hyphen: number; underscore: number; tooShort: number; tooLong: number; otherChars: number };
+export type PlanDiagnostics = {
+  invalidIds: {
+    reasons: IdReasons;
+    shapes: { shape: string; count: number }[];
+    byKind: { app: number; legacy: number; recurringMasters: number };
+  };
+  recurring: {
+    masters: number;
+    exceptionInstances: number;
+    mastersPlanned: number;
+    infiniteMasters: number;
+    byFreq: { DAILY: number; WEEKLY: number; MONTHLY: number; YEARLY: number; other: number };
+    exceptionsCancelled: number;
+  };
+  skippedReasons: { cancelled: number; recurringException: number; notReadable: number };
+};
+
+const MAX_SHAPES = 5;
+const MAX_SHAPE_LENGTH = 48;
+
+// digit -> 9, lowercase -> a, uppercase -> A, anything else kept; long shapes truncated.
+export function maskIdShape(id: string): string {
+  const masked = id.replace(/[0-9]/g, "9").replace(/[a-z]/g, "a").replace(/[A-Z]/g, "A");
+  return masked.length > MAX_SHAPE_LENGTH ? `${masked.slice(0, MAX_SHAPE_LENGTH)}…` : masked;
+}
+
+function rrules(event: GoogleEventLike): string[] {
+  return (Array.isArray(event.recurrence) ? event.recurrence : []).filter((r) => typeof r === "string" && /^RRULE:/i.test(r));
+}
+
 // invalidIds: planned (copied) events whose id GOOGLE_EVENT_ID_PATTERN rejects; skipped events never count.
-export type CopyPlan = { copy: GoogleEventLike[]; skipped: number; counts: CopyCounts; byMonth: Record<string, number>; invalidIds: number };
+export type CopyPlan = {
+  copy: GoogleEventLike[];
+  skipped: number;
+  counts: CopyCounts;
+  byMonth: Record<string, number>;
+  invalidIds: number;
+  diagnostics: PlanDiagnostics;
+};
 
 export function planCopy(source: GoogleEventLike[]): CopyPlan {
   const copy: GoogleEventLike[] = [];
@@ -126,20 +165,67 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
   const seen = new Set<string>();
   let skipped = 0;
   let invalidIds = 0;
+  const reasons: IdReasons = { uppercase: 0, hyphen: 0, underscore: 0, tooShort: 0, tooLong: 0, otherChars: 0 };
+  const shapeCounts = new Map<string, number>();
+  const byKind = { app: 0, legacy: 0, recurringMasters: 0 };
+  const recurring: PlanDiagnostics["recurring"] = {
+    masters: 0,
+    exceptionInstances: 0,
+    mastersPlanned: 0,
+    infiniteMasters: 0,
+    byFreq: { DAILY: 0, WEEKLY: 0, MONTHLY: 0, YEARLY: 0, other: 0 },
+    exceptionsCancelled: 0,
+  };
+  const skippedReasons = { cancelled: 0, recurringException: 0, notReadable: 0 };
   for (const event of source) {
+    const isMaster = !!event && Array.isArray(event.recurrence) && event.recurrence.length > 0;
+    if (isMaster) {
+      recurring.masters += 1;
+      const rules = rrules(event);
+      const freq = /(?:^|[;:])FREQ=([A-Za-z]+)/i.exec(rules[0] ?? "")?.[1]?.toUpperCase();
+      const key = freq === "DAILY" || freq === "WEEKLY" || freq === "MONTHLY" || freq === "YEARLY" ? freq : "other";
+      recurring.byFreq[key] += 1;
+      if (rules.length > 0 && rules.every((r) => !/(?:^|[;:])(UNTIL|COUNT)=/i.test(r))) recurring.infiniteMasters += 1;
+    }
+    if (event?.recurringEventId) {
+      recurring.exceptionInstances += 1;
+      if (event.status === "cancelled") recurring.exceptionsCancelled += 1;
+    }
     const kind = classifyEvent(event);
     if (!kind || seen.has(event.id as string)) {
       skipped += 1;
+      if (event?.status === "cancelled") skippedReasons.cancelled += 1;
+      else if (event?.recurringEventId) skippedReasons.recurringException += 1;
+      else skippedReasons.notReadable += 1;
       continue;
     }
-    seen.add(event.id as string);
-    if (!GOOGLE_EVENT_ID_PATTERN.test(event.id as string)) invalidIds += 1;
+    const id = event.id as string;
+    seen.add(id);
+    if (isMaster) recurring.mastersPlanned += 1;
+    if (!GOOGLE_EVENT_ID_PATTERN.test(id)) {
+      invalidIds += 1;
+      if (/[A-Z]/.test(id)) reasons.uppercase += 1;
+      if (id.includes("-")) reasons.hyphen += 1;
+      if (id.includes("_")) reasons.underscore += 1;
+      if (id.length < 5) reasons.tooShort += 1;
+      if (id.length > 1024) reasons.tooLong += 1;
+      if (/[^a-v0-9A-Z_-]/.test(id)) reasons.otherChars += 1;
+      const shape = maskIdShape(id);
+      shapeCounts.set(shape, (shapeCounts.get(shape) ?? 0) + 1);
+      if (kind === "legacy") byKind.legacy += 1;
+      else byKind.app += 1;
+      if (isMaster) byKind.recurringMasters += 1;
+    }
     copy.push(copyBody(event));
     counts[kind] += 1;
     const month = calendarEventDate(event).slice(0, 7) || "unknown";
     byMonth[month] = (byMonth[month] ?? 0) + 1;
   }
-  return { copy, skipped, counts, byMonth, invalidIds };
+  const shapes = [...shapeCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .slice(0, MAX_SHAPES)
+    .map(([shape, count]) => ({ shape, count }));
+  return { copy, skipped, counts, byMonth, invalidIds, diagnostics: { invalidIds: { reasons, shapes, byKind }, recurring, skippedReasons } };
 }
 
 // The two refusals a switch decides BEFORE taking the lock (and preview shows):

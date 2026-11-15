@@ -258,6 +258,27 @@ test("locked + candidate gone or changed does not keep a stale preview", () => {
   assert.equal(ui.decideAfterSwitch(net, st({ locked: true }), FORMER).keepPreview, true);
 });
 
+// ---- preview diagnostics view ----
+test("parseDiagnostics tolerates missing or malformed diagnostics and clamps to numbers", () => {
+  for (const bad of [undefined, null, 5, "x", [], {}]) assert.equal(ui.parseDiagnostics(bad), null, String(bad));
+  const d = ui.parseDiagnostics({
+    invalidIds: { reasons: { uppercase: 2, hyphen: "x" }, shapes: [{ shape: "Aa-9", count: 2 }, { shape: 5 }, null], byKind: { app: 1 } },
+    recurring: { masters: 3, byFreq: { WEEKLY: 2 } },
+    skippedReasons: { cancelled: 4 },
+  });
+  assert.equal(d.reasons.uppercase, 2);
+  assert.equal(d.reasons.hyphen, 0);
+  assert.equal(d.reasons.tooShort, 0);
+  assert.deepEqual(d.shapes, [{ shape: "Aa-9", count: 2 }]);
+  assert.equal(d.byKind.app, 1);
+  assert.equal(d.byKind.legacy, 0);
+  assert.equal(d.recurring.masters, 3);
+  assert.equal(d.recurring.byFreq.WEEKLY, 2);
+  assert.equal(d.recurring.byFreq.DAILY, 0);
+  assert.equal(d.skippedReasons.cancelled, 4);
+  assert.equal(d.skippedReasons.notReadable, 0);
+});
+
 // ---- source wiring ----
 const COMPONENT = await read("app/admin/AdminCalendar.tsx");
 const PAGE = await read("app/admin/page.tsx");
@@ -368,4 +389,13 @@ test("AdminCalendar shows targetConflicts / invalidIds and the block reason; a p
   assert.match(COMPONENT, /preview\.targetConflicts/);
   assert.match(COMPONENT, /preview\.invalidIds/);
   assert.match(COMPONENT, /step === "preflight"/);
+});
+
+test("AdminCalendar renders diagnostics in a closed <details> via parseDiagnostics, with tokens only", () => {
+  assert.match(COMPONENT, /parseDiagnostics/);
+  assert.match(COMPONENT, /<details className="admin-calendar-diagnostics">/);
+  assert.match(COMPONENT, /รายละเอียดสำหรับนักพัฒนา/);
+  assert.doesNotMatch(COMPONENT, /<details[^>]* open/);
+  const block = COMPONENT.slice(COMPONENT.indexOf("admin-calendar-diagnostics"));
+  assert.doesNotMatch(block.slice(0, 4000), /#[0-9a-fA-F]{3,8}\b|rgba?\(/, "no colour literals");
 });

@@ -13,6 +13,8 @@ import {
   decideAfterSwitch,
   canSwitchNow,
   switchBlockReason,
+  parseDiagnostics,
+  type DiagnosticsView,
 } from "./calendar-ui";
 
 type Notice = { type: "success" | "error"; text: string; hint?: string } | null;
@@ -28,6 +30,8 @@ type Preview = {
   targetConflicts: number;
   // source events whose ids Google will not accept with the same id
   invalidIds: number;
+  // read-only breakdown for the developer; null when the server sent none
+  diagnostics: DiagnosticsView | null;
 };
 type Dialog = { kind: "switch" | "clearLock"; fresh: boolean } | null;
 
@@ -40,12 +44,21 @@ const COUNT_LABELS: Record<string, string> = {
   legacy: "รายการเดิม",
 };
 
+const REASON_LABELS: Record<keyof DiagnosticsView["reasons"], string> = {
+  uppercase: "มีตัวพิมพ์ใหญ่",
+  hyphen: "มีเครื่องหมาย -",
+  underscore: "มีเครื่องหมาย _",
+  tooShort: "สั้นกว่า 5 ตัวอักษร",
+  tooLong: "ยาวเกิน 1024 ตัวอักษร",
+  otherChars: "มีอักขระอื่น (เช่น w-z)",
+};
+
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 function toPreview(body: Record<string, unknown> | null): Preview | null {
   if (!body) return null;
   if (body.tokenOnly === true) {
-    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0 };
+    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0, diagnostics: null };
   }
   if (typeof body.counts !== "object" || body.counts === null) return null;
   return {
@@ -58,6 +71,7 @@ function toPreview(body: Record<string, unknown> | null): Preview | null {
     targetHasEvents: body.targetHasEvents === true,
     targetConflicts: num(body.targetConflicts),
     invalidIds: num(body.invalidIds),
+    diagnostics: parseDiagnostics(body.diagnostics),
   };
 }
 
@@ -287,6 +301,31 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                   <tr><th scope="row">รหัส event ที่คัดลอกไม่ได้</th><td>{preview.invalidIds}</td></tr>
                 </tbody>
               </table>
+              {preview.diagnostics && (
+                <details className="admin-calendar-diagnostics">
+                  <summary>รายละเอียดสำหรับนักพัฒนา</summary>
+                  <p className="admin-calendar-diagnostics-title">รหัส event ที่คัดลอกไม่ได้ ({preview.invalidIds})</p>
+                  <ul>
+                    {Object.entries(REASON_LABELS).map(([key, label]) => (
+                      <li key={key}>{label}: {preview.diagnostics?.reasons[key as keyof DiagnosticsView["reasons"]]}</li>
+                    ))}
+                    <li>เป็นรายการของแอป: {preview.diagnostics.byKind.app} · รายการเดิม: {preview.diagnostics.byKind.legacy} · รายการซ้ำต้นแบบ: {preview.diagnostics.byKind.recurringMasters}</li>
+                  </ul>
+                  {preview.diagnostics.shapes.length > 0 && (
+                    <p className="admin-calendar-diagnostics-shapes">รูปแบบรหัส (ปิดบังตัวอักษร): {preview.diagnostics.shapes.map((x) => `${x.shape} (${x.count})`).join(" · ")}</p>
+                  )}
+                  <p className="admin-calendar-diagnostics-title">รายการซ้ำ (recurring)</p>
+                  <ul>
+                    <li>ต้นแบบ: {preview.diagnostics.recurring.masters} (อยู่ในแผนคัดลอก {preview.diagnostics.recurring.mastersPlanned}) · ไม่มีวันสิ้นสุด: {preview.diagnostics.recurring.infiniteMasters}</li>
+                    <li>รายการยกเว้น: {preview.diagnostics.recurring.exceptionInstances} (ยกเลิกแล้ว {preview.diagnostics.recurring.exceptionsCancelled})</li>
+                    <li>ความถี่: รายวัน {preview.diagnostics.recurring.byFreq.DAILY} · รายสัปดาห์ {preview.diagnostics.recurring.byFreq.WEEKLY} · รายเดือน {preview.diagnostics.recurring.byFreq.MONTHLY} · รายปี {preview.diagnostics.recurring.byFreq.YEARLY} · อื่น ๆ {preview.diagnostics.recurring.byFreq.other}</li>
+                  </ul>
+                  <p className="admin-calendar-diagnostics-title">สาเหตุที่ข้าม ({preview.skipped})</p>
+                  <ul>
+                    <li>ยกเลิกแล้ว: {preview.diagnostics.skippedReasons.cancelled} · รายการยกเว้นของ recurring: {preview.diagnostics.skippedReasons.recurringException} · แอปอ่านไม่ได้: {preview.diagnostics.skippedReasons.notReadable}</li>
+                  </ul>
+                </details>
+              )}
               {months.length > 0 && (
                 <p className="admin-calendar-months">แยกตามเดือน: {months.map(([m, n]) => `${m} (${n})`).join(" · ")}</p>
               )}

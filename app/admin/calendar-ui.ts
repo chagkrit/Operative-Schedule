@@ -158,3 +158,53 @@ export function switchBlockReason(preview: unknown): string | null {
 export function canSwitchNow(status: CalendarStatus | null, preview: unknown): boolean {
   return !!status?.candidate && !!preview && !status.locked && switchBlockReason(preview) === null;
 }
+
+// ---- preview diagnostics (counts and masked id shapes only; the server never sends event text) ----
+export type DiagnosticsView = {
+  reasons: Record<"uppercase" | "hyphen" | "underscore" | "tooShort" | "tooLong" | "otherChars", number>;
+  shapes: { shape: string; count: number }[];
+  byKind: Record<"app" | "legacy" | "recurringMasters", number>;
+  recurring: {
+    masters: number;
+    exceptionInstances: number;
+    mastersPlanned: number;
+    infiniteMasters: number;
+    exceptionsCancelled: number;
+    byFreq: Record<"DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" | "other", number>;
+  };
+  skippedReasons: Record<"cancelled" | "recurringException" | "notReadable", number>;
+};
+
+const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+const pick = <K extends string>(src: unknown, keys: readonly K[]): Record<K, number> => {
+  const o = obj(src);
+  return Object.fromEntries(keys.map((k) => [k, n(o[k])])) as Record<K, number>;
+};
+
+// Tolerant parser: a missing or malformed `diagnostics` (older server, token-only preview) gives null.
+export function parseDiagnostics(raw: unknown): DiagnosticsView | null {
+  const d = obj(raw);
+  if (Object.keys(d).length === 0) return null;
+  const ids = obj(d.invalidIds);
+  const rec = obj(d.recurring);
+  const shapes = (Array.isArray(ids.shapes) ? ids.shapes : [])
+    .map((s) => obj(s))
+    .filter((s) => typeof s.shape === "string")
+    .slice(0, 5)
+    .map((s) => ({ shape: s.shape as string, count: n(s.count) }));
+  return {
+    reasons: pick(ids.reasons, ["uppercase", "hyphen", "underscore", "tooShort", "tooLong", "otherChars"] as const),
+    shapes,
+    byKind: pick(ids.byKind, ["app", "legacy", "recurringMasters"] as const),
+    recurring: {
+      masters: n(rec.masters),
+      exceptionInstances: n(rec.exceptionInstances),
+      mastersPlanned: n(rec.mastersPlanned),
+      infiniteMasters: n(rec.infiniteMasters),
+      exceptionsCancelled: n(rec.exceptionsCancelled),
+      byFreq: pick(rec.byFreq, ["DAILY", "WEEKLY", "MONTHLY", "YEARLY", "other"] as const),
+    },
+    skippedReasons: pick(d.skippedReasons, ["cancelled", "recurringException", "notReadable"] as const),
+  };
+}
