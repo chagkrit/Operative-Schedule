@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { AUTHORIZED_EMAIL } from "../auth";
 import { sessionAccess } from "./lib/session";
+import { canWrite } from "./lib/users";
 import SchedulerApp from "./SchedulerApp";
 
 export const metadata: Metadata = {
@@ -16,7 +17,7 @@ export default async function Home() {
   if (!access) redirect("/signin");
   return (
     <Suspense fallback={null}>
-      <SchedulerApp authorizedEmail={AUTHORIZED_EMAIL} isAdmin={access.role === "admin"} />
+      <SchedulerApp authorizedEmail={AUTHORIZED_EMAIL} isAdmin={access.role === "admin"} canWrite={canWrite(access.role)} />
     </Suspense>
   );
 }

@@ -11,7 +11,14 @@ type Method = "GET" | "POST" | "PATCH" | "DELETE";
 const ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "user", label: "ผู้ใช้ (user)" },
   { value: "admin", label: "ผู้ดูแลระบบ (admin)" },
+  { value: "viewer", label: "ดูอย่างเดียว (viewer)" },
 ];
+
+const ROLE_LABELS: Record<Role, string> = {
+  admin: "ผู้ดูแลระบบ",
+  user: "ผู้ใช้",
+  viewer: "ดูอย่างเดียว",
+};
 
 function fallbackError(status: number) {
   if (status === 401) return "กรุณาเข้าสู่ระบบใหม่อีกครั้ง";
@@ -88,7 +95,7 @@ export default function AdminUsers({ initialUsers, currentEmail }: { initialUser
 
   function changeRole(user: UserRecord, role: Role) {
     if (role === user.role) return;
-    void send("PATCH", { email: user.email, role }, `เปลี่ยนสิทธิ์ ${user.email} เป็น ${role === "admin" ? "ผู้ดูแลระบบ" : "ผู้ใช้"} แล้ว`);
+    void send("PATCH", { email: user.email, role }, `เปลี่ยนสิทธิ์ ${user.email} เป็น ${ROLE_LABELS[role]} แล้ว`);
   }
 
   function toggleActive(user: UserRecord) {

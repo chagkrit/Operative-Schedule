@@ -1,4 +1,5 @@
 import { deleteBookingEvent, getCalendarBooking, restoreCalendarBooking, updateBookingDuration } from "../../../lib/calendar";
+import { requestWriterEmail } from "../../../lib/session";
 import { getSchedule, roomDayDurations } from "../../../lib/queue";
 import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDurationMinutes } from "../../../lib/minutes";
 import { dateOnly } from "../../../lib/schedule";
@@ -15,6 +16,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    await requestWriterEmail(request);
     const { id } = await params;
     let payload: { hn?: unknown };
     try {
@@ -52,6 +54,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    await requestWriterEmail(request);
     const { id } = await params;
     let payload: { durationMinutes?: unknown };
     try {

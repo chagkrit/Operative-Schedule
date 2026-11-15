@@ -2,7 +2,7 @@
 // Mutations never change their input; they return a new list or a Thai error message.
 // Bootstrap injection (withBootstrap) is the store's job on read; the guards below work on the list as given.
 
-export type Role = "user" | "admin";
+export type Role = "user" | "admin" | "viewer";
 export type UserRecord = { email: string; role: Role; active: boolean };
 export type Access = { allowed: boolean; role: Role | null };
 export type Result = { ok: true; users: UserRecord[] } | { ok: false; error: string };
@@ -17,7 +17,7 @@ export const SEED_USERS: UserRecord[] = [
 // Thai messages of every rule failure (the admin API maps them to HTTP statuses).
 export const USER_ERRORS = {
   invalidEmail: "รูปแบบอีเมลไม่ถูกต้อง",
-  invalidRole: "สิทธิ์ไม่ถูกต้อง (ต้องเป็น user หรือ admin)",
+  invalidRole: "สิทธิ์ไม่ถูกต้อง (ต้องเป็น user, viewer หรือ admin)",
   invalidActive: "สถานะไม่ถูกต้อง",
   duplicate: "มีอีเมลนี้ในรายชื่อแล้ว",
   notFound: "ไม่พบอีเมลนี้ในรายชื่อ",
@@ -53,7 +53,17 @@ export function isValidEmail(v: string): boolean {
 }
 
 function isRole(v: unknown): v is Role {
-  return v === "user" || v === "admin";
+  return v === "user" || v === "admin" || v === "viewer";
+}
+
+// Viewers are read-only; every write path must check this (null = not signed in or not allowed).
+// One message for every viewer rejection: the server 403 text and the client notices.
+export const VIEWER_READ_ONLY_MESSAGE = "บัญชีนี้ดูตารางได้อย่างเดียว ไม่มีสิทธิ์แก้ไข";
+// Short heading of the viewer banner (the client-only wording).
+export const VIEWER_BANNER_TEXT = "บัญชีนี้ดูตารางได้อย่างเดียว";
+
+export function canWrite(role: Role | null): boolean {
+  return role === "user" || role === "admin";
 }
 
 function copy(list: readonly UserRecord[]): UserRecord[] {

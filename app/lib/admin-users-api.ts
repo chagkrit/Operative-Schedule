@@ -54,7 +54,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function isRole(v: unknown): v is Role {
-  return v === "user" || v === "admin";
+  return v === "user" || v === "admin" || v === "viewer";
 }
 
 function targetEmail(body: Record<string, unknown>): string | null {

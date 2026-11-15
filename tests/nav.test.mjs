@@ -10,6 +10,8 @@ import {
   formatBadge,
   ownMoveKey,
   parseTab,
+  resolveTab,
+  visibleTabs,
   readOwnMoves,
   readSeenAt,
   tabHref,
@@ -139,4 +141,15 @@ test("readOwnMoves treats missing, corrupt or non-array storage as empty", () =>
     assert.ok([...set].every((key) => typeof key === "string"), raw);
     assert.equal(set.size, 0, raw);
   }
+});
+
+test("viewers do not see the booking tab and deep links to it fall back to the schedule", () => {
+  assert.deepEqual([...visibleTabs(true)], [...TAB_IDS]);
+  assert.ok(!visibleTabs(false).includes("book"));
+  assert.deepEqual([...visibleTabs(false)], ["schedule", "search", "alerts", "guide"]);
+  assert.equal(resolveTab("book", true), "book");
+  assert.equal(resolveTab("book", false), DEFAULT_TAB);
+  assert.equal(resolveTab("search", false), "search");
+  assert.equal(resolveTab("nope", false), DEFAULT_TAB);
+  assert.equal(resolveTab(null, true), DEFAULT_TAB);
 });

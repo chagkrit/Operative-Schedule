@@ -62,17 +62,17 @@ test("bar text and icon colours keep 4.5:1 contrast on the soft surface", async 
 test("SchedulerApp maps every screen to a tab and switches with replaceState", async () => {
   const app = await read("app/SchedulerApp.tsx");
   const page = await read("app/page.tsx");
-  assert.match(app, /parseTab\(searchParams\.get\("tab"\)\)/);
+  assert.match(app, /resolveTab\(searchParams\.get\("tab"\), canWrite\)/);
   assert.match(app, /window\.history\.replaceState\(null, "", tabHref\(tab\)\)/);
   assert.match(app, /<main className="app-shell" data-screen=\{activeTab\}>/);
   assert.match(app, /className="hero" data-screens="schedule"/);
-  assert.match(app, /className="workspace-grid" data-screens="book schedule"/);
-  assert.match(app, /className="panel booking-panel" id="screen-book" tabIndex=\{-1\} data-screens="book"/);
+  assert.match(app, /className=\{canWrite \? "workspace-grid" : "workspace-grid viewer-grid"\} data-screens="book schedule"/);
+  assert.match(app, /<section className="panel booking-panel" id="screen-book" tabIndex=\{-1\} data-screens="book"/);
   assert.match(app, /className="panel schedule-panel" id="screen-schedule" tabIndex=\{-1\} data-screens="schedule"/);
   assert.match(app, /className="case-tools-grid" data-screens="search alerts"/);
   assert.match(app, /className="panel case-search-panel" id="screen-search" tabIndex=\{-1\} data-screens="search"/);
   assert.match(app, /className="panel move-history-panel" id="screen-alerts" tabIndex=\{-1\} data-screens="alerts"/);
-  assert.match(app, /<BottomNav active=\{activeTab\} unseenAlerts=\{unseen\} onSelect=\{selectTab\} \/>/);
+  assert.match(app, /<BottomNav active=\{activeTab\} unseenAlerts=\{unseen\} canWrite=\{canWrite\} onSelect=\{selectTab\} \/>/);
   assert.match(page, /<Suspense/);
 });
 
@@ -141,4 +141,14 @@ test("viewport-fit=cover is paired with safe-area insets for the bar, the shell 
   assert.match(css, /\.bottom-nav \{[^}]*padding-left: env\(safe-area-inset-left\);[^}]*padding-right: env\(safe-area-inset-right\);/);
   assert.match(css, /\.app-shell \{[^}]*padding-left: max\(14px, env\(safe-area-inset-left\)\);[^}]*padding-right: max\(14px, env\(safe-area-inset-right\)\);/);
   assert.match(css, /\.queue-conflict-backdrop \{[^}]*padding-bottom: max\(10px, env\(safe-area-inset-bottom\)\);/);
+});
+
+test("bottom nav columns follow the number of tabs (viewers see 4, others 5)", async () => {
+  const css = await read("app/mobile-shell.css");
+  // The phone rule (position: fixed) is not the first `.bottom-nav {` block (desktop hides it).
+  const start = css.indexOf("position: fixed;", css.indexOf(".bottom-nav {", css.indexOf(".bottom-nav { display: none;") + 1));
+  const nav = css.slice(css.lastIndexOf(".bottom-nav {", start), css.indexOf("}", start));
+  assert.match(nav, /grid-auto-flow: column;/);
+  assert.match(nav, /grid-auto-columns: minmax\(0, 1fr\);/);
+  assert.doesNotMatch(nav, /grid-template-columns: repeat\(\d+/);
 });

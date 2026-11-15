@@ -14,7 +14,8 @@ import CaseDetailDialog from "./CaseDetailDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { CalendarSkeleton, QueueSkeleton } from "./Skeleton";
 import UserGuide from "./UserGuide";
-import { parseTab, tabHref, type TabId } from "./lib/nav";
+import { resolveTab, tabHref, type TabId } from "./lib/nav";
+import { VIEWER_BANNER_TEXT, VIEWER_READ_ONLY_MESSAGE } from "./lib/users";
 import { REFRESH_INTERVAL_MS, freshnessLabel, shouldRefreshQuietly } from "./lib/refresh";
 import { useUnseenMoves } from "./useUnseenMoves";
 
@@ -549,7 +550,8 @@ function StatusDot({ synced }: { synced: boolean }) {
 }
 
 // isAdmin: allowlist role of the signed-in user (from app/page.tsx), for the admin-only menu link.
-export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedEmail: string; isAdmin: boolean }) {
+// canWrite: false for viewer accounts, which can look but not change anything.
+export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { authorizedEmail: string; isAdmin: boolean; canWrite: boolean }) {
   const [data, setData] = useState<ScheduleResponse | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
@@ -607,17 +609,17 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchParams = useSearchParams();
-  const activeTab = parseTab(searchParams.get("tab"));
+  const activeTab = resolveTab(searchParams.get("tab"), canWrite);
   const focusScreenRef = useRef(false);
   const { unseen, markOwnMove } = useUnseenMoves(data?.recentMoves, activeTab === "alerts");
 
   const selectTab = useCallback((tab: TabId, options: { focus?: boolean } = {}) => {
     setMenuOpen(false);
     window.scrollTo({ top: 0, left: 0 });
-    if (parseTab(new URLSearchParams(window.location.search).get("tab")) === tab) return;
+    if (resolveTab(new URLSearchParams(window.location.search).get("tab"), canWrite) === tab) return;
     focusScreenRef.current = options.focus !== false;
     window.history.replaceState(null, "", tabHref(tab));
-  }, []);
+  }, [canWrite]);
 
   useEffect(() => {
     if (!focusScreenRef.current) return;
@@ -1137,6 +1139,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
 
   async function submitBooking(event: FormEvent) {
     event.preventDefault();
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     const labels: Record<string, string> = {
       diagnosis: "Diagnosis",
       hn: "HN",
@@ -1227,6 +1233,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
 
   async function submitExtra(event: FormEvent) {
     event.preventDefault();
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     if (!extra.date) {
       setNotice({ type: "error", text: "กรุณาเลือกวันที่ OR Extra" });
       return;
@@ -1249,6 +1259,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
   }
 
   async function saveClosure(confirmExistingBookings = false) {
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     if (!closureForm.date || !closureForm.name.trim()) {
       setNotice({ type: "error", text: "กรุณาระบุวันที่และชื่อวันปิดรับคิว" });
       return;
@@ -1304,6 +1318,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
   }
 
   async function performDeleteClosure(closure: ScheduleClosure) {
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     setClosureSaving(true);
     setNotice(null);
     try {
@@ -1337,6 +1355,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
   }
 
   async function saveUnavailability(confirmExistingBookings = false) {
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     const editing = Boolean(unavailabilityForm.id);
     if ((!editing && unavailabilityForm.staff.length === 0) || !unavailabilityForm.startDate || !unavailabilityForm.endDate) {
       setNotice({ type: "error", text: "กรุณาเลือก Staff และระบุวันเริ่มต้น-วันสิ้นสุด" });
@@ -1411,6 +1433,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
   }
 
   async function performDeleteUnavailability(entry: StaffUnavailability) {
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     setUnavailabilitySaving(true);
     setNotice(null);
     try {
@@ -1485,6 +1511,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
 
   async function moveCase(event: FormEvent) {
     event.preventDefault();
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     if (!selectedCase || !moveTarget || !moveTargetDay) {
       setNotice({ type: "error", text: moveTargetStale ? "วันที่เลือกใช้ย้ายไม่ได้แล้ว กรุณาเลือกวันผ่าตัดใหม่" : "กรุณาเลือกเคสและวันผ่าตัดปลายทาง" });
       return;
@@ -1549,6 +1579,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
 
   async function saveDuration(event: FormEvent) {
     event.preventDefault();
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     if (!editDialog) return;
     const inputError = durationInputError(editDialog.value);
     if (inputError) {
@@ -1616,6 +1650,10 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
   }
 
   async function deleteCase() {
+    if (!canWrite) {
+      setNotice({ type: "error", text: VIEWER_READ_ONLY_MESSAGE });
+      return;
+    }
     if (!deleteDialog || deleteDialog.step !== "confirm" || !deleteHnMatches) return;
     setDeleting(true);
     setNotice(null);
@@ -1683,6 +1721,13 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
           </div>
         </div>
       </section>
+
+      {!canWrite && (
+        <div className="setup-banner viewer-banner" role="status">
+          <span className="banner-icon">i</span>
+          <div><strong>{VIEWER_BANNER_TEXT}</strong><p>ดูตารางผ่าตัด ค้นหาเคส และ Export ได้ตามปกติ แต่ลงคิว สลับวัน แก้ไข ลบ หรือกำหนด OR Extra ไม่ได้</p></div>
+        </div>
+      )}
 
       {!loading && (!data?.calendarConnected || calendarError) && (
         <div className="setup-banner" role="status">
@@ -1760,7 +1805,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
           }}
           closeRef={detailCloseRef}
           onClose={closeCaseDetail}
-          onManage={() => manageFromDetail(detailCase)}
+          onManage={canWrite ? () => manageFromDetail(detailCase) : undefined}
         />
       )}
 
@@ -1905,13 +1950,14 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
         </div>
       )}
 
-      <div className="workspace-grid" data-screens="book schedule">
-        <section className="panel booking-panel" id="screen-book" tabIndex={-1} data-screens="book">
+      <div className={canWrite ? "workspace-grid" : "workspace-grid viewer-grid"} data-screens="book schedule">
+        {canWrite && <section className="panel booking-panel" id="screen-book" tabIndex={-1} data-screens="book">
           <div className="panel-heading">
             <div><span className="step">01</span><h3>ข้อมูลผู้ป่วยและการผ่าตัด</h3></div>
             <span className={`diagnosis-badge ${cancer ? "cancer" : "general"}`}>{cancer ? `Cancer · ${form.cancerSchedulingMode === "specific" ? "ระบุวันเอง" : "คิวเร็วที่สุด"}` : "OR 17 · เลือกวัน"}</span>
           </div>
 
+          {canWrite && (
           <form onSubmit={submitBooking} noValidate>
             <label className="field full"><span>Diagnosis <b>*</b></span><input value={form.diagnosis} onChange={(e) => updateField("diagnosis", e.target.value)} placeholder="เช่น DCIS, Breast Cancer, CA breast, CA thyroid" autoComplete="off" /><small className="field-help">คำที่ระบบจัดเป็น Cancer: DCIS, Cancer, CA breast, CA thyroid และ Thyroid cancer</small></label>
             {cancer && <fieldset className="cancer-mode"><legend>การเลือกคิวสำหรับ Cancer</legend><div className="mode-options"><label aria-label="คิวเร็วที่สุด" htmlFor="cancer-mode-earliest" className={form.cancerSchedulingMode === "earliest" ? "selected" : ""}><input id="cancer-mode-earliest" type="radio" name="cancerSchedulingMode" value="earliest" checked={form.cancerSchedulingMode === "earliest"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "earliest", dateEntryMode: "list", requestedDate: "", requestedQueueType: "" }))} /><span><strong>คิวเร็วที่สุด</strong><small>ให้ระบบเลือกคิวว่างแรกอัตโนมัติ</small></span></label><label aria-label="ระบุวันเอง" htmlFor="cancer-mode-specific" className={form.cancerSchedulingMode === "specific" ? "selected" : ""}><input id="cancer-mode-specific" type="radio" name="cancerSchedulingMode" value="specific" checked={form.cancerSchedulingMode === "specific"} onChange={() => setForm((current) => ({ ...current, cancerSchedulingMode: "specific", dateEntryMode: "list", requestedDate: "", requestedQueueType: "OR17" }))} /><span><strong>ระบุวันเอง</strong><small>เลือก OR 17 หรือ OR Extra ที่ยังว่าง</small></span></label></div></fieldset>}
@@ -2059,10 +2105,11 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
             <div className="privacy-note"><span>●</span> ข้อมูล HN ชื่อ และ Tel จะแสดงเฉพาะในรายละเอียดกิจกรรมของปฏิทิน ไม่แสดงในชื่อกิจกรรม</div>
             <button className="save-button" type="submit" aria-busy={saving} disabled={saving || Boolean(selectedStaffNotice?.blocked)}>{saving ? "กำลังตรวจคิวและบันทึก…" : "ตรวจสอบและบันทึกคิว"}<span>→</span></button>
           </form>
-        </section>
+          )}
+        </section>}
 
         <aside className="panel schedule-panel" id="screen-schedule" tabIndex={-1} data-screens="schedule">
-          <div className="panel-heading compact"><div><span className="step">02</span><h3>{scheduleView === "closures" ? "ตั้งค่าวันปิดรับคิว" : "คิวที่กำลังจะมาถึง"}</h3></div>{scheduleView !== "closures" && <button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button>}</div>
+          <div className="panel-heading compact"><div><span className="step">02</span><h3>{scheduleView === "closures" ? "ตั้งค่าวันปิดรับคิว" : "คิวที่กำลังจะมาถึง"}</h3></div>{canWrite && scheduleView !== "closures" && <button className="text-button" type="button" onClick={() => setShowExtra(!showExtra)}>+ กำหนด OR Extra</button>}</div>
           <div className="schedule-tabs" role="tablist" aria-label="รูปแบบแสดงตารางผ่าตัด">
             <button type="button" role="tab" aria-selected={scheduleView === "list"} className={scheduleView === "list" ? "active" : ""} onClick={() => setScheduleView("list")}>รายการคิว</button>
             <button type="button" role="tab" aria-selected={scheduleView === "month"} className={scheduleView === "month" ? "active" : ""} onClick={() => setScheduleView("month")}>ปฏิทินรายเดือน</button>
@@ -2074,7 +2121,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
             <label><span>ถึง</span><input type="date" value={exportRange.to} onChange={(event) => setExportRange((current) => ({ ...current, to: event.target.value }))} /></label>
             <button type="button" onClick={() => void exportWaitingTime()} disabled={exporting}>{exporting ? "กำลัง Export…" : "↓ Download Excel"}</button>
           </section>
-          {showExtra && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
+          {showExtra && canWrite && <form className="extra-form" onSubmit={submitExtra}><label><span>วันที่ (จันทร์/พฤหัสบดี)</span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={extra.date} onChange={(e) => setExtra({ ...extra, date: e.target.value })} /></label><div className="extra-fixed-capacity"><span>จำนวนเคส</span><strong>4 เคส</strong><small>เท่ากับ OR 17 และไม่สามารถเปลี่ยนได้</small></div><label className="wide"><span>หมายเหตุ</span><input value={extra.note} onChange={(e) => setExtra({ ...extra, note: e.target.value })} placeholder="เช่น Extra Breast OR" /></label><button type="submit">บันทึกวัน Extra</button></form>}
           {scheduleView === "list" ? (
             <div className="schedule-list" role="tabpanel" aria-label="รายการคิวที่กำลังจะมาถึง">
               {loading && !data ? <QueueSkeleton /> : null}
@@ -2104,7 +2151,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
             </div>
           ) : (
             <div className="closure-manager" role="tabpanel" aria-label="ตั้งค่าวันปิดรับคิว">
-              <form className="closure-form" onSubmit={submitClosure}>
+              {canWrite && <form className="closure-form" onSubmit={submitClosure}>
                 <div className="closure-form-heading"><strong>{closureForm.id ? "แก้ไขวันปิดรับคิว" : "เพิ่มวันปิดรับคิว"}</strong><small>ปิดทั้ง OR 17 และ OR Extra</small></div>
                 <label><span>วันที่ <b>*</b></span><input type="date" min={data?.horizonStart} max={data?.horizonEnd} value={closureForm.date} onChange={(event) => setClosureForm((current) => ({ ...current, date: event.target.value }))} required /></label>
                 <label><span>ชื่อวันปิด <b>*</b></span><input value={closureForm.name} maxLength={120} onChange={(event) => setClosureForm((current) => ({ ...current, name: event.target.value }))} placeholder="เช่น วันรัฐธรรมนูญ" required /></label>
@@ -2113,7 +2160,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
                   {closureForm.id && <button type="button" onClick={() => setClosureForm(EMPTY_CLOSURE_FORM)}>ยกเลิกแก้ไข</button>}
                   <button type="submit" aria-busy={closureSaving} disabled={closureSaving}>{closureSaving ? "กำลังบันทึก…" : closureForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันปิดรับคิว"}</button>
                 </div>
-              </form>
+              </form>}
               <div className="closure-list-toolbar">
                 <strong>รายการวันปิดรับคิว <span>{data?.closures.length || 0}</span></strong>
                 <input type="search" value={closureSearch} onChange={(event) => setClosureSearch(event.target.value)} placeholder="ค้นหาวัน ชื่อ หรือหมายเหตุ" aria-label="ค้นหาวันปิดรับคิว" />
@@ -2124,12 +2171,12 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
                   return <article key={closure.id}>
                     <div className="closure-date"><strong>{Number(closure.date.slice(-2))}</strong><span>{new Intl.DateTimeFormat("th-TH", { month: "short", year: "numeric" }).format(new Date(`${closure.date}T12:00:00+07:00`))}</span></div>
                     <div className="closure-detail"><strong>{closure.name}</strong><span>{closure.note || "ไม่มีหมายเหตุ"}</span><small>แก้ไขล่าสุด {closure.updatedAt ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(closure.updatedAt)) : "ไม่ระบุเวลา"}{affectedCount ? ` · มีคิวเดิม ${affectedCount} เคส` : ""}</small></div>
-                    <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={(event) => deleteClosure(closure, event.currentTarget)} disabled={closureSaving}>ลบ</button></div>
+                    {canWrite && <div className="closure-row-actions"><button type="button" onClick={() => editClosure(closure)}>แก้ไข</button><button type="button" onClick={(event) => deleteClosure(closure, event.currentTarget)} disabled={closureSaving}>ลบ</button></div>}
                   </article>;
                 })}
               </div>
               <section className="unavailability-manager" aria-labelledby="unavailability-title">
-                <form className="unavailability-form" ref={unavailabilityFormRef} onSubmit={submitUnavailability}>
+                {canWrite && <form className="unavailability-form" ref={unavailabilityFormRef} onSubmit={submitUnavailability}>
                   <div className="unavailability-heading"><strong id="unavailability-title">วันที่ staff ไม่ว่าง</strong><small>{unavailabilityForm.id ? "แก้ไขรายการ (เปลี่ยน Staff ไม่ได้)" : "เลือกได้หลายคน ระบบจะสร้างรายการแยกต่อคน"}</small></div>
                   <fieldset className="unavailability-staff" disabled={Boolean(unavailabilityForm.id)}>
                     <legend>Staff <b>*</b></legend>
@@ -2143,7 +2190,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
                     {unavailabilityForm.id && <button type="button" onClick={() => setUnavailabilityForm(EMPTY_UNAVAILABILITY_FORM)}>ยกเลิกแก้ไข</button>}
                     <button type="submit" aria-busy={unavailabilitySaving} disabled={unavailabilitySaving}>{unavailabilitySaving ? "กำลังบันทึก…" : unavailabilityForm.id ? "บันทึกการแก้ไข" : "เพิ่มวันที่ staff ไม่ว่าง"}</button>
                   </div>
-                </form>
+                </form>}
                 <div className="unavailability-list" aria-live="polite" aria-label="รายการวันที่ staff ไม่ว่าง">
                   <strong>รายการวันที่ staff ไม่ว่าง <span>{sortedUnavailability.length}</span></strong>
                   {sortedUnavailability.length === 0 ? <p>ยังไม่มีวันที่ staff ไม่ว่าง</p> : sortedUnavailability.map((entry) => {
@@ -2154,7 +2201,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
                         <span>{entry.startDate === entry.endDate ? displayDate(entry.startDate, true) : `${displayDate(entry.startDate, true)} – ${displayDate(entry.endDate, true)}`}</span>
                         <small>{entry.note || "ไม่มีหมายเหตุ"}</small>
                       </div>
-                      <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={(event) => deleteUnavailability(entry, event.currentTarget)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>
+                      {canWrite && <div className="unavailability-row-actions"><button type="button" onClick={() => editUnavailability(entry)} aria-label={`แก้ไขวันที่ ${entry.staff} ไม่ว่าง`}>แก้ไข</button><button type="button" onClick={(event) => deleteUnavailability(entry, event.currentTarget)} disabled={unavailabilitySaving} aria-label={`ลบวันที่ ${entry.staff} ไม่ว่าง`}>ลบ</button></div>}
                     </article>;
                   })}
                 </div>
@@ -2186,9 +2233,9 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
                   <span className="case-identity"><strong>{result.patientName}</strong><small>HN {result.hn} · {result.diagnosis}</small></span>
                   <span className="case-current"><strong>{displayDate(result.scheduleDate, true)}</strong><small>{result.queueType === "EXTRA" ? "OR Extra" : `OR 17 · ช่อง ${result.slotNo}`}</small></span>
                   <span className="case-operation">{result.operation}<small>{staffLabel(result.staffMembers)}{result.durationMinutes !== null ? ` · ${durationText(result.durationMinutes)}` : ""}</small><ClashBadge booking={result} entries={data?.staffUnavailability || []} /></span>
-                  <span className="select-case">{selectedCase?.id === result.id ? "เลือกแล้ว" : "เลือกสลับวัน"}</span>
+                  {canWrite && <span className="select-case">{selectedCase?.id === result.id ? "เลือกแล้ว" : "เลือกสลับวัน"}</span>}
                 </button>
-                {selectedCase?.id === result.id && (
+                {selectedCase?.id === result.id && canWrite && (
                   <form className="move-form" onSubmit={moveCase}>
                     <label htmlFor={`move-${result.id}`}>วันผ่าตัดใหม่</label>
                     <select id={`move-${result.id}`} value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)}>
@@ -2249,7 +2296,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin }: { authorizedE
       <UserGuide />
 
       <footer><span>Breast &amp; Endocrine Surgery CMU</span><p>ข้อมูลผู้ป่วยเป็นความลับ · กรุณาใช้งานผ่านบัญชีที่ได้รับอนุญาตเท่านั้น</p></footer>
-      <BottomNav active={activeTab} unseenAlerts={unseen} onSelect={selectTab} />
+      <BottomNav active={activeTab} unseenAlerts={unseen} canWrite={canWrite} onSelect={selectTab} />
     </main>
   );
 }

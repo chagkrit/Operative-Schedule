@@ -9,7 +9,9 @@
 // `next-auth/jwt` does not.
 import { getToken } from "next-auth/jwt";
 import { userStore, type UserStore } from "./user-store";
-import { normalizeEmail, type Role } from "./users";
+import { canWrite, normalizeEmail, VIEWER_READ_ONLY_MESSAGE, type Role } from "./users";
+
+export { VIEWER_READ_ONLY_MESSAGE };
 
 export const SIGN_IN_REQUIRED_MESSAGE = "กรุณาเข้าสู่ระบบด้วยบัญชีที่ได้รับอนุญาต";
 
@@ -48,6 +50,14 @@ export async function emailAccess(
 export async function requestUserEmail(request: Request, store: AccessSource = userStore): Promise<string> {
   const access = await emailAccess(tokenEmail(await requestToken(request)), store);
   if (!access) throw unauthorized();
+  return access.email;
+}
+
+// Write route handlers: like requestUserEmail, but a read-only viewer gets a 403-status error.
+export async function requestWriterEmail(request: Request, store: AccessSource = userStore): Promise<string> {
+  const access = await emailAccess(tokenEmail(await requestToken(request)), store);
+  if (!access) throw unauthorized();
+  if (!canWrite(access.role)) throw Object.assign(new Error(VIEWER_READ_ONLY_MESSAGE), { status: 403 });
   return access.email;
 }
 

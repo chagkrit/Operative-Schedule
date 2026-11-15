@@ -333,7 +333,7 @@ test("AdminUsers renders from API responses, confirms deletes, locks bootstrap a
 
 test("menu shows จัดการผู้ใช้ only to admins", async () => {
   const app = await read("app/SchedulerApp.tsx");
-  assert.match(app, /export default function SchedulerApp\(\{ authorizedEmail, isAdmin \}/);
+  assert.match(app, /export default function SchedulerApp\(\{ authorizedEmail, isAdmin, canWrite \}/);
   assert.match(app, /\{isAdmin && <Link className="admin-link" href="\/admin"[^\n]*>จัดการผู้ใช้<\/Link>\}/);
   assert.equal((app.match(/จัดการผู้ใช้/g) || []).length, 1);
   const css = await read("app/mobile-shell.css");
@@ -367,4 +367,32 @@ test("new admin classes meet the phone 12px text and 44px target floors", async 
   for (const cls of [".admin-add-form input", ".admin-add-form select", ".admin-row select"]) {
     assert.ok(inputs.slice(0, inputs.indexOf("font-size: 16px;")).includes(cls), `${cls} in 16px input list`);
   }
+});
+
+test("viewer role is accepted by POST and PATCH; unknown roles still 400", async () => {
+  const { store } = memory();
+  const added = await call(store, "POST", { as: ADMIN, body: { email: "v@example.com", role: "viewer" } });
+  assert.equal(added.status, 200);
+  const patched = await call(store, "PATCH", { as: ADMIN, body: { email: HN, role: "viewer" } });
+  assert.equal(patched.status, 200);
+  const bad = await call(store, "PATCH", { as: ADMIN, body: { email: HN, role: "root" } });
+  assert.equal(bad.status, 400);
+});
+
+test("a viewer actor gets 403 from the admin users API on GET and POST", async () => {
+  const { store, state } = memory([...BASE, u("view@cmu.ac.th", "viewer")]);
+  const read = await call(store, "GET", { as: "view@cmu.ac.th" });
+  assert.equal(read.status, 403);
+  const write = await call(store, "POST", { as: "view@cmu.ac.th", body: { email: "new@example.com", role: "user" } });
+  assert.equal(write.status, 403);
+  assert.equal(state.writes, 0);
+});
+
+test("AdminUsers offers the viewer role and labels all three roles in the PATCH success message", async () => {
+  const ui = await read("app/admin/AdminUsers.tsx");
+  assert.ok(ui.includes('{ value: "viewer", label: "ดูอย่างเดียว (viewer)" }'));
+  assert.match(ui, /ROLE_LABELS[^=]*=\s*\{[^}]*admin: "ผู้ดูแลระบบ"[^}]*user: "ผู้ใช้"[^}]*viewer: "ดูอย่างเดียว"/s);
+  assert.match(ui, /\$\{ROLE_LABELS\[role\]\}/);
+  assert.doesNotMatch(ui, /role === "admin" \? "ผู้ดูแลระบบ" : "ผู้ใช้"/);
+  assert.match(ui, /useState<Role>\("user"\)/);
 });

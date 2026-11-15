@@ -1,6 +1,7 @@
 import { AUTHORIZED_EMAIL } from "../../auth";
-import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail } from "./session";
+import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail, VIEWER_READ_ONLY_MESSAGE } from "./session";
 import { userStore } from "./user-store";
+import { canWrite } from "./users";
 import { addDays, daysBetween, orderedStaffMembers } from "./schedule";
 import { parseDurationMinutes } from "./minutes";
 import { calendarEventDate, calendarTimestampDate, parseLegacyCalendarEvent, type LegacyCalendarEvent } from "./legacy-calendar";
@@ -169,11 +170,16 @@ async function serverAccessToken(refreshToken: string) {
 
 // The single chokepoint for every Calendar API call: verified session + allowlist (cached ≤30 s,
 // so a removed/deactivated user loses API access within ~30 s). A deny only rejects this request.
-async function authorizedAccessToken(request: Request) {
+async function authorizedAccessToken(request: Request, method = "GET") {
   const token = await requestToken(request);
   const email = tokenEmail(token);
-  if (!token || !email || !(await userStore.getAccess(email)).allowed) {
+  const access = token && email ? await userStore.getAccess(email) : null;
+  if (!token || !access || !access.allowed) {
     throw withStatus(SIGN_IN_REQUIRED_MESSAGE, 401);
+  }
+  // Backstop behind requestWriterEmail: a role that cannot write never reaches a mutating Google call.
+  if (!canWrite(access.role) && method.toUpperCase() !== "GET") {
+    throw withStatus(VIEWER_READ_ONLY_MESSAGE, 403);
   }
   if (process.env.GOOGLE_REFRESH_TOKEN) {
     if (!process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
@@ -202,7 +208,7 @@ async function authorizedAccessToken(request: Request) {
 }
 
 async function googleFetch(request: Request, path: string, init?: RequestInit) {
-  const token = await authorizedAccessToken(request);
+  const token = await authorizedAccessToken(request, init?.method ?? "GET");
   const response = await fetch(`https://www.googleapis.com/calendar/v3${path}`, {
     ...init,
     headers: {

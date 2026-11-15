@@ -352,3 +352,8 @@ test("describeStoreError: our own UserStoreError message is included (fixed text
   assert.throws(() => parseUsersJson("[1]"), (e) => e instanceof UserStoreError);
   assert.throws(() => storageReadKind({ statusCode: 304 }), (e) => e instanceof UserStoreError && /304/.test(e.message));
 });
+
+test("parseUsersJson keeps the viewer role", () => {
+  const list = parseUsersJson(JSON.stringify([u("v@example.com", "viewer")]));
+  assert.equal(list.find((r) => r.email === "v@example.com").role, "viewer");
+});

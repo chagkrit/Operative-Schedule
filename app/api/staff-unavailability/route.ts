@@ -19,11 +19,11 @@ import {
   findOverlappingStaff,
   isIsoDate,
 } from "../../lib/staff-unavailability";
-import { requestUserEmail } from "../../lib/session";
+import { requestWriterEmail } from "../../lib/session";
 
 export async function POST(request: Request) {
   try {
-    const actorEmail = await requestUserEmail(request);
+    const actorEmail = await requestWriterEmail(request);
     const body: unknown = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return Response.json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง" }, { status: 400 });
@@ -218,6 +218,7 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    await requestWriterEmail(request);
     const id = new URL(request.url).searchParams.get("id")?.trim() || "";
     if (!id) return Response.json({ error: "ไม่พบรายการวันที่ไม่ว่าง" }, { status: 400 });
     const today = dateOnly();

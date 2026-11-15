@@ -10,12 +10,14 @@ import { durationInputError, minutesRefusal, minutesRefusalMessage, parseDuratio
 import { staffUnavailableMessage } from "../../../../lib/staff-unavailability";
 import { patientDisplayName } from "../../../../lib/privacy";
 import { dateOnly, endOfRollingHorizon, isNormalDay } from "../../../../lib/schedule";
+import { requestWriterEmail } from "../../../../lib/session";
 
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    await requestWriterEmail(request);
     const { id } = await params;
     const payload = (await request.json()) as { date?: string; queueType?: QueueType; durationMinutes?: unknown };
     const date = payload.date?.trim() || "";
