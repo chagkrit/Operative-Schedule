@@ -132,10 +132,12 @@ export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus 
 // Why the previewed switch must not run (the server refuses the same cases before taking the lock), or null.
 // - targetConflicts: the target holds app events the current master no longer has (cancelled or deleted since
 //   they were copied there, typically the OLD master on a switch back); switching would bring them back.
-// - invalidIds: source events Google will not accept with the same id.
+// - planBlocked: a fixed Thai refusal from the server's plan (e.g. a new id collides, an occurrence of a
+//   recurring event cannot be addressed); shown as is.
+// invalidIds (events Google will not accept with the same id) no longer block: they are copied under new ids.
 export function switchBlockReason(preview: unknown): string | null {
   if (typeof preview !== "object" || preview === null) return null;
-  const p = preview as { tokenOnly?: unknown; targetConflicts?: unknown; invalidIds?: unknown };
+  const p = preview as { tokenOnly?: unknown; targetConflicts?: unknown; planBlocked?: unknown };
   if (p.tokenOnly === true) return null;
   const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
   const reasons: string[] = [];
@@ -145,12 +147,7 @@ export function switchBlockReason(preview: unknown): string | null {
       `ห้ามสลับไปปฏิทินนี้: ปฏิทินปลายทางมี ${conflicts} รายการของแอปที่ปฏิทินหลักปัจจุบันไม่มีแล้ว (ถูกยกเลิกหรือลบไปหลังจากเคยคัดลอกไว้) ถ้าสลับไป รายการเหล่านั้นจะกลับมาในแอป วิธีที่ปลอดภัย: สร้างปฏิทินใหม่ที่ว่าง แล้วเชื่อมต่อและสลับไปปฏิทินนั้นแทน`,
     );
   }
-  const ids = count(p.invalidIds);
-  if (ids) {
-    reasons.push(
-      `สลับไม่ได้: ปฏิทินหลักปัจจุบันมี ${ids} รายการที่รหัส event ไม่อยู่ในรูปแบบที่ Google ยอมให้คัดลอกด้วยรหัสเดิม (มักเป็นรายการที่นำเข้าจากโปรแกรมอื่น) ให้หยุดตรงนี้ ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar (จะทำให้ข้อมูลการจองหาย) และติดต่อผู้พัฒนา การสลับจะยังถูกบล็อกจนกว่าผู้พัฒนาจะแก้ให้`,
-    );
-  }
+  if (typeof p.planBlocked === "string" && p.planBlocked) reasons.push(p.planBlocked);
   return reasons.length ? reasons.join(" ") : null;
 }
 
@@ -171,9 +168,12 @@ export type DiagnosticsView = {
     mastersPlanned: number;
     infiniteMasters: number;
     exceptionsCancelled: number;
+    rruleExtras: number;
     byFreq: Record<"DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" | "other", number>;
   };
   skippedReasons: Record<"cancelled" | "recurringException" | "notReadable", number>;
+  uncoveredOccurrences: number;
+  orphanedExceptions: number;
 };
 
 const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -205,8 +205,11 @@ export function parseDiagnostics(raw: unknown): DiagnosticsView | null {
       mastersPlanned: n(rec.mastersPlanned),
       infiniteMasters: n(rec.infiniteMasters),
       exceptionsCancelled: n(rec.exceptionsCancelled),
+      rruleExtras: n(rec.rruleExtras),
       byFreq: pick(rec.byFreq, ["DAILY", "WEEKLY", "MONTHLY", "YEARLY", "other"] as const),
     },
     skippedReasons: pick(d.skippedReasons, ["cancelled", "recurringException", "notReadable"] as const),
+    uncoveredOccurrences: n(d.uncoveredOccurrences),
+    orphanedExceptions: n(d.orphanedExceptions),
   };
 }

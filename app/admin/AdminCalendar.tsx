@@ -28,8 +28,14 @@ type Preview = {
   targetHasEvents: boolean;
   // app events in the target that the current master no longer has (switching would resurrect them)
   targetConflicts: number;
-  // source events whose ids Google will not accept with the same id
+  // source events whose ids Google will not accept with the same id: copied under a new id (does not block)
   invalidIds: number;
+  // occurrences of copied recurring events that the switch will move (modify) or cancel
+  exceptions: { modify: number; cancel: number };
+  // occurrences the app shows that the copy plan does not cover (must be 0; the server refuses otherwise)
+  uncoveredOccurrences: number;
+  // fixed Thai refusal from the server's plan, or null
+  planBlocked: string | null;
   // read-only breakdown for the developer; null when the server sent none
   diagnostics: DiagnosticsView | null;
 };
@@ -58,7 +64,7 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0
 function toPreview(body: Record<string, unknown> | null): Preview | null {
   if (!body) return null;
   if (body.tokenOnly === true) {
-    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0, diagnostics: null };
+    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0, exceptions: { modify: 0, cancel: 0 }, uncoveredOccurrences: 0, planBlocked: null, diagnostics: null };
   }
   if (typeof body.counts !== "object" || body.counts === null) return null;
   return {
@@ -71,6 +77,12 @@ function toPreview(body: Record<string, unknown> | null): Preview | null {
     targetHasEvents: body.targetHasEvents === true,
     targetConflicts: num(body.targetConflicts),
     invalidIds: num(body.invalidIds),
+    exceptions: {
+      modify: num((body.exceptions as { modify?: unknown } | null | undefined)?.modify),
+      cancel: num((body.exceptions as { cancel?: unknown } | null | undefined)?.cancel),
+    },
+    uncoveredOccurrences: num(body.uncoveredOccurrences),
+    planBlocked: typeof body.planBlocked === "string" && body.planBlocked ? body.planBlocked : null,
     diagnostics: parseDiagnostics(body.diagnostics),
   };
 }
@@ -298,13 +310,18 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                   <tr><th scope="row">ข้ามไป</th><td>{preview.skipped}</td></tr>
                   <tr><th scope="row">รายการซ้ำ (recurring)</th><td>{preview.recurring}</td></tr>
                   <tr><th scope="row">รายการในปฏิทินปลายทางที่ปฏิทินหลักไม่มีแล้ว</th><td>{preview.targetConflicts}</td></tr>
-                  <tr><th scope="row">รหัส event ที่คัดลอกไม่ได้</th><td>{preview.invalidIds}</td></tr>
+                  <tr><th scope="row">รหัส event ที่ต้องออกรหัสใหม่ (ไม่บล็อก)</th><td>{preview.invalidIds}</td></tr>
+                  <tr>
+                    <th scope="row">รายการยกเว้นของรายการซ้ำที่จะคัดลอก</th>
+                    <td>ย้าย/แก้ไข {preview.exceptions.modify} · ยกเลิก {preview.exceptions.cancel}</td>
+                  </tr>
+                  <tr><th scope="row">รายการที่แอปแสดงแต่ไม่อยู่ในแผนคัดลอก (ต้องเป็น 0)</th><td>{preview.uncoveredOccurrences}</td></tr>
                 </tbody>
               </table>
               {preview.diagnostics && (
                 <details className="admin-calendar-diagnostics">
                   <summary>รายละเอียดสำหรับนักพัฒนา</summary>
-                  <p className="admin-calendar-diagnostics-title">รหัส event ที่คัดลอกไม่ได้ ({preview.invalidIds})</p>
+                  <p className="admin-calendar-diagnostics-title">รหัส event ที่ต้องออกรหัสใหม่ ({preview.invalidIds}) คัดลอกด้วยรหัสใหม่ และเก็บรหัสเดิมไว้ใน orig_id</p>
                   <ul>
                     {Object.entries(REASON_LABELS).map(([key, label]) => (
                       <li key={key}>{label}: {preview.diagnostics?.reasons[key as keyof DiagnosticsView["reasons"]]}</li>
@@ -321,6 +338,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                   <ul>
                     <li>ต้นแบบ: {preview.diagnostics.recurring.masters} (อยู่ในแผนคัดลอก {preview.diagnostics.recurring.mastersPlanned}) · ไม่มีวันสิ้นสุด: {preview.diagnostics.recurring.infiniteMasters}</li>
                     <li>รายการยกเว้น: {preview.diagnostics.recurring.exceptionInstances} (ยกเลิกแล้ว {preview.diagnostics.recurring.exceptionsCancelled})</li>
+                    <li>รายการต้นแบบที่มีวันยกเว้น/วันเพิ่ม (EXDATE/RDATE/EXRULE): {preview.diagnostics.recurring.rruleExtras} · รายการยกเว้นที่ไม่ตรงกับวันใดของรายการซ้ำ (ไม่คัดลอก ไม่บล็อก): {preview.diagnostics.orphanedExceptions}</li>
                     <li>ความถี่: รายวัน {preview.diagnostics.recurring.byFreq.DAILY} · รายสัปดาห์ {preview.diagnostics.recurring.byFreq.WEEKLY} · รายเดือน {preview.diagnostics.recurring.byFreq.MONTHLY} · รายปี {preview.diagnostics.recurring.byFreq.YEARLY} · อื่น ๆ {preview.diagnostics.recurring.byFreq.other}</li>
                   </ul>
                   <p className="admin-calendar-diagnostics-title">สาเหตุที่ข้าม ({preview.skipped})</p>
@@ -371,6 +389,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                     {preview && !preview.tokenOnly && (
                       <p>
                         จะคัดลอก {Object.values(preview.counts).reduce((a, b) => a + num(b), 0)} รายการ
+                        {preview.exceptions.modify + preview.exceptions.cancel ? ` และรายการยกเว้นของรายการซ้ำ ${preview.exceptions.modify + preview.exceptions.cancel} รายการ` : ""}
                         {preview.skipped ? ` (ข้าม ${preview.skipped})` : ""}
                         {preview.targetHasEvents ? ` · ปฏิทินปลายทางมี ${preview.targetEventCount} รายการอยู่แล้ว` : ""}
                       </p>

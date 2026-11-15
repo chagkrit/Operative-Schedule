@@ -1,11 +1,13 @@
 // SERVER-ONLY: the copy engine behind the Admin "switch master calendar" action.
 //
 // planCopy (pure) decides which events the app can read; runSwitch copies them from the current master
-// into the candidate calendar (same event ids, source never modified), verifies the copy, then flips the
-// settings pointer while holding the write lock. Google access goes through a small CalendarClient so the
-// engine is testable with in-memory fakes.
+// into the candidate calendar (same event ids where Google accepts them, otherwise a deterministic new id with
+// the old one kept in orig_id; source never modified), applies the moved/cancelled occurrences of copied
+// recurring events, verifies the copy, then flips the settings pointer while holding the write lock. Google
+// access goes through a small CalendarClient so the engine is testable with in-memory fakes.
 //
 // Never logs event content or tokens: events carry patient identifiers. Failures return fixed Thai text.
+import { createHash } from "node:crypto";
 import {
   isLockActive,
   promoteCandidate,
@@ -29,6 +31,7 @@ export type GoogleEventLike = {
   end?: { date?: string; dateTime?: string; timeZone?: string };
   recurrence?: string[];
   recurringEventId?: string;
+  originalStartTime?: { date?: string; dateTime?: string; timeZone?: string };
   reminders?: unknown;
   transparency?: string;
   visibility?: string;
@@ -40,8 +43,24 @@ export type GoogleEventLike = {
 
 export type CalendarClient = {
   // deadline: absolute ms (same clock as the run); the client stops paginating and times out pages there.
-  listEvents(opts?: { deadline?: number }): Promise<GoogleEventLike[]>;
+  // showDeleted: also list deleted entries (used only for the target's reads; never for the source).
+  // expand: the app's own view instead (singleEvents=true: every occurrence, no masters, no cancelled
+  // occurrences) over [timeMin, timeMax).
+  // timeZone: render dateTimes in this zone (Google otherwise uses each calendar's own zone).
+  listEvents(opts?: { deadline?: number; showDeleted?: boolean; expand?: ExpansionWindow; timeZone?: string }): Promise<GoogleEventLike[]>;
   upsertEvent(event: GoogleEventLike): Promise<"created" | "updated">;
+  // One occurrence of a recurring event already in this calendar, addressed by its instance id
+  // (`<masterId>_<original start>`, confirmed against real Google). update = events.update (PUT) with the
+  // FULL occurrence: Google documents PUT for editing an occurrence, and PATCH was observed to inherit the
+  // master's fields. An unknown occurrence throws an error with instanceMissing: true (404/410).
+  // delete cancels it; "gone" = Google answered 404/410 (already cancelled, or no such occurrence).
+  // DELETE on an occurrence is OBSERVED behaviour (not documented by Google); the final expanded gate in
+  // runSwitch verifies what the app will really see.
+  updateInstance(instanceId: string, body: GoogleEventLike): Promise<void>;
+  deleteInstance(instanceId: string): Promise<"deleted" | "gone">;
+  // The calendar's own time zone (events.list's top-level timeZone; calendars.get is not allowed with the
+  // calendar.events scope), or null when Google does not send it.
+  calendarTimeZone(opts?: { deadline?: number }): Promise<string | null>;
 };
 
 export const COPY_KINDS = ["booking", "extra_day", "schedule_closure", "staff_unavailable", "legacy"] as const;
@@ -74,8 +93,15 @@ const COPY_FIELDS = [
 // - cancelled entries and recurring-exception instances (singleEvents=false returns them separately; their ids
 //   contain "_" and cannot be inserted) => null.
 export function classifyEvent(event: GoogleEventLike): CopyKind | null {
+  if (event?.recurringEventId) return null;
+  return readableKind(event);
+}
+
+// The app's readers on ONE event or occurrence (singleEvents=true returns occurrences with
+// recurringEventId set): the four tags, bookingFromEvent (queue_type + date) and the legacy parser.
+function readableKind(event: GoogleEventLike): CopyKind | null {
   if (!event || typeof event.id !== "string" || !event.id) return null;
-  if (event.status === "cancelled" || event.recurringEventId) return null;
+  if (event.status === "cancelled") return null;
   const data = event.extendedProperties?.private;
   const tag = data?.or_queue;
   if (tag) return TAGS.includes(tag) ? (tag as CopyKind) : null;
@@ -84,18 +110,41 @@ export function classifyEvent(event: GoogleEventLike): CopyKind | null {
   return null;
 }
 
-// Google sets created/updated itself on insert, so the originals travel as private orig_created /
-// orig_updated (the readers in legacy-calendar.ts prefer them). Values a source already carries win, so a
-// later switch back keeps the first dates.
-const ORIG_KEYS = ["orig_created", "orig_updated"] as const;
+// Fields written to one occurrence of a recurring event (an exception) with PUT: the full occurrence,
+// including originalStartTime (recurringEventId is set to the master's target id). Never the occurrence's
+// own id (it is in the URL) and never recurrence (instances have none).
+const EXCEPTION_FIELDS = [
+  "originalStartTime",
+  "status",
+  "summary",
+  "description",
+  "location",
+  "colorId",
+  "start",
+  "end",
+  "reminders",
+  "transparency",
+  "visibility",
+  "extendedProperties",
+] as const;
 
-function copyBody(event: GoogleEventLike): GoogleEventLike {
+// Google sets created/updated itself on insert, so the originals travel as private orig_created /
+// orig_updated (the readers in legacy-calendar.ts prefer them). A remapped event (its id was not accepted
+// by Google) keeps its old id in orig_id. Values a source already carries win, so a later switch back keeps
+// the first dates and the first id.
+const ORIG_KEYS = ["orig_created", "orig_updated", "orig_id"] as const;
+
+function copyBody(event: GoogleEventLike, fields: readonly string[], targetId?: string): GoogleEventLike {
   const out: GoogleEventLike = {};
-  for (const key of COPY_FIELDS) {
+  for (const key of fields) {
     if (event[key] !== undefined) out[key] = structuredClone(event[key]) as never;
   }
   const orig: Record<string, string> = {};
   const existing = event.extendedProperties?.private ?? {};
+  if (targetId !== undefined) {
+    out.id = targetId;
+    if (targetId !== event.id && !existing.orig_id && typeof event.id === "string") orig.orig_id = event.id;
+  }
   if (!existing.orig_created && typeof event.created === "string" && event.created) orig.orig_created = event.created;
   if (!existing.orig_updated && typeof event.updated === "string" && event.updated) orig.orig_updated = event.updated;
   if (Object.keys(orig).length) {
@@ -113,8 +162,125 @@ export function countRecurring(events: GoogleEventLike[]): number {
 const emptyCounts = (): CopyCounts => ({ booking: 0, extra_day: 0, schedule_closure: 0, staff_unavailable: 0, legacy: 0 });
 
 // Google's insert-with-id accepts only base32hex ids. Events created elsewhere (CalDAV, Outlook, ICS
-// import) may carry other ids; those cannot be copied with the same id, so a switch refuses up front.
+// import, hand-typed legacy events) may carry other ids; those are copied under a new id (remapEventId).
 export const GOOGLE_EVENT_ID_PATTERN = /^[a-v0-9]{5,1024}$/;
+
+// Deterministic replacement id: "oi" + the first 40 hex digits of sha256(source id). Every character is
+// base32hex (o, i, 0-9, a-f), so Google accepts it; the same source id always maps to the same new id, so
+// a re-run finds what an earlier press copied.
+export function remapEventId(sourceId: string): string {
+  return `oi${createHash("sha256").update(sourceId, "utf8").digest("hex").slice(0, 40)}`;
+}
+
+// The id an event gets in the target calendar: its own when Google accepts it, else the remapped one.
+export function planTargetId(sourceId: string): string {
+  return GOOGLE_EVENT_ID_PATTERN.test(sourceId) ? sourceId : remapEventId(sourceId);
+}
+
+// Plan refusals (decided before the lock; also checked by runSwitch before any write). Fixed Thai text.
+export const ID_COLLISION_MESSAGE =
+  "รหัส event ใหม่ที่ระบบออกให้ (สำหรับรายการที่ Google ไม่รับรหัสเดิม) ซ้ำกับรายการอื่น จึงยังไม่ได้เปลี่ยนปฏิทิน ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
+export const REMAPPED_MASTER_EXCEPTION_MESSAGE =
+  "มีรายการยกเว้นของรายการซ้ำ (recurring) ที่รายการต้นแบบต้องออกรหัส event ใหม่ ระบบยังคัดลอกกรณีนี้ไม่ได้ จึงยังไม่ได้เปลี่ยนปฏิทิน ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
+export const EXCEPTION_INSTANCE_ID_MESSAGE =
+  "มีรายการยกเว้นของรายการซ้ำ (recurring) ที่ระบบหาวันเดิมของรายการไม่ได้ จึงยังไม่ได้เปลี่ยนปฏิทิน ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
+// A copy-step failure that pressing again cannot fix (Google does not know that occurrence in the new calendar).
+export const EXCEPTION_APPLY_FAILED_MESSAGE =
+  "ปฏิทินใหม่ไม่รับรายการยกเว้นของรายการซ้ำ (recurring) บางรายการ (ไม่พบวันนั้นในรายการซ้ำ) จึงยังไม่ได้เปลี่ยนปฏิทิน ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
+
+// The `<original start>` part of an occurrence's instance id: taken from the source exception's own id
+// (Google built it from the master id), else from originalStartTime (dateTime → UTC YYYYMMDDTHHMMSSZ,
+// all-day date → YYYYMMDD). null = cannot be determined.
+function instanceSuffix(exception: GoogleEventLike, masterSourceId: string): string | null {
+  const id = exception.id as string;
+  const prefix = `${masterSourceId}_`;
+  if (id.startsWith(prefix)) {
+    const rest = id.slice(prefix.length);
+    if (/^[0-9A-Za-z]+$/.test(rest)) return rest;
+  }
+  const ost = exception.originalStartTime;
+  if (ost && typeof ost.dateTime === "string") {
+    const t = Date.parse(ost.dateTime);
+    if (Number.isFinite(t)) return new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[-:]/g, "");
+    return null;
+  }
+  if (ost && typeof ost.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(ost.date)) return ost.date.replace(/-/g, "");
+  return null;
+}
+
+const isMasterEvent = (e: GoogleEventLike | undefined) => !!e && Array.isArray(e.recurrence) && e.recurrence.length > 0;
+
+// ---- the app's view (singleEvents=true) -------------------------------------------------------
+// The app lists the calendar with singleEvents=true, so planning and the final check work on that view over
+// a bounded window: 2000-01-01 … now + EXPANSION_DAYS_AHEAD. Bounded by the run deadline like every read.
+export type ExpansionWindow = { timeMin: string; timeMax: string };
+// The engine reads both calendars in the app's zone, so dates and wall-clock times compare like for like
+// whatever zone each calendar is set to (the app's own reads in calendar.ts are unchanged).
+export const APP_TIME_ZONE = "Asia/Bangkok";
+// Expanded reads fetch only what planning and the final gate use (nextPageToken is required or pagination
+// would silently stop after the first page). Plain reads stay full: they feed the copy bodies.
+export const EXPANDED_LIST_FIELDS = "nextPageToken,items(id,status,summary,description,location,start,end,recurringEventId,originalStartTime,extendedProperties)";
+export const EXPANSION_WINDOW_START = "2000-01-01T00:00:00.000Z";
+export const EXPANSION_DAYS_AHEAD = 400;
+// Wall-clock date (the window only needs today's date; deps.now() is a test clock for timing).
+export function expansionWindow(at: number = Date.now()): ExpansionWindow {
+  return { timeMin: EXPANSION_WINDOW_START, timeMax: new Date(at + EXPANSION_DAYS_AHEAD * 86_400_000).toISOString() };
+}
+
+// Ms of an occurrence's original start: originalStartTime, else the instance-id suffix. NaN = unknown.
+function suffixTime(suffix: string): number {
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z)?$/.exec(suffix);
+  if (!m) return NaN;
+  return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4] ?? "00"}:${m[5] ?? "00"}:${m[6] ?? "00"}Z`);
+}
+function ownStartMs(event: GoogleEventLike): number {
+  if (event.start?.dateTime) return Date.parse(event.start.dateTime);
+  if (event.start?.date) return Date.parse(`${event.start.date}T00:00:00Z`);
+  return NaN;
+}
+function originalStartMs(event: GoogleEventLike, suffix: string | null): number {
+  const ost = event.originalStartTime;
+  if (ost?.dateTime) return Date.parse(ost.dateTime);
+  if (ost?.date) return Date.parse(`${ost.date}T00:00:00Z`);
+  return suffix ? suffixTime(suffix) : NaN;
+}
+const inWindow = (ms: number, w: ExpansionWindow) => Number.isFinite(ms) && ms >= Date.parse(w.timeMin) && ms < Date.parse(w.timeMax);
+
+// What the app shows of one readable occurrence (compared by the final gate; orig_* props aside).
+type OccurrenceView = { start: GoogleEventLike["start"]; end: GoogleEventLike["end"]; summary: string; description: string; location: string; data: string };
+function occurrenceView(e: GoogleEventLike): OccurrenceView {
+  return { start: e.start, end: e.end, summary: e.summary ?? "", description: e.description ?? "", location: e.location ?? "", data: privateWithoutOrig(e) };
+}
+// Same instant AND same wall-clock date/time: the app takes a booking's date from dateTime.slice(0, 10)
+// (calendarEventDate), so the same instant rendered in another zone is a different booking date. The
+// engine reads both sides in APP_TIME_ZONE; this is the second line if a calendar renders otherwise.
+export function sameAppView(a: OccurrenceView, b: OccurrenceView): boolean {
+  const time = (x: GoogleEventLike["start"], y: GoogleEventLike["start"]) => {
+    if (!x || !y) return !x && !y;
+    if ((x.date ?? "") !== (y.date ?? "")) return false;
+    if (!x.dateTime && !y.dateTime) return true;
+    const tx = Date.parse(x.dateTime ?? "");
+    if (!Number.isFinite(tx) || tx !== Date.parse(y.dateTime ?? "")) return false;
+    return (x.dateTime ?? "").slice(0, 19) === (y.dateTime ?? "").slice(0, 19);
+  };
+  return time(a.start, b.start) && time(a.end, b.end) && a.summary === b.summary && a.description === b.description && a.location === b.location && a.data === b.data;
+}
+// Readable target occurrences keyed by their own (target) id.
+function targetOccurrences(expanded: GoogleEventLike[]): Map<string, OccurrenceView> {
+  const out = new Map<string, OccurrenceView>();
+  for (const e of expanded) if (readableKind(e)) out.set(e.id as string, occurrenceView(e));
+  return out;
+}
+// Both ways: every readable source occurrence (keyed by its target-mapped id) is in the target with the same
+// view, and the target shows no other readable occurrence.
+function sameOccurrences(source: Map<string, OccurrenceView>, target: Map<string, OccurrenceView>): boolean {
+  if (source.size !== target.size) return false;
+  for (const [key, view] of source) {
+    const t = target.get(key);
+    if (!t || !sameAppView(view, t)) return false;
+  }
+  return true;
+}
 
 // Read-only diagnostics of a plan: counts and MASKED id shapes only. Never any event text or a full id.
 export type IdReasons = { uppercase: number; hyphen: number; underscore: number; tooShort: number; tooLong: number; otherChars: number };
@@ -133,8 +299,16 @@ export type PlanDiagnostics = {
     infiniteMasters: number;
     byFreq: { DAILY: number; WEEKLY: number; MONTHLY: number; YEARLY: number; other: number };
     exceptionsCancelled: number;
+    // planned masters whose recurrence has EXDATE / RDATE / EXRULE lines
+    rruleExtras: number;
   };
   skippedReasons: { cancelled: number; recurringException: number; notReadable: number };
+  // exception items of planned masters that the copy will apply
+  exceptions: { modify: number; cancel: number };
+  // readable occurrences of the app's view that the plan does not cover (must be 0: refused otherwise)
+  uncoveredOccurrences: number;
+  // modified exceptions that are not an occurrence of the source's view (the app cannot show them): not applied
+  orphanedExceptions: number;
 };
 
 const MAX_SHAPES = 5;
@@ -208,17 +382,52 @@ function rrules(event: GoogleEventLike): string[] {
   return (Array.isArray(event.recurrence) ? event.recurrence : []).filter((r) => typeof r === "string" && /^RRULE:/i.test(r));
 }
 
-// invalidIds: planned (copied) events whose id GOOGLE_EVENT_ID_PATTERN rejects; skipped events never count.
+// One occurrence of a planned recurring master, written after the masters are copied. `id` is the
+// occurrence's instance id in the TARGET (`<master target id>_<original start>`), masterId the master's
+// target id; body (modify only) holds EXCEPTION_FIELDS.
+export type ExceptionItem = { kind: "modify" | "cancel"; id: string; masterId: string; body?: GoogleEventLike };
+
+// copy: bodies to write, each `id` already the TARGET id (remapped when Google rejects the source id).
+// invalidIds: planned (copied) events whose id GOOGLE_EVENT_ID_PATTERN rejects (they are remapped); skipped
+// events never count. refusal: fixed Thai text when the plan must not run (else null); planCopy never throws.
 export type CopyPlan = {
   copy: GoogleEventLike[];
   skipped: number;
   counts: CopyCounts;
   byMonth: Record<string, number>;
   invalidIds: number;
+  exceptions: ExceptionItem[];
+  refusal: string | null;
+  uncoveredOccurrences: number;
+  // Only when the app's view was given: readable occurrences keyed by their TARGET-mapped id, and the
+  // mapped ids of every occurrence of a planned master in the view (readable or not).
+  occurrences: Map<string, OccurrenceView> | null;
+  occurrenceKeys: Set<string> | null;
+  window: ExpansionWindow;
   diagnostics: PlanDiagnostics;
 };
 
-export function planCopy(source: GoogleEventLike[]): CopyPlan {
+// After the switch the app reads the new calendar WITHOUT a timeZone parameter, i.e. in that calendar's own
+// zone, and takes booking dates from dateTime.slice(0, 10): the new calendar must be in APP_TIME_ZONE.
+export const TARGET_TIME_ZONE_MESSAGE =
+  "ปฏิทินใหม่ไม่ได้ตั้ง time zone เป็น (GMT+07:00) Bangkok จึงยังไม่ได้เปลี่ยนปฏิทิน ให้เปิด Google Calendar → Settings → เลือกปฏิทินใหม่ → Time zone แล้วตั้งเป็น (GMT+07:00) Bangkok จากนั้นกดตรวจตัวอย่างใหม่";
+export const TARGET_TIME_ZONE_UNKNOWN_MESSAGE =
+  "อ่าน time zone ของปฏิทินใหม่ไม่ได้ (Google ไม่ส่งค่ามา) จึงยังไม่ได้เปลี่ยนปฏิทิน ตรวจว่าปฏิทินใหม่ตั้ง time zone เป็น (GMT+07:00) Bangkok แล้วกดตรวจตัวอย่างใหม่ ถ้ายังขึ้นข้อความนี้ให้ติดต่อผู้พัฒนา";
+
+// The app reads the CURRENT master in that calendar's own zone today; the copy keeps instants, so a master
+// outside APP_TIME_ZONE (or one whose zone cannot be confirmed) would shift timed bookings after the switch.
+// The admin must not change the live master's zone (that would shift them right away): developer case.
+export const SOURCE_TIME_ZONE_MESSAGE =
+  "ปฏิทินหลักปัจจุบันไม่ได้อยู่ในเวลาไทย (GMT+07:00) Bangkok หรือตรวจ time zone ของปฏิทินนี้ไม่ได้ จึงไม่ให้สลับ เพื่อไม่ให้วันหรือเวลาของคิวเลื่อนหรือหายไป ยังไม่ได้เปลี่ยนปฏิทิน ห้ามแก้ไขปฏิทินหลักปัจจุบันเอง และติดต่อผู้พัฒนา";
+
+export const UNCOVERED_OCCURRENCES_MESSAGE =
+  "ปฏิทินหลักปัจจุบันมีรายการที่แอปแสดงอยู่แต่ไม่อยู่ในแผนคัดลอก จึงยังไม่ได้เปลี่ยนปฏิทิน ให้หยุดตรงนี้ ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar และติดต่อผู้พัฒนา";
+
+// expanded = the source's app view (singleEvents=true over `window`). With it, a recurring master is planned
+// when the master OR any of its occurrences is readable, modified exceptions that are not occurrences of the
+// view are orphans (not applied), and readable occurrences the plan does not cover refuse the plan.
+// Without it (the target's conflict check, older callers) masters are judged by themselves only.
+export function planCopy(source: GoogleEventLike[], expanded?: GoogleEventLike[], viewWindow: ExpansionWindow = expansionWindow()): CopyPlan {
   const copy: GoogleEventLike[] = [];
   const counts = emptyCounts();
   const byMonth: Record<string, number> = {};
@@ -235,8 +444,47 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
     infiniteMasters: 0,
     byFreq: { DAILY: 0, WEEKLY: 0, MONTHLY: 0, YEARLY: 0, other: 0 },
     exceptionsCancelled: 0,
+    rruleExtras: 0,
   };
+  // kind of the EARLIEST readable occurrence of each master in the app's view (by SOURCE master id; ties by
+  // id), so the plan does not depend on the order Google lists occurrences in
+  const occurrenceKind = new Map<string, CopyKind>();
+  const occurrenceRank = new Map<string, [number, string]>();
+  const viewIds = new Set<string>();
+  for (const occ of expanded ?? []) {
+    if (!occ || typeof occ.id !== "string") continue;
+    viewIds.add(occ.id);
+    const k = readableKind(occ);
+    if (!k || typeof occ.recurringEventId !== "string") continue;
+    const at = ownStartMs(occ);
+    const rank: [number, string] = [Number.isFinite(at) ? at : Infinity, occ.id];
+    const best = occurrenceRank.get(occ.recurringEventId);
+    if (!best || rank[0] < best[0] || (rank[0] === best[0] && rank[1] < best[1])) {
+      occurrenceRank.set(occ.recurringEventId, rank);
+      occurrenceKind.set(occ.recurringEventId, k);
+    }
+  }
   const skippedReasons = { cancelled: 0, recurringException: 0, notReadable: 0 };
+  const skip = (event: GoogleEventLike | undefined) => {
+    skipped += 1;
+    if (event?.status === "cancelled") skippedReasons.cancelled += 1;
+    else if (event?.recurringEventId) skippedReasons.recurringException += 1;
+    else skippedReasons.notReadable += 1;
+  };
+  let refusal: string | null = null;
+  const refuse = (message: string) => {
+    refusal ??= message;
+  };
+  // target id -> the source id that claimed it (two different source ids on one target id = collision)
+  const owners = new Map<string, string>();
+  const claim = (targetId: string, sourceId: string) => {
+    const owner = owners.get(targetId);
+    if (owner !== undefined && owner !== sourceId) refuse(ID_COLLISION_MESSAGE);
+    owners.set(targetId, sourceId);
+  };
+  // planned recurring masters by SOURCE id; exceptions wait until every master is known (any order)
+  const plannedMasters = new Map<string, { targetId: string; remapped: boolean }>();
+  const pending: GoogleEventLike[] = [];
   for (const event of source) {
     const isMaster = !!event && Array.isArray(event.recurrence) && event.recurrence.length > 0;
     if (isMaster) {
@@ -251,18 +499,25 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
       recurring.exceptionInstances += 1;
       if (event.status === "cancelled") recurring.exceptionsCancelled += 1;
     }
-    const kind = classifyEvent(event);
+    if (event?.recurringEventId && typeof event.id === "string" && event.id) {
+      pending.push(event);
+      continue;
+    }
+    const kind = classifyEvent(event) ?? (isMaster ? occurrenceKind.get(event.id as string) ?? null : null);
     if (!kind || seen.has(event.id as string)) {
-      skipped += 1;
-      if (event?.status === "cancelled") skippedReasons.cancelled += 1;
-      else if (event?.recurringEventId) skippedReasons.recurringException += 1;
-      else skippedReasons.notReadable += 1;
+      skip(event);
       continue;
     }
     const id = event.id as string;
     seen.add(id);
-    if (isMaster) recurring.mastersPlanned += 1;
-    if (!GOOGLE_EVENT_ID_PATTERN.test(id)) {
+    const targetId = planTargetId(id);
+    claim(targetId, id);
+    if (isMaster) {
+      recurring.mastersPlanned += 1;
+      plannedMasters.set(id, { targetId, remapped: targetId !== id });
+      if ((event.recurrence ?? []).some((r) => typeof r === "string" && /^(EXDATE|RDATE|EXRULE)[;:]/i.test(r))) recurring.rruleExtras += 1;
+    }
+    if (targetId !== id) {
       invalidIds += 1;
       if (/[A-Z]/.test(id)) reasons.uppercase += 1;
       if (id.includes("-")) reasons.hyphen += 1;
@@ -276,29 +531,184 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
       else byKind.app += 1;
       if (isMaster) byKind.recurringMasters += 1;
     }
-    copy.push(copyBody(event));
+    copy.push(copyBody(event, COPY_FIELDS, targetId));
     counts[kind] += 1;
     const month = calendarEventDate(event).slice(0, 7) || "unknown";
     byMonth[month] = (byMonth[month] ?? 0) + 1;
   }
+  // Exceptions of planned masters become items; the rest stay skipped (by their old reason).
+  const exceptions: ExceptionItem[] = [];
+  const exceptionCounts = { modify: 0, cancel: 0 };
+  let orphanedExceptions = 0;
+  let uncoveredOccurrences = 0;
+  const seenExceptions = new Set<string>();
+  for (const event of pending) {
+    const sourceId = event.id as string;
+    const masterSourceId = event.recurringEventId as string;
+    const master = plannedMasters.get(masterSourceId);
+    if (!master || seenExceptions.has(sourceId)) {
+      // An exception the app would read, moved outside the window, of a master that is not copied: the view
+      // cannot show it, so it is not covered (inside the window it would have planned its master).
+      if (expanded && !master && readableKind(event) && !inWindow(ownStartMs(event), viewWindow)) uncoveredOccurrences += 1;
+      skip(event);
+      continue;
+    }
+    seenExceptions.add(sourceId);
+    // The occurrence would have to be addressed under the master's NEW id: never guess, refuse.
+    if (master.remapped) {
+      refuse(REMAPPED_MASTER_EXCEPTION_MESSAGE);
+      continue;
+    }
+    const suffix = instanceSuffix(event, masterSourceId);
+    if (!suffix) {
+      refuse(EXCEPTION_INSTANCE_ID_MESSAGE);
+      continue;
+    }
+    const id = `${master.targetId}_${suffix}`;
+    // A modified exception that is not an occurrence of the app's view (its original start is no longer an
+    // occurrence of the rule) cannot be shown by the app: not applied, counted. Google filters the view by
+    // each occurrence's OWN start, so this is decided only when BOTH its original start and its own start
+    // are inside the window; otherwise it is applied as usual (and verified per item). Cancels are always
+    // applied (404/410 = satisfied).
+    if (
+      expanded &&
+      event.status !== "cancelled" &&
+      !viewIds.has(sourceId) &&
+      inWindow(originalStartMs(event, suffix), viewWindow) &&
+      inWindow(ownStartMs(event), viewWindow)
+    ) {
+      orphanedExceptions += 1;
+      continue;
+    }
+    claim(id, sourceId);
+    if (event.status === "cancelled") {
+      exceptions.push({ kind: "cancel", id, masterId: master.targetId });
+      exceptionCounts.cancel += 1;
+    } else {
+      const body = copyBody(event, EXCEPTION_FIELDS);
+      body.recurringEventId = master.targetId;
+      exceptions.push({ kind: "modify", id, masterId: master.targetId, body });
+      exceptionCounts.modify += 1;
+    }
+  }
+  // The app's view: map every occurrence to its target id; readable ones must be covered by the plan.
+  let occurrences: Map<string, OccurrenceView> | null = null;
+  let occurrenceKeys: Set<string> | null = null;
+  if (expanded) {
+    occurrences = new Map();
+    occurrenceKeys = new Set();
+    for (const occ of expanded) {
+      if (!occ || typeof occ.id !== "string" || !occ.id) continue;
+      const readable = readableKind(occ) !== null;
+      let key: string | null = null;
+      let covered = false;
+      if (typeof occ.recurringEventId === "string") {
+        const master = plannedMasters.get(occ.recurringEventId);
+        const suffix = instanceSuffix(occ, occ.recurringEventId);
+        if (master && suffix) {
+          key = `${master.targetId}_${suffix}`;
+          covered = true;
+          occurrenceKeys.add(key);
+        }
+      } else if (seen.has(occ.id)) {
+        key = planTargetId(occ.id);
+        covered = true;
+      }
+      if (!readable) continue;
+      if (!covered || key === null) uncoveredOccurrences += 1;
+      else occurrences.set(key, occurrenceView(occ));
+    }
+  }
+  if (uncoveredOccurrences > 0) refuse(UNCOVERED_OCCURRENCES_MESSAGE);
   const shapes = [...shapeCounts.entries()]
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
     .slice(0, MAX_SHAPES)
     .map(([shape, count]) => ({ shape, count }));
   const shapesOmitted = invalidIds - shapes.reduce((n, x) => n + x.count, 0);
-  return { copy, skipped, counts, byMonth, invalidIds, diagnostics: { invalidIds: { reasons, shapes, shapesOmitted, byKind }, recurring, skippedReasons } };
+  return {
+    copy,
+    skipped,
+    counts,
+    byMonth,
+    invalidIds,
+    exceptions,
+    refusal,
+    uncoveredOccurrences,
+    occurrences,
+    occurrenceKeys,
+    window: viewWindow,
+    diagnostics: {
+      invalidIds: { reasons, shapes, shapesOmitted, byKind },
+      recurring,
+      skippedReasons,
+      exceptions: exceptionCounts,
+      uncoveredOccurrences,
+      orphanedExceptions,
+    },
+  };
 }
 
-// The two refusals a switch decides BEFORE taking the lock (and preview shows):
-// - targetConflicts: app events in the target that the source no longer has. The app hard-deletes events
-//   (cancellations, closures, extra days, leave), so an old master that was populated before still holds
-//   them; switching back would resurrect them, so only a calendar without such events can be the target.
-// - invalidIds: source events Google will not accept with the same id.
-export function switchPreflight(sourceEvents: GoogleEventLike[], targetEvents: GoogleEventLike[]): { targetConflicts: number; invalidIds: number } {
-  const plan = planCopy(sourceEvents);
+// Entries in the target that the plan does not account for (all compared by TARGET id):
+// - app events the source no longer has (the app hard-deletes events, so an old populated master still
+//   holds them; switching there would resurrect them);
+// - occurrences (exceptions) of a planned master that the source does not have (they would move or hide an
+//   occurrence the source shows). A CANCELLED one is harmless when the source's view does not show that
+//   occurrence either (e.g. an EXDATE), which is known only inside the window. Exceptions of masters the
+//   app does not copy are ignored.
+function targetConflictCount(plan: CopyPlan, targetEvents: GoogleEventLike[]): number {
   const planIds = new Set(plan.copy.map((e) => e.id as string));
-  const targetConflicts = planCopy(targetEvents).copy.filter((e) => !planIds.has(e.id as string)).length;
-  return { targetConflicts, invalidIds: plan.invalidIds };
+  const masterIds = new Set(plan.copy.filter(isMasterEvent).map((e) => e.id as string));
+  const exceptionIds = new Set(plan.exceptions.map((x) => x.id));
+  let conflicts = planCopy(targetEvents).copy.filter((e) => !planIds.has(e.id as string)).length;
+  for (const e of targetEvents) {
+    if (!e || typeof e.id !== "string" || typeof e.recurringEventId !== "string") continue;
+    if (!masterIds.has(e.recurringEventId) || exceptionIds.has(e.id)) continue;
+    const suffix = e.id.startsWith(`${e.recurringEventId}_`) ? e.id.slice(e.recurringEventId.length + 1) : null;
+    const hiddenInSource = e.status === "cancelled" && !!plan.occurrenceKeys && !plan.occurrenceKeys.has(e.id) && inWindow(originalStartMs(e, suffix), plan.window);
+    if (!hiddenInSource) conflicts += 1;
+  }
+  return conflicts;
+}
+
+// What a switch decides BEFORE taking the lock (and preview shows). Refusals: targetConflicts > 0 (only a
+// calendar without such entries can be the target) and a plan refusal. invalidIds (remapped ids) and
+// exceptions are informational.
+// expanded = the source's app view (singleEvents=true over `window`), read without writes.
+// targetTimeZone / sourceTimeZone = each calendar's own zone (null = Google sent none or the read failed;
+// undefined = not checked). Anything other than APP_TIME_ZONE is refused (fail safe). The source refusal
+// comes first (developer case), then the target's (the admin can fix it in the settings), then the plan's.
+export function switchPreflight(
+  sourceEvents: GoogleEventLike[],
+  targetEvents: GoogleEventLike[],
+  expanded?: GoogleEventLike[],
+  viewWindow: ExpansionWindow = expansionWindow(),
+  targetTimeZone?: string | null,
+  sourceTimeZone?: string | null,
+): {
+  targetConflicts: number;
+  invalidIds: number;
+  exceptions: { modify: number; cancel: number };
+  uncoveredOccurrences: number;
+  orphanedExceptions: number;
+  refusal: string | null;
+} {
+  const plan = planCopy(sourceEvents, expanded, viewWindow);
+  const out = {
+    targetConflicts: targetConflictCount(plan, targetEvents),
+    invalidIds: plan.invalidIds,
+    exceptions: { ...plan.diagnostics.exceptions },
+    uncoveredOccurrences: plan.uncoveredOccurrences,
+    orphanedExceptions: plan.diagnostics.orphanedExceptions,
+    refusal:
+      sourceTimeZone !== undefined && sourceTimeZone !== APP_TIME_ZONE
+        ? SOURCE_TIME_ZONE_MESSAGE
+        : targetTimeZone === undefined || targetTimeZone === APP_TIME_ZONE
+          ? plan.refusal
+          : targetTimeZone === null
+            ? TARGET_TIME_ZONE_UNKNOWN_MESSAGE
+            : TARGET_TIME_ZONE_MESSAGE,
+  };
+  return out;
 }
 
 // ---- token-only refresh ------------------------------------------------------------
@@ -353,8 +763,6 @@ export const SWITCH_STEP_MESSAGES: Record<SwitchStep, string> = {
 // Preflight refusals (decided before the lock; also the engine's second line for target conflicts).
 export const TARGET_CONFLICTS_MESSAGE =
   "ปฏิทินปลายทางมีรายการของแอปที่ปฏิทินหลักปัจจุบันไม่มีแล้ว (ถูกยกเลิกหรือลบไปหลังเคยคัดลอก) ถ้าสลับไป รายการเหล่านั้นจะกลับมาในแอป จึงยังไม่ได้เปลี่ยนปฏิทิน วิธีที่ปลอดภัยคือสร้างปฏิทินใหม่ที่ว่าง แล้วเชื่อมต่อและสลับไปปฏิทินนั้นแทน";
-export const INVALID_EVENT_IDS_MESSAGE =
-  "ปฏิทินหลักปัจจุบันมีรายการที่รหัส event ไม่อยู่ในรูปแบบที่ Google ยอมให้คัดลอกด้วยรหัสเดิม (มักเป็นรายการที่นำเข้าจากโปรแกรมอื่น) จึงยังไม่ได้เปลี่ยนปฏิทิน ให้หยุดตรงนี้ ห้ามแก้ไขหรือลบรายการใด ๆ ใน Google Calendar (จะทำให้ข้อมูลการจองหาย) และติดต่อผู้พัฒนา การสลับจะยังถูกบล็อกจนกว่าผู้พัฒนาจะแก้ให้";
 export const PREFLIGHT_TARGET_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินใหม่ไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน กรุณาลองใหม่";
 // The preflight (before the lock) already used the whole copy budget of this request.
 export const PREFLIGHT_SLOW_MESSAGE = "ตรวจปฏิทินก่อนสลับใช้เวลานานเกินไป ยังไม่ได้เปลี่ยนปฏิทิน กรุณาลองใหม่";
@@ -401,6 +809,8 @@ export type SwitchDeps = {
   // When the request started (the handler's preflight runs before runSwitch): the copy budget and the hard
   // deadline count from here, so preflight + run stay inside the route's maxDuration. Default: now().
   runStart?: number;
+  // Tests only; production uses expansionWindow() at the run start.
+  window?: ExpansionWindow;
   // Tests only; production uses COPY_PHASE_BUDGET_MS.
   copyBudgetMs?: number;
   hardDeadlineMs?: number;
@@ -416,6 +826,8 @@ export type SwitchResult =
       unchanged: number;
       counts: CopyCounts;
       skipped: number;
+      // exception items of the final plan, how many were written this press, how many already matched
+      exceptions: { modify: number; cancel: number; applied: number; unchanged: number };
       lockCleared: boolean;
     }
   | { ok: false; step: SwitchStep; error: string };
@@ -476,10 +888,35 @@ function targetMatchesSource(target: GoogleEventLike | undefined, source: Google
   return CONTENT_FIELDS.every((k) => JSON.stringify(target[k]) === JSON.stringify(source[k]));
 }
 
+// Re-run skip test for one occurrence: a cancel is done when the target lists it cancelled; a modify when
+// the target lists it (not cancelled) with every field the patch would send.
+const EXCEPTION_CONTENT_FIELDS = ["status", "summary", "description", "location", "colorId", "reminders", "transparency", "visibility"] as const;
+function exceptionMatches(target: GoogleEventLike | undefined, item: ExceptionItem): boolean {
+  if (!target) return false;
+  if (item.kind === "cancel") return target.status === "cancelled";
+  if (target.status === "cancelled" || !item.body || !sameCore(target, item.body)) return false;
+  return EXCEPTION_CONTENT_FIELDS.every((k) => JSON.stringify(target[k]) === JSON.stringify(item.body?.[k]));
+}
+
+// Verify's comparator for one modified occurrence: present, not cancelled, with the source's private
+// props, start, end, summary, description and location. (Cancels are checked in verifyTarget.)
+function exceptionVerified(target: GoogleEventLike | undefined, item: ExceptionItem): boolean {
+  if (!target || !item.body || target.status === "cancelled" || !sameCore(target, item.body)) return false;
+  return (["summary", "description", "location"] as const).every((k) => (target[k] ?? "") === (item.body?.[k] ?? ""));
+}
+
 function samePlans(a: CopyPlan, b: CopyPlan): boolean {
-  if (a.copy.length !== b.copy.length) return false;
+  if (a.refusal !== b.refusal) return false;
+  if (a.occurrences && b.occurrences) {
+    if (!sameOccurrences(a.occurrences, b.occurrences)) return false;
+  } else if (a.occurrences || b.occurrences) {
+    return false;
+  }
+  if (a.copy.length !== b.copy.length || a.exceptions.length !== b.exceptions.length) return false;
   const bodies = new Map(a.copy.map((e) => [e.id as string, JSON.stringify(e)]));
-  return b.copy.every((e) => bodies.get(e.id as string) === JSON.stringify(e));
+  if (!b.copy.every((e) => bodies.get(e.id as string) === JSON.stringify(e))) return false;
+  const items = new Map(a.exceptions.map((x) => [x.id, JSON.stringify(x)]));
+  return b.exceptions.every((x) => items.get(x.id) === JSON.stringify(x));
 }
 
 export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
@@ -510,10 +947,13 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   };
   // Every list call carries the hard deadline; a deadline breach (by the client or by the clock after the
   // call) aborts as a resumable "copy" failure, any other error keeps its own step.
-  async function listBounded(step: SwitchStep, client: CalendarClient): Promise<GoogleEventLike[]> {
+  const viewWindow = deps.window ?? expansionWindow();
+  async function listBounded(step: SwitchStep, client: CalendarClient, view: "plain" | "deleted" | "expand" = "plain"): Promise<GoogleEventLike[]> {
     let events: GoogleEventLike[];
+    const base = { deadline: hardDeadline, timeZone: APP_TIME_ZONE };
+    const opts = view === "deleted" ? { ...base, showDeleted: true } : view === "expand" ? { ...base, expand: viewWindow } : base;
     try {
-      events = await client.listEvents({ deadline: hardDeadline });
+      events = await client.listEvents(opts);
     } catch (err) {
       if ((err as { deadlineExceeded?: unknown } | null)?.deadlineExceeded === true || pastHard()) throw budgetError();
       throw new StepError(step, err);
@@ -587,45 +1027,95 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     return Promise.resolve();
   }
 
-  // Bounded concurrency. On the first failure no new upsert starts; the call returns only after every
-  // in-flight upsert has settled, so nothing is still writing during the next read or verify.
-  async function upsertAll(events: GoogleEventLike[], tally: { created: number; updated: number }) {
+  // Bounded concurrency (COPY_CONCURRENCY). The copy budget is checked before each item. On the first
+  // failure no new item starts; the call returns only after every in-flight write has settled, so nothing is
+  // still writing during the next step, read or verify.
+  async function runPool<T>(items: T[], write: (item: T) => Promise<void>) {
     let next = 0;
     let failure: unknown = null;
     const worker = async () => {
-      while (failure === null && next < events.length) {
+      while (failure === null && next < items.length) {
         if (overBudget()) {
           if (failure === null) failure = budgetError();
           return;
         }
-        const event = events[next++];
+        const item = items[next++];
         try {
           await maybeRenew();
           if (failure !== null) return;
-          const result = await deps.target.upsertEvent(event);
-          if (result === "updated") tally.updated += 1;
-          else tally.created += 1;
+          await write(item);
         } catch (err) {
           if (failure === null) failure = err;
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, events.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, items.length) }, worker));
     if (failure !== null) throw failure;
   }
 
-  // The app-readable target ids must equal the plan's, per-type counts must match, and every copied
-  // event must hold the source's private props (orig_* aside), start and end.
-  function verifyTarget(targetEvents: GoogleEventLike[], plan: CopyPlan) {
-    const targetPlan = planCopy(targetEvents);
+  function upsertAll(events: GoogleEventLike[], tally: { created: number; updated: number }) {
+    return runPool(events, async (event) => {
+      const result = await deps.target.upsertEvent(event);
+      if (result === "updated") tally.updated += 1;
+      else tally.created += 1;
+    });
+  }
+
+  // Cancels sent in this press that Google answered (deleted, or 404/410 = gone).
+  const sentCancels = new Set<string>();
+  // Occurrences of copied recurring masters (run only after their masters are written). An occurrence
+  // Google does not know in the target cannot be fixed by pressing again: fixed, non-resumable message.
+  function applyExceptions(items: ExceptionItem[], tally: { applied: number }) {
+    return runPool(items, async (item) => {
+      try {
+        if (item.kind === "cancel") {
+          await deps.target.deleteInstance(item.id);
+          sentCancels.add(item.id);
+        } else {
+          await deps.target.updateInstance(item.id, item.body ?? {});
+        }
+      } catch (err) {
+        if ((err as { instanceMissing?: unknown } | null)?.instanceMissing === true) {
+          throw new StepError("copy", err, false, EXCEPTION_APPLY_FAILED_MESSAGE);
+        }
+        throw err;
+      }
+      tally.applied += 1;
+    });
+  }
+
+  // Nothing in the target the plan does not account for, per-type counts match, every copied event holds
+  // the source's private props (orig_* aside), start and end, and every occurrence item is in place: a
+  // modify as written, a cancel either listed cancelled or absent from the target's app view (inside the
+  // window: that is what "cancelled" means to the app; DELETE of an occurrence that never existed is 404).
+  function verifyTarget(targetEvents: GoogleEventLike[], targetExpanded: GoogleEventLike[], plan: CopyPlan) {
+    if (targetConflictCount(plan, targetEvents) > 0) return false;
+    const targetPlan = planCopy(targetEvents, targetExpanded, viewWindow);
     const targetById = new Map(targetPlan.copy.map((e) => [e.id as string, e]));
-    const planIds = new Set(plan.copy.map((e) => e.id as string));
-    for (const id of targetById.keys()) if (!planIds.has(id)) return false;
     if (!COPY_KINDS.every((k) => targetPlan.counts[k] === plan.counts[k])) return false;
-    return plan.copy.every((e) => {
+    const copiedOk = plan.copy.every((e) => {
       const t = targetById.get(e.id as string);
       return !!t && sameCore(t, e);
     });
+    if (!copiedOk) return false;
+    const listed = new Map(targetEvents.filter((e) => typeof e?.id === "string" && e.recurringEventId).map((e) => [e.id as string, e]));
+    const shown = new Set(targetExpanded.map((e) => e?.id).filter((id): id is string => typeof id === "string"));
+    return plan.exceptions.every((x) => {
+      if (x.kind === "modify") return exceptionVerified(listed.get(x.id), x);
+      if (listed.get(x.id)?.status === "cancelled") return true;
+      const original = suffixTime(x.id.slice(x.masterId.length + 1));
+      // Inside the window: what the app sees decides. Outside it the view cannot tell: Google's answer
+      // to this press's DELETE (deleted, or 404/410) is the check.
+      if (inWindow(original, viewWindow)) return !shown.has(x.id);
+      return sentCancels.has(x.id);
+    });
+  }
+
+  // The source as the planner needs it: the plain list (masters + exceptions) and the app's view.
+  async function readSourcePlan(): Promise<CopyPlan> {
+    const events = await listBounded("read", deps.source);
+    const expanded = await listBounded("read", deps.source, "expand");
+    return planCopy(events, expanded, viewWindow);
   }
 
   // Clears the lock only if it is still ours; never writes an empty file (withoutLock may yield "missing").
@@ -675,24 +1165,32 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
       lockTakenAt = deps.now(); // the settle wait counts from the CONFIRMED lock, not the stamped since
     });
 
-    // 2. read the source and plan
-    const plan1 = planCopy(await listBounded("read", deps.source));
+    // 2. read the source and plan; a plan refusal (the handler refuses it before the lock) stops here,
+    //    before any write
+    const plan1 = await readSourcePlan();
+    if (plan1.refusal) throw new StepError("verify", undefined, false, plan1.refusal);
 
-    // 3. refuse a target that already holds app events not in the source (they would show up in the app).
+    // 3. refuse a target that already holds app entries not in the source (they would show up in the app).
     //    The handler refuses this BEFORE the lock (switchPreflight); this is the second line of defense.
-    const before = await listBounded("verify", deps.target);
-    const planIds1 = new Set(plan1.copy.map((e) => e.id as string));
-    if (planCopy(before).copy.some((e) => !planIds1.has(e.id as string))) {
+    //    The target is listed with deleted entries so cancelled occurrences are always visible.
+    const before = await listBounded("verify", deps.target, "deleted");
+    if (targetConflictCount(plan1, before) > 0) {
       throw new StepError("verify", undefined, false, TARGET_CONFLICTS_MESSAGE);
     }
 
-    // 4. copy (same ids; insert or update; 5 at a time). Events the target already holds exactly as in
-    //    the source (a re-run after a partial copy) are not sent again.
+    // 4. copy (target ids; insert or update; 5 at a time), then the occurrences of copied recurring
+    //    masters. Entries the target already holds exactly as in the source (a re-run after a partial copy)
+    //    are not sent again, except occurrences of a master sent again in this press.
     const beforeById = new Map(before.filter((e) => typeof e.id === "string").map((e) => [e.id as string, e]));
     const toCopy = plan1.copy.filter((e) => !targetMatchesSource(beforeById.get(e.id as string), e));
     const unchanged = plan1.copy.length - toCopy.length;
     const tally = { created: 0, updated: 0 };
     await stepRun("copy", () => upsertAll(toCopy, tally));
+    const sentMasters = new Set(toCopy.filter(isMasterEvent).map((e) => e.id as string));
+    const exceptionsToApply = plan1.exceptions.filter((x) => sentMasters.has(x.masterId) || !exceptionMatches(beforeById.get(x.id), x));
+    const exceptionsUnchanged = plan1.exceptions.length - exceptionsToApply.length;
+    const exceptionTally = { applied: 0 };
+    await stepRun("copy", () => applyExceptions(exceptionsToApply, exceptionTally));
 
     // 5. settle: any write that passed the lock check before the lock was set has landed by now
     checkBudget();
@@ -700,17 +1198,27 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     if (settle > 0) await sleep(settle);
     await maybeRenew();
 
-    // 6. re-read the source; copy what appeared or changed since the first read
-    const plan2 = planCopy(await listBounded("read", deps.source));
+    // 6. re-read the source; copy what appeared or changed since the first read (events first, then the
+    //    changed occurrences and every occurrence of a master sent again)
+    const plan2 = await readSourcePlan();
+    if (plan2.refusal) throw new StepError("verify", undefined, false, plan2.refusal);
     const firstBodies = new Map(plan1.copy.map((e) => [e.id as string, JSON.stringify(e)]));
     const delta = plan2.copy.filter((e) => firstBodies.get(e.id as string) !== JSON.stringify(e));
     await stepRun("copy", () => upsertAll(delta, tally));
+    const deltaMasters = new Set(delta.filter(isMasterEvent).map((e) => e.id as string));
+    const firstItems = new Map(plan1.exceptions.map((x) => [x.id, JSON.stringify(x)]));
+    const exceptionDelta = plan2.exceptions.filter((x) => deltaMasters.has(x.masterId) || firstItems.get(x.id) !== JSON.stringify(x));
+    await stepRun("copy", () => applyExceptions(exceptionDelta, exceptionTally));
     checkHard();
 
     // 7. verify the target against the latest plan, then confirm the source has not moved since
-    const after = await listBounded("verify", deps.target);
-    if (!verifyTarget(after, plan2)) throw new StepError("verify");
-    const plan3 = planCopy(await listBounded("read", deps.source));
+    const after = await listBounded("verify", deps.target, "deleted");
+    const targetExpanded = await listBounded("verify", deps.target, "expand");
+    if (!verifyTarget(after, targetExpanded, plan2)) throw new StepError("verify");
+    // The final authority: the app's view of the target equals the app's view of the source, both ways.
+    if (!plan2.occurrences || !sameOccurrences(plan2.occurrences, targetOccurrences(targetExpanded))) throw new StepError("verify");
+    // ... and the source (plain list AND app view) has not moved since.
+    const plan3 = await readSourcePlan();
     if (!samePlans(plan2, plan3)) throw new StepError("verify");
     await maybeRenew();
     // The flip is allowed only within the hard run deadline (the copy budget governed the copy itself).
@@ -755,6 +1263,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
       unchanged,
       counts: plan2.counts,
       skipped: plan2.skipped,
+      exceptions: { ...plan2.diagnostics.exceptions, applied: exceptionTally.applied, unchanged: exceptionsUnchanged },
       lockCleared,
     };
   } catch (err) {
@@ -803,11 +1312,14 @@ export const MAX_LIST_PAGES = 200; // 200 x 2,500 events
 class GoogleCalendarError extends Error {
   readonly status: number | undefined;
   readonly deadlineExceeded: boolean;
-  constructor(message: string, status?: number, deadlineExceeded = false) {
+  // updateInstance only: Google does not know that occurrence (404/410)
+  readonly instanceMissing: boolean;
+  constructor(message: string, status?: number, deadlineExceeded = false, instanceMissing = false) {
     super(status ? `${message} (HTTP ${status})` : message);
     this.name = "GoogleCalendarError";
     this.status = status;
     this.deadlineExceeded = deadlineExceeded;
+    this.instanceMissing = instanceMissing;
   }
 }
 
@@ -894,7 +1406,10 @@ export function createGoogleCalendarClient(
         if (deadline !== undefined && now() >= deadline) {
           throw new GoogleCalendarError("calendar list passed the run deadline", undefined, true);
         }
-        const params = new URLSearchParams({ singleEvents: "false", showDeleted: "false", maxResults: "2500" });
+        const params = opts?.expand
+          ? new URLSearchParams({ singleEvents: "true", showDeleted: "false", timeMin: opts.expand.timeMin, timeMax: opts.expand.timeMax, maxResults: "2500", fields: EXPANDED_LIST_FIELDS })
+          : new URLSearchParams({ singleEvents: "false", showDeleted: opts?.showDeleted ? "true" : "false", maxResults: "2500" });
+        if (opts?.timeZone) params.set("timeZone", opts.timeZone);
         if (pageToken) params.set("pageToken", pageToken);
         const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now(), deadline);
         if (!response.ok) throw new GoogleCalendarError("calendar list failed", response.status);
@@ -920,6 +1435,33 @@ export function createGoogleCalendarClient(
       const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body }, startedAt);
       if (updated.ok) return "updated";
       throw new GoogleCalendarError("calendar update failed", updated.status);
+    },
+
+    async calendarTimeZone(opts) {
+      const deadline = opts?.deadline;
+      const params = new URLSearchParams({ maxResults: "1", fields: "timeZone" });
+      const response = await request(`${base}?${params.toString()}`, { method: "GET" }, now(), deadline);
+      if (!response.ok) throw new GoogleCalendarError("calendar time zone read failed", response.status);
+      const payload = (await response.json().catch(() => null)) as { timeZone?: unknown } | null;
+      return payload && typeof payload.timeZone === "string" && payload.timeZone ? payload.timeZone : null;
+    },
+
+    // events.update (PUT) on the occurrence's instance id with the full occurrence makes it a modified
+    // exception of its recurring event (documented by Google; nothing is inherited from the master).
+    async updateInstance(instanceId, body) {
+      const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "PUT", body: JSON.stringify(body) }, now());
+      if (response.ok) return;
+      if (response.status === 404 || response.status === 410) throw new GoogleCalendarError("calendar instance not found", response.status, false, true);
+      throw new GoogleCalendarError("calendar instance update failed", response.status);
+    },
+
+    // events.delete on the occurrence's instance id cancels it (observed: 204, then 410 on a repeat; 404 for
+    // an occurrence the rule does not have). Not documented by Google: the final expanded gate verifies.
+    async deleteInstance(instanceId) {
+      const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "DELETE" }, now());
+      if (response.ok) return "deleted";
+      if (response.status === 404 || response.status === 410) return "gone";
+      throw new GoogleCalendarError("calendar instance delete failed", response.status);
     },
   };
 }

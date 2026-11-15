@@ -9,6 +9,7 @@ const api = await import("../app/lib/admin-calendar-api.ts");
 const { createUserStore } = await import("../app/lib/user-store.ts");
 const { createCalendarSettingsStore } = await import("../app/lib/calendar-settings-store.ts");
 const { sealToken, openToken } = await import("../app/lib/token-seal.ts");
+const { expandEvents, isOccurrenceOf } = await import("./fake-expand.mjs");
 
 const SECRET = "test-secret-for-admin-calendar-0123456789";
 const COOKIE = "authjs.session-token";
@@ -44,7 +45,8 @@ function memorySettings(initial) {
 }
 
 // In-memory Google calendars keyed by calendar id (synthetic events only).
-function fakeCalendars(initial = {}) {
+// zones: calendar id -> its own time zone (default Asia/Bangkok; null = Google sent no timeZone field)
+function fakeCalendars(initial = {}, zones = {}) {
   const cals = new Map(Object.entries(initial).map(([id, events]) => [id, new Map(events.map((e) => [e.id, structuredClone(e)]))]));
   const made = [];
   const makeClient = ({ calendarId, refreshToken }) => {
@@ -52,7 +54,12 @@ function fakeCalendars(initial = {}) {
     if (!cals.has(calendarId)) cals.set(calendarId, new Map());
     const events = cals.get(calendarId);
     return {
-      async listEvents() {
+      async calendarTimeZone() {
+        if (zones[calendarId] === "THROW") throw new Error("SYNTH zone read failed");
+        return Object.hasOwn(zones, calendarId) ? zones[calendarId] : "Asia/Bangkok";
+      },
+      async listEvents(opts) {
+        if (opts?.expand) return expandEvents([...events.values()], opts.expand);
         return [...events.values()].map((e) => structuredClone(e));
       },
       async upsertEvent(e) {
@@ -60,15 +67,27 @@ function fakeCalendars(initial = {}) {
         events.set(e.id, structuredClone(e));
         return result;
       },
+      // recurring-instance writes: the master must already be in this calendar (else Google answers 404)
+      async updateInstance(id, body) {
+        const masterId = id.slice(0, id.indexOf("_"));
+        if (!isOccurrenceOf(events.get(masterId), id)) throw Object.assign(new Error("SYNTH 404"), { status: 404, instanceMissing: true });
+        events.set(id, { ...structuredClone(body), id, recurringEventId: masterId });
+      },
+      async deleteInstance(id) {
+        const masterId = id.slice(0, id.indexOf("_"));
+        if (!events.get(masterId)?.recurrence || events.get(id)?.status === "cancelled") return "gone";
+        events.set(id, { id, status: "cancelled", recurringEventId: masterId });
+        return "deleted";
+      },
     };
   };
   return { cals, made, makeClient };
 }
 
-function harness({ settings, key = KEY, verify, env = {}, calendars } = {}) {
+function harness({ settings, key = KEY, verify, env = {}, calendars, zones } = {}) {
   if (key === null) key = undefined; // pass null for "no key" (undefined would pick the default)
   const mem = memorySettings(settings);
-  const google = fakeCalendars(calendars);
+  const google = fakeCalendars(calendars, zones);
   const sleeps = [];
   const calls = [];
   const verifyAccount = async (a) => {
@@ -405,6 +424,11 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       targetConflicts: 0,
       invalidIds: 0,
       recurring: 0,
+      exceptions: { modify: 0, cancel: 0 },
+      uncoveredOccurrences: 0,
+      targetTimeZoneOk: true,
+      sourceTimeZoneOk: true,
+      planBlocked: null,
       diagnostics: {
         invalidIds: {
           reasons: { uppercase: 0, hyphen: 0, underscore: 0, tooShort: 0, tooLong: 0, otherChars: 0 },
@@ -419,8 +443,12 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
           infiniteMasters: 0,
           byFreq: { DAILY: 0, WEEKLY: 0, MONTHLY: 0, YEARLY: 0, other: 0 },
           exceptionsCancelled: 0,
+          rruleExtras: 0,
         },
         skippedReasons: { cancelled: 0, recurringException: 0, notReadable: 1 },
+        exceptions: { modify: 0, cancel: 0 },
+        uncoveredOccurrences: 0,
+        orphanedExceptions: 0,
       },
     });
     for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
@@ -725,21 +753,58 @@ test("switch back into the OLD populated calendar after a delete on the new mast
   assert.deepEqual([...h.google.cals.get("cal-c").keys()].sort(), ["ev1aaaaa", "ev3aaaaa"]);
 });
 
-test("source events whose ids Google's insert-with-id rejects: preview counts them, switch refuses BEFORE the lock", async () => {
+test("source events whose ids Google's insert-with-id rejects: preview counts them (not blocking) and the switch copies them under new ids", async () => {
+  // step 2: the invalid-id refusal is gone; such events are remapped (oi + hash) with orig_id = the old id
+  assert.equal(sw.INVALID_EVENT_IDS_MESSAGE, undefined);
   const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), evX("Outlook-Imported-1"), evX("ab-cd-ef")] } });
-  const seen = countUpserts(h);
   const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
   assert.equal(p.status, 200);
   assert.equal(p.json.invalidIds, 2);
+  assert.equal(p.json.planBlocked, null);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.copied, 4);
+  const copied = [...h.google.cals.get("cal-new@group.calendar.google.com").values()];
+  assert.equal(copied.length, 4);
+  for (const e of copied) assert.match(e.id, sw.GOOGLE_EVENT_ID_PATTERN);
+  assert.deepEqual(copied.map((e) => e.extendedProperties?.private?.orig_id).filter(Boolean).sort(), ["Outlook-Imported-1", "ab-cd-ef"]);
+  assert.ok(!r.text.includes("Outlook-Imported-1"));
+  assert.equal(h.state.data.master.calendarId, "cal-new@group.calendar.google.com");
+});
+
+test("preview counts recurring exceptions that will be applied; the switch applies them", async () => {
+  const master = { ...EV.extra, id: "rm0001aa", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const mod = { ...EV.extra, id: "rm0001aa_20270111", recurringEventId: "rm0001aa", originalStartTime: { date: "2027-01-11" }, status: "confirmed", start: { date: "2027-01-12" }, end: { date: "2027-01-13" } };
+  const cxl = { id: "rm0001aa_20270118", status: "cancelled", recurringEventId: "rm0001aa", originalStartTime: { date: "2027-01-18" } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), master, mod, cxl] } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.deepEqual(p.json.exceptions, { modify: 1, cancel: 1 });
+  assert.deepEqual(p.json.diagnostics.exceptions, { modify: 1, cancel: 1 });
+  assert.equal(p.json.planBlocked, null);
+  for (const leak of ["rm0001aa", "SYNTH-SUMMARY"]) assert.ok(!p.text.includes(leak), leak);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.exceptions, { modify: 1, cancel: 1, applied: 2, unchanged: 0 });
+  const cal = h.google.cals.get("cal-new@group.calendar.google.com");
+  assert.equal(cal.get("rm0001aa_20270118").status, "cancelled");
+  assert.deepEqual(cal.get("rm0001aa_20270111").start, { date: "2027-01-12" });
+});
+
+test("an exception of a remapped master: preview shows the blocker and the switch refuses BEFORE the lock", async () => {
+  const master = { ...EV.extra, id: "Bad-Master-1", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const cxl = { id: "Bad-Master-1_20270118", status: "cancelled", recurringEventId: "Bad-Master-1", originalStartTime: { date: "2027-01-18" } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), master, cxl] } });
+  const seen = countUpserts(h);
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.planBlocked, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
+  assert.ok(!p.text.includes("Bad-Master-1"));
   const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
   assert.equal(r.status, 409, r.text);
   assert.equal(r.json.step, "preflight");
-  assert.equal(r.json.error, sw.INVALID_EVENT_IDS_MESSAGE);
-  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /หยุด/);
-  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /ติดต่อผู้พัฒนา/);
-  assert.match(sw.INVALID_EVENT_IDS_MESSAGE, /ห้ามแก้ไขหรือลบ/);
+  assert.equal(r.json.switched, false);
+  assert.equal(r.json.error, sw.REMAPPED_MASTER_EXCEPTION_MESSAGE);
   assert.equal(h.state.writes, 0);
-  assert.equal(h.state.data.lock, undefined);
   assert.equal(Object.keys(seen.upserts).length, 0);
 });
 
@@ -769,10 +834,10 @@ test("preflight lists are bounded (copy budget) and reuse the run's two clients;
   const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
   assert.equal(r.status, 200, r.text);
   assert.equal(h.google.made.length, 2, "one source and one target client for preflight + run");
-  // first two lists = preflight (source, target) with the copy-budget deadline; then the run's hard deadline
-  assert.deepEqual(seen.lists.slice(0, 2).map((l) => l.calendarId), ["hnbcmu@gmail.com", "cal-new@group.calendar.google.com"]);
-  for (const l of seen.lists.slice(0, 2)) assert.equal(l.deadline, 1_000_000 + sw.COPY_PHASE_BUDGET_MS);
-  for (const l of seen.lists.slice(2)) assert.equal(l.deadline, 1_000_000 + sw.RUN_HARD_DEADLINE_MS);
+  // first three lists = preflight (source, source expanded, target) with the copy-budget deadline; then the run's hard deadline
+  assert.deepEqual(seen.lists.slice(0, 3).map((l) => l.calendarId), ["hnbcmu@gmail.com", "hnbcmu@gmail.com", "cal-new@group.calendar.google.com"]);
+  for (const l of seen.lists.slice(0, 3)) assert.equal(l.deadline, 1_000_000 + sw.COPY_PHASE_BUDGET_MS);
+  for (const l of seen.lists.slice(3)) assert.equal(l.deadline, 1_000_000 + sw.RUN_HARD_DEADLINE_MS);
 });
 
 test("production verifyGoogleAccount fails closed unless the ID token says email_verified === true", async () => {
@@ -797,4 +862,166 @@ test("preview diagnostics describe invalid ids and recurring events without leak
   assert.equal(r.json.diagnostics.invalidIds.reasons.uppercase, 1);
   assert.equal(r.json.diagnostics.recurring.infiniteMasters, 1);
   for (const leak of ["Bad-Id_ZZ9", "SYNTH-LEAK-SUMMARY"]) assert.ok(!r.text.includes(leak), leak);
+});
+
+// ---- step 2 fix round 1: app-view parity before the lock ----
+test("preview and preflight read the source expansion; uncovered occurrences are shown and refused BEFORE the lock", async () => {
+  const master = { id: "pm0001aa", summary: "Lunch", start: { date: "2026-12-03" }, end: { date: "2026-12-04" }, recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4"] };
+  const exc = { id: "pm0001aa_20261210", status: "confirmed", recurringEventId: "pm0001aa", originalStartTime: { date: "2026-12-10" }, summary: "A ทดสอบ 1234567 SYNTH-op", start: { date: "2026-12-10" }, end: { date: "2026-12-11" } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), master, exc] } });
+  const seen = countUpserts(h);
+  // hide the master from the plain list only: its readable occurrence is then not covered
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId === "hnbcmu@gmail.com") {
+      const list = c.listEvents;
+      c.listEvents = async (opts) => (await list(opts)).filter((e) => opts?.expand || e.id !== "pm0001aa");
+    }
+    return c;
+  };
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.uncoveredOccurrences, 1);
+  assert.equal(p.json.planBlocked, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  for (const leak of ["pm0001aa", "SYNTH-op", "1234567"]) assert.ok(!p.text.includes(leak), leak);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409, r.text);
+  assert.equal(r.json.step, "preflight");
+  assert.equal(r.json.error, sw.UNCOVERED_OCCURRENCES_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  assert.equal(Object.keys(seen.upserts).length, 0);
+});
+
+test("handler reads use the engine's parameters: target with showDeleted, source expansion over the window", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const opts = [];
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    const list = c.listEvents;
+    c.listEvents = async (o) => { opts.push({ cal: t.calendarId, showDeleted: o?.showDeleted === true, expand: o?.expand }); return list(o); };
+    return c;
+  };
+  for (const action of ["preview", "switch"]) {
+    opts.length = 0;
+    const r = await call(h, "POST", { as: ADMIN, body: { action } });
+    assert.equal(r.status, 200, r.text);
+    const pre = opts.slice(0, 3);
+    assert.deepEqual(pre.map((o) => [o.cal, o.showDeleted, !!o.expand]), [
+      ["hnbcmu@gmail.com", false, false],
+      ["hnbcmu@gmail.com", false, true],
+      ["cal-new@group.calendar.google.com", true, false],
+    ], action);
+    assert.equal(pre[1].expand.timeMin, "2000-01-01T00:00:00.000Z");
+    if (action === "switch") break;
+  }
+});
+
+test("preview: deleted entries in the target do not count as 'target not empty'", async () => {
+  const deleted = { ...EV.personal, id: "dl0001aa", status: "cancelled" };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC(), "cal-new@group.calendar.google.com": [deleted] } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.targetEventCount, 0);
+  assert.equal(p.json.targetHasEvents, false);
+});
+
+// ---- step 2 fix round 2 ----
+test("preview/preflight retry the read pair once before refusing as uncovered (a booking created between the two reads does not block)", async () => {
+  const late = { id: "la0001aa", summary: "SYNTH late", start: { dateTime: "2026-12-08T08:00:00+07:00" }, end: { dateTime: "2026-12-08T09:00:00+07:00" }, extendedProperties: { private: { or_queue: "booking", queue_type: "OR17", hn: "SYNTH-HN-7" } } };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), late] } });
+  let plainReads = 0;
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId === "hnbcmu@gmail.com") {
+      const list = c.listEvents;
+      // the booking "appears" after the first plain read of each request: only the expanded read sees it
+      c.listEvents = async (opts) => {
+        const events = await list(opts);
+        if (opts?.expand) return events;
+        plainReads += 1;
+        return plainReads % 2 === 1 ? events.filter((e) => e.id !== late.id) : events;
+      };
+    }
+    return c;
+  };
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.uncoveredOccurrences, 0);
+  assert.equal(p.json.planBlocked, null);
+  assert.equal(plainReads, 2, "one retry");
+});
+
+test("handler reads pass timeZone=Asia/Bangkok", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const zones = [];
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    const list = c.listEvents;
+    c.listEvents = async (o) => { zones.push(o?.timeZone); return list(o); };
+    return c;
+  };
+  assert.equal((await call(h, "POST", { as: ADMIN, body: { action: "preview" } })).status, 200);
+  assert.equal((await call(h, "POST", { as: ADMIN, body: { action: "switch" } })).status, 200);
+  assert.ok(zones.length >= 12 && zones.every((z) => z === "Asia/Bangkok"), JSON.stringify(zones));
+});
+
+// ---- step 2 fix round 3: the new calendar must be in Asia/Bangkok (checked before the lock) ----
+test("a target calendar not in Asia/Bangkok is refused BEFORE the lock (preview blocks; switch 409, no writes, no lock)", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "cal-new@group.calendar.google.com": "UTC" } });
+  const seen = countUpserts(h);
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.targetTimeZoneOk, false);
+  assert.equal(p.json.planBlocked, sw.TARGET_TIME_ZONE_MESSAGE);
+  assert.match(sw.TARGET_TIME_ZONE_MESSAGE, /\(GMT\+07:00\) Bangkok/);
+  assert.match(sw.TARGET_TIME_ZONE_MESSAGE, /ยังไม่ได้เปลี่ยนปฏิทิน/);
+  assert.ok(!p.text.includes("UTC"), "the zone value itself is not echoed");
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409, r.text);
+  assert.equal(r.json.step, "preflight");
+  assert.equal(r.json.switched, false);
+  assert.equal(r.json.error, sw.TARGET_TIME_ZONE_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  assert.equal(h.state.data.lock, undefined);
+  assert.equal(Object.keys(seen.upserts).length, 0);
+});
+
+test("a target calendar whose time zone Google does not report is refused (fail safe)", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "cal-new@group.calendar.google.com": null } });
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.targetTimeZoneOk, false);
+  assert.equal(p.json.planBlocked, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409);
+  assert.equal(r.json.error, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  for (const m of [sw.TARGET_TIME_ZONE_MESSAGE, sw.TARGET_TIME_ZONE_UNKNOWN_MESSAGE]) assert.doesNotMatch(m, /กดเปลี่ยนอีกครั้ง/);
+});
+
+test("round 4: the SOURCE calendar's zone blocks too: not Bangkok, not reported or a failed read → refused before the lock; Bangkok passes", async () => {
+  for (const zone of ["America/New_York", null, "THROW"]) {
+    const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() }, zones: { "hnbcmu@gmail.com": zone } });
+    const seen = countUpserts(h);
+    const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+    assert.equal(p.status, 200, String(zone));
+    assert.equal(p.json.targetTimeZoneOk, true);
+    assert.equal(p.json.sourceTimeZoneOk, false);
+    assert.equal(p.json.planBlocked, sw.SOURCE_TIME_ZONE_MESSAGE);
+    assert.ok(!p.text.includes("America"), "no zone value in the output");
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.json.step, "preflight");
+    assert.equal(r.json.error, sw.SOURCE_TIME_ZONE_MESSAGE);
+    assert.equal(h.state.writes, 0);
+    assert.equal(h.state.data.lock, undefined);
+    assert.equal(Object.keys(seen.upserts).length, 0);
+  }
+  const ok = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const p = await call(ok, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.json.sourceTimeZoneOk, true);
+  assert.equal(p.json.planBlocked, null);
+  assert.equal((await call(ok, "POST", { as: ADMIN, body: { action: "switch" } })).status, 200);
 });

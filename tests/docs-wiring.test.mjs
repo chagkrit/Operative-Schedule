@@ -156,3 +156,61 @@ test("GLOSSARY defines ปฏิทินหลัก as a definition only", asy
   }
   assert.ok(match[1].includes("วัน OR Extra"), "OR Extra days are among the stored items");
 });
+
+test("runbook + README (step 2): remapped ids are handled automatically (not a stop signal); recurring exceptions are copied", async () => {
+  const runbook = await read(RUNBOOK);
+  const readme = await read("README.md");
+  for (const text of [runbook, readme]) {
+    assert.ok(!text.includes("รหัส event ที่คัดลอกไม่ได้"), "old blocking label is gone");
+    assert.ok(!text.includes("การสลับจะยังถูกบล็อกจนกว่าผู้พัฒนาจะแก้ให้"), "old stop-and-contact guidance is gone");
+    assert.ok(text.includes("orig_id"), "remapped events keep the old id in orig_id");
+    assert.ok(text.includes("รายการยกเว้น"), "recurring exceptions are mentioned");
+  }
+  assert.ok(runbook.includes("รหัส event ที่ต้องออกรหัสใหม่ (ไม่บล็อก)"), "the new preview label");
+  assert.ok(runbook.includes("สัญญาณที่ห้ามสลับ"), "stop signals still listed");
+  // the stop signals are now conflicts + a plan refusal shown by the screen, not remapped ids
+  const signals = runbook.slice(runbook.indexOf("สัญญาณที่ห้ามสลับ"), runbook.indexOf("\n", runbook.indexOf("สัญญาณที่ห้ามสลับ")));
+  assert.ok(!signals.includes("ออกรหัสใหม่"), "remapped ids are not a stop signal");
+});
+
+test("runbook (fix round 1): remapped ids are not 'kept', coverage of what the app reads, PUT/DELETE caveat", async () => {
+  const runbook = await read(RUNBOOK);
+  assert.ok(!runbook.includes("เหตุการณ์ที่คัดลอกยังคงรหัสเดิม และ"), "the old 'all ids kept' sentence is reworded");
+  assert.ok(!runbook.includes("รายการยกเว้นของรายการซ้ำที่แอปไม่ได้ใช้ยังข้ามไปเหมือนเดิม"), "no claim of silent skipping");
+  assert.ok(runbook.includes("รายการที่แอปแสดงแต่ไม่อยู่ในแผนคัดลอก"), "the new preview row / refusal");
+  assert.ok(runbook.includes("PUT") && runbook.includes("DELETE"), "names the occurrence writes");
+  assert.ok(runbook.includes("ยังไม่มีเอกสารของ Google ยืนยัน"), "states honestly that DELETE on an occurrence is observed, not documented");
+  assert.ok(runbook.includes("ตรวจขั้นสุดท้าย"), "the final expanded check");
+});
+
+test("runbook + README (fix round 2): Bangkok time zone for the new calendar; the coverage window stated honestly", async () => {
+  const runbook = await read(RUNBOOK);
+  const readme = await read("README.md");
+  assert.ok(runbook.includes("(GMT+07:00) Bangkok"), "create the calendar in Bangkok time");
+  assert.ok(readme.includes("(GMT+07:00) Bangkok"));
+  for (const text of [runbook, readme]) {
+    assert.ok(text.includes("400 วัน"), "the window end");
+    assert.ok(text.includes("2000"), "the window start");
+    assert.ok(text.includes("12 เดือน"), "the app's own horizon");
+  }
+  assert.ok(!runbook.includes("**ทุกอย่างที่แอปอ่านได้ต้องอยู่ในแผนคัดลอก**"), "no unqualified claim");
+});
+
+test("docs (fix round 3): the time-zone refusal; booking horizon worded as the code has it", async () => {
+  const runbook = await read(RUNBOOK);
+  const readme = await read("README.md");
+  assert.ok(runbook.includes("ตรวจ time zone ของปฏิทินใหม่ก่อนล็อก"), "the new pre-lock check");
+  for (const text of [runbook, readme]) {
+    assert.ok(!text.includes("แอปเองให้จองล่วงหน้าได้ไม่เกิน 12 เดือน จึงอยู่ในช่วงนี้"), "old inexact claim");
+    assert.ok(!text.includes("(แอปจองล่วงหน้าได้ไม่เกิน 12 เดือน)"), "old inexact claim");
+  }
+  // endOfRollingHorizon: the end of the month 12 months after the current one
+  assert.ok(runbook.includes("สิ้นเดือนที่ห่างจากเดือนปัจจุบัน 12 เดือน"));
+  assert.ok(runbook.includes("ไม่จำกัดวัน"), "the staff schedule reads upcoming bookings with no end date");
+});
+
+test("runbook (round 4): check the CURRENT master's time zone; a non-Bangkok master blocks and means contact the developer", async () => {
+  const runbook = await read(RUNBOOK);
+  assert.ok(runbook.includes("time zone ของปฏิทินหลักปัจจุบัน"), "names the current master's zone");
+  assert.ok(runbook.includes("ห้ามเปลี่ยน time zone ของปฏิทินหลักปัจจุบันเอง"), "never change the live master's zone");
+});
