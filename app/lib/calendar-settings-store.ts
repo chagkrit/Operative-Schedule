@@ -59,16 +59,19 @@ export function createCalendarSettingsStore(
   let queue: Promise<unknown> = Promise.resolve();
   let cache: { value: CalendarSettings | "missing"; at: number } | null = null;
   let generation = 0;
-  const setCache = (value: CalendarSettings | "missing") => {
-    cache = { value, at: now() };
+  const setCache = (value: CalendarSettings | "missing", at: number) => {
+    cache = { value, at };
   };
   return {
     read(opts) {
       if (opts?.allowCached && cache && now() - cache.at < SETTINGS_CACHE_TTL_MS) return Promise.resolve(cache.value);
-      const startedAt = generation;
+      // Every read takes a new generation; only the newest one may fill the cache, and its age is
+      // measured from when the read STARTED. A superseded read still returns its own value to its caller.
+      const g = ++generation;
+      const startedAtMs = now();
       // Only successes are cached; a rejection propagates and leaves the cache as it was.
       return storage.read().then((value) => {
-        if (generation === startedAt) setCache(value);
+        if (generation === g) setCache(value, startedAtMs);
         return value;
       });
     },
@@ -79,7 +82,7 @@ export function createCalendarSettingsStore(
         const next = fn(await storage.read());
         await storage.write(next);
         generation += 1;
-        setCache(next);
+        setCache(next, now());
         return next;
       };
       const p = queue.then(run, run);

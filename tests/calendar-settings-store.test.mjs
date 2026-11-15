@@ -158,3 +158,44 @@ test("a slower earlier read cannot overwrite a newer cache", async () => {
   release(); await slow;
   assert.equal((await store.read({ allowCached: true })).master.calendarId, "cal-new");
 });
+
+// Deferred storage: each read resolves only when the test releases it.
+function deferredStorage() {
+  const pending = [];
+  return {
+    pending,
+    read() { return new Promise((resolve) => pending.push(resolve)); },
+    async write() {},
+  };
+}
+
+test("read-vs-read race: a slow earlier read cannot overwrite a newer read's cache", async () => {
+  const st = deferredStorage(); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  const slow = store.read({ allowCached: true }); // storage returns "old" later
+  const fresh = store.read(); // newer read
+  st.pending[1]({ master: target("new") });
+  assert.equal((await fresh).master.calendarId, "cal-new");
+  st.pending[0]({ master: target("old") }); // slow read completes last
+  assert.equal((await slow).master.calendarId, "cal-old"); // still returns its own value
+  c.t += 29_000;
+  assert.equal((await store.read({ allowCached: true })).master.calendarId, "cal-new");
+  assert.equal(st.pending.length, 2); // served from cache, no third storage read
+});
+
+test("cache expiry is measured from when the read started", async () => {
+  const st = deferredStorage(); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  const p = store.read({ allowCached: true });
+  c.t += 20_000; // read takes 20 s
+  st.pending[0]({ master: target("a") });
+  await p;
+  c.t += 9_000; // 29 s after start: still cached
+  await store.read({ allowCached: true });
+  assert.equal(st.pending.length, 1);
+  c.t += 2_000; // 31 s after start (11 s after completion): expired
+  const again = store.read({ allowCached: true });
+  assert.equal(st.pending.length, 2);
+  st.pending[1]({ master: target("a") });
+  await again;
+});
