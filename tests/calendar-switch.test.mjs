@@ -1090,3 +1090,164 @@ test("LOCK_HOLD_AFTER_FLIP_MS outlasts the GET settings cache TTL (coupled const
   const { SETTINGS_CACHE_TTL_MS } = await import("../app/lib/calendar-settings-store.ts");
   assert.ok(sw.LOCK_HOLD_AFTER_FLIP_MS > SETTINGS_CACHE_TTL_MS, `${sw.LOCK_HOLD_AFTER_FLIP_MS} > ${SETTINGS_CACHE_TTL_MS}`);
 });
+
+// ---- preview diagnostics (counts and masked shapes only) ----
+const dEvent = (id, extra = {}) => ({
+  id,
+  status: "confirmed",
+  summary: "OR17 • SYNTH diag",
+  start: { dateTime: "2026-12-01T08:00:00+07:00" },
+  end: { dateTime: "2026-12-01T09:00:00+07:00" },
+  extendedProperties: { private: { or_queue: "booking", queue_type: "OR17", slot_no: "1", hn: "SYNTH-HN-1" } },
+  ...extra,
+});
+
+test("diagnostics: each invalid-id reason is counted; one id can count in several reasons", () => {
+  const long = "a".repeat(1025);
+  const plan = sw.planCopy([
+    dEvent("ABCdef123"), // uppercase
+    dEvent("abc-def12"), // hyphen
+    dEvent("abc_def12"), // underscore
+    dEvent("abcd"), // too short
+    dEvent(long), // too long
+    dEvent("abcxyz123"), // otherChars (w-z)
+    dEvent("Ab-_.z"), // uppercase + hyphen + underscore + other
+    dEvent("validid01"), // valid, not counted
+  ]);
+  assert.equal(plan.invalidIds, 7);
+  assert.deepEqual(plan.diagnostics.invalidIds.reasons, { uppercase: 2, hyphen: 2, underscore: 2, tooShort: 1, tooLong: 1, otherChars: 2 });
+});
+
+test("diagnostics: shapes are run-length masked, capped at 5, ordered by count then alphabet, with shapesOmitted", () => {
+  assert.equal(sw.maskIdShape("AB12cd-9"), "U4l2-l1"); // digits join the run before them; all-digit segment = l
+  assert.equal(sw.maskIdShape("abc_20240105T010000Z"), "l3_U16"); // leading digits join the first letter run after them
+  assert.equal(sw.maskIdShape("123abc"), "l6");
+  assert.equal(sw.maskIdShape("Zz-aaaa"), "U1l1-l4");
+  assert.equal(sw.maskIdShape("a b\tc"), "l1?1l1?1l1");
+  const events = [
+    dEvent("Zz-aaaa"), dEvent("Zz-bbbb"), dEvent("Zz-cccc"), // one shape x3
+    dEvent("Tt-1"), dEvent("Tt-2"), // U1l1-l1 x2
+    dEvent("U_1_2"), dEvent("V.w.x"), dEvent("K-9-9-9"), dEvent("Q-Q-Q-Q-Q"), dEvent("m-m-m-m-m-m"),
+  ];
+  const plan = sw.planCopy(events);
+  const { shapes, shapesOmitted } = plan.diagnostics.invalidIds;
+  assert.equal(shapes.length, 5);
+  assert.deepEqual(shapes[0], { shape: "U1l1-l4", count: 3 });
+  assert.deepEqual(shapes[1], { shape: "U1l1-l1", count: 2 });
+  assert.equal(plan.invalidIds, 10);
+  assert.equal(shapesOmitted, plan.invalidIds - shapes.reduce((n, x) => n + x.count, 0));
+  assert.equal(shapesOmitted, 2);
+  for (const x of shapes) assert.ok(Array.from(x.shape).length <= 49);
+});
+
+test("diagnostics: uppercase UUIDs (incl. all-digit segments) collapse into one shape", () => {
+  // 17 ids, several segments all digits on purpose
+  const ids = [
+    "12345678-ABCD-1234-ABCD-1234567890AB",
+    "ABCDEF01-1234-4ABC-9ABC-123456789012",
+    "12345678-1234-1234-1234-123456789ABC",
+    ...Array.from({ length: 14 }, (_, i) => `${String(10000000 + i * 7)}-${i % 2 ? "1234" : "A2B3"}-4${String(100 + i)}-8C${i % 10}D-ABCDEF12${String(1000 + i)}`),
+  ];
+  const plan = sw.planCopy(ids.map((id) => dEvent(id)));
+  assert.equal(plan.invalidIds, 17);
+  assert.deepEqual(plan.diagnostics.invalidIds.shapes, [{ shape: "U8-U4-U4-U4-U12", count: 17 }]);
+  assert.equal(plan.diagnostics.invalidIds.shapesOmitted, 0);
+  assert.equal(sw.maskIdShape("12345678-ABCD-1234-ABCD-1234567890AB"), "U8-U4-U4-U4-U12");
+  assert.equal(sw.maskIdShape("12345678-abcd-1234-abcd-1234567890ab"), "l8-l4-l4-l4-l12");
+  assert.equal(sw.maskIdShape("abcdef01-1a2b-3c4d-5e6f-123456789abc"), "l8-l4-l4-l4-l12");
+  assert.equal(sw.maskIdShape("12345678-1234-1234-1234-123456789012"), "l8-l4-l4-l4-l12", "digits-only id is l");
+  assert.ok(sw.maskIdShape("12345678-ABCD-1234-abcd-1234567890AB").startsWith("l8-U4-l4-l4-"), "mixed case: all-digit segments are l");
+});
+
+test("diagnostics: 1000 random uppercase UUIDs give exactly one shape", () => {
+  const ids = Array.from({ length: 1000 }, () => globalThis.crypto.randomUUID().toUpperCase());
+  assert.ok(ids.some((id) => id.split("-").some((seg) => /^[0-9]+$/.test(seg))), "all-digit segments occur");
+  const plan = sw.planCopy(ids.map((id) => dEvent(id)));
+  assert.equal(plan.invalidIds, 1000);
+  assert.deepEqual(plan.diagnostics.invalidIds.shapes, [{ shape: "U8-U4-U4-U4-U12", count: 1000 }]);
+  assert.equal(plan.diagnostics.invalidIds.shapesOmitted, 0);
+});
+
+test("diagnostics: non-ASCII, emoji and whitespace in ids never reach the output; truncation keeps valid strings", () => {
+  const pieces = ["สมชาย1234567", "Café9", "ＡＢＣ１２３", "ok\u{1F600}id", "a b\tc\nd", "x".repeat(10) + "-" + "\u{1F600}-".repeat(30), "-\u{1F600}".repeat(24) + "\u{1F600}"];
+  const plan = sw.planCopy(pieces.map((id) => dEvent(id)));
+  const text = JSON.stringify(plan.diagnostics);
+  for (const bad of ["สมชาย", "é", "Ａ", "１", "\u{1F600}", " ", "\\t", "\\n", "Caf"]) assert.ok(!text.includes(bad), JSON.stringify(bad));
+  for (const { shape } of plan.diagnostics.invalidIds.shapes) {
+    assert.ok(Array.from(shape).length <= 49);
+    assert.ok(/^[A-Za-z0-9?\-_.:@/+=…]*$/.test(shape), shape);
+    assert.equal(shape, shape.toWellFormed());
+  }
+  assert.equal(sw.maskIdShape("สมชาย1234567"), "?5l7");
+  assert.equal(sw.maskIdShape("ok\u{1F600}id"), "l2?1l2");
+  const long = sw.maskIdShape("-\u{1F600}".repeat(40));
+  assert.equal(long, `${"-?1".repeat(16)}…`);
+});
+
+test("diagnostics: invalid ids by kind (app tagged, legacy, recurring masters)", () => {
+  const legacy = {
+    id: "LEGACY-ID-1",
+    summary: "1234567 SYNTH legacy",
+    start: { dateTime: "2026-12-01T08:00:00+07:00" },
+    end: { dateTime: "2026-12-01T09:00:00+07:00" },
+    extendedProperties: { private: { queue_type: "OR17" } },
+  };
+  const plan = sw.planCopy([
+    dEvent("APP-1"),
+    dEvent("APP-2", { recurrence: ["RRULE:FREQ=WEEKLY"] }),
+    legacy,
+    dEvent("validid01"),
+  ]);
+  assert.equal(plan.invalidIds, 3);
+  assert.deepEqual(plan.diagnostics.invalidIds.byKind, { app: 2, legacy: 1, recurringMasters: 1 });
+});
+
+test("diagnostics: recurring masters, exceptions, infinite, byFreq, cancelled exceptions", () => {
+  const plan = sw.planCopy([
+    dEvent("mast0001", { recurrence: ["RRULE:FREQ=WEEKLY"] }), // infinite weekly, planned
+    dEvent("mast0002", { recurrence: ["RRULE:FREQ=DAILY;UNTIL=20270101T000000Z"] }), // finite
+    dEvent("mast0003", { recurrence: ["RRULE:FREQ=MONTHLY;COUNT=3", "EXDATE:20270101"] }), // finite
+    dEvent("mast0004", { recurrence: ["RRULE:FREQ=YEARLY"] }), // infinite
+    dEvent("mast0005", { recurrence: ["RRULE:FREQ=HOURLY"] }), // infinite, other
+    dEvent("mast0006", { recurrence: ["RRULE:FREQ=WEEKLY", "RRULE:FREQ=DAILY;COUNT=2"] }), // not every rule infinite
+    { id: "plain0001", summary: "x", recurrence: ["RDATE:20270101"], start: { date: "2026-12-01" }, end: { date: "2026-12-02" } }, // master, unreadable, no RRULE
+    { id: "mast0001_20270101", status: "cancelled", recurringEventId: "mast0001" },
+    { id: "mast0001_20270108", status: "confirmed", recurringEventId: "mast0001" },
+  ]);
+  const r = plan.diagnostics.recurring;
+  assert.equal(r.masters, 7);
+  assert.equal(r.exceptionInstances, 2);
+  assert.equal(r.exceptionsCancelled, 1);
+  assert.equal(r.mastersPlanned, 6);
+  assert.equal(r.infiniteMasters, 3);
+  assert.deepEqual(r.byFreq, { DAILY: 1, WEEKLY: 2, MONTHLY: 1, YEARLY: 1, other: 2 });
+  assert.equal(sw.countRecurring([{ recurrence: ["RRULE:FREQ=WEEKLY"] }, { recurringEventId: "x" }]), 2, "existing recurring count unchanged");
+});
+
+test("diagnostics: skippedReasons sum to skipped", () => {
+  const plan = sw.planCopy([
+    dEvent("keep0001"),
+    dEvent("keep0001"), // duplicate
+    { id: "cxl00001", status: "cancelled" },
+    { id: "exc00001_1", recurringEventId: "exc00001", status: "confirmed" },
+    { id: "exc00002_1", recurringEventId: "exc00002", status: "cancelled" },
+    { id: "personal1", summary: "Lunch", start: { date: "2026-12-01" } },
+    { summary: "no id" },
+  ]);
+  assert.equal(plan.skipped, 6);
+  assert.deepEqual(plan.diagnostics.skippedReasons, { cancelled: 2, recurringException: 1, notReadable: 3 });
+  const s = plan.diagnostics.skippedReasons;
+  assert.equal(s.cancelled + s.recurringException + s.notReadable, plan.skipped);
+});
+
+test("diagnostics: output never contains event text or a full id and is JSON-safe", () => {
+  const SECRET_ID = "SecretID-Alpha_9";
+  const plan = sw.planCopy([
+    dEvent(SECRET_ID, { summary: "SECRET-SUMMARY", description: "SECRET-DESC", location: "SECRET-LOC", attendees: [{ email: "secret@example.com" }], recurrence: ["RRULE:FREQ=WEEKLY"] }),
+    dEvent("Another-Secret_Id2", { summary: "SECRET-SUMMARY-2" }),
+  ]);
+  const text = JSON.stringify(plan.diagnostics);
+  assert.deepEqual(JSON.parse(text), plan.diagnostics);
+  for (const leak of ["SECRET", "secret", SECRET_ID, "Another-Secret_Id2", "SYNTH", "SecretID", "Alpha"]) assert.ok(!text.includes(leak), leak);
+  assert.equal(plan.diagnostics.invalidIds.shapes.length, 2);
+});

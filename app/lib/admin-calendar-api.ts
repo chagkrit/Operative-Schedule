@@ -269,6 +269,7 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
       targetConflicts,
       invalidIds,
       recurring,
+      diagnostics: plan.diagnostics,
     },
   };
 }

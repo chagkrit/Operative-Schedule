@@ -924,6 +924,11 @@ button:disabled { cursor: not-allowed; }
 .admin-calendar-preview caption { margin-bottom: 6px; text-align: left; font-weight: 800; }
 .admin-calendar-preview th { text-align: left; font-weight: 600; }
 .admin-calendar-preview td { text-align: right; font-weight: 800; }
+.admin-calendar-diagnostics { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-calendar-diagnostics summary { cursor: pointer; font-weight: 700; color: var(--ink); }
+.admin-calendar-diagnostics ul { margin: 4px 0 8px; padding-left: 18px; }
+.admin-calendar-diagnostics p { margin: 8px 0 0; }
+.admin-calendar-diagnostics-title { font-weight: 700; color: var(--ink); }
 .admin-calendar-months { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .admin-calendar-warning { margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; color: var(--amber); background: var(--amber-tint); font-weight: 700; }
 .admin-calendar-busy { margin: 12px 0 0; padding: 12px 14px; border-radius: 14px; color: var(--rose-deep); background: var(--rose-soft); font-size: 14px; font-weight: 800; }

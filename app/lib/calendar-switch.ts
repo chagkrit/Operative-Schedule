@@ -116,8 +116,107 @@ const emptyCounts = (): CopyCounts => ({ booking: 0, extra_day: 0, schedule_clos
 // import) may carry other ids; those cannot be copied with the same id, so a switch refuses up front.
 export const GOOGLE_EVENT_ID_PATTERN = /^[a-v0-9]{5,1024}$/;
 
+// Read-only diagnostics of a plan: counts and MASKED id shapes only. Never any event text or a full id.
+export type IdReasons = { uppercase: number; hyphen: number; underscore: number; tooShort: number; tooLong: number; otherChars: number };
+export type PlanDiagnostics = {
+  invalidIds: {
+    reasons: IdReasons;
+    shapes: { shape: string; count: number }[];
+    // invalid ids not covered by the listed shapes (invalidIds - sum of listed counts)
+    shapesOmitted: number;
+    byKind: { app: number; legacy: number; recurringMasters: number };
+  };
+  recurring: {
+    masters: number;
+    exceptionInstances: number;
+    mastersPlanned: number;
+    infiniteMasters: number;
+    byFreq: { DAILY: number; WEEKLY: number; MONTHLY: number; YEARLY: number; other: number };
+    exceptionsCancelled: number;
+  };
+  skippedReasons: { cancelled: number; recurringException: number; notReadable: number };
+};
+
+const MAX_SHAPES = 5;
+const MAX_SHAPE_LENGTH = 48;
+
+// Run-length shape of an id; the output is ASCII only and never carries a character of the id itself.
+// Rules, applied per code point (an emoji is ONE code point):
+// - A-Z, a-z, 0-9 form "alphanumeric segments" between separators. Inside a segment, a run of lowercase
+//   letters is `l<n>` and a run of uppercase letters is `U<n>`; a digit joins the run before it, a case
+//   change starts a new run, and leading digits join the first letter run after them. A segment of only
+//   digits takes the id-wide class: `U<n>` when the whole id has uppercase letters and no lowercase ones,
+//   else `l<n>` (so a random uppercase UUID is always U8-U4-U4-U4-U12).
+// - ASCII punctuation in the allowlist - _ . : @ / + = is kept as is (it separates segments).
+// - Every other code point (non-ASCII letters, emoji, whitespace, control characters, other punctuation)
+//   becomes `?`, and a run of them is `?<n>`.
+// - Truncation happens AFTER masking, by code points, so a surrogate pair is never split.
+const SHAPE_PUNCT = "-_.:@/+=";
+
+function segmentShape(segment: string, digitClass: "l" | "U"): string {
+  const chars = Array.from(segment);
+  const caseOf = (c: string): "l" | "U" | null => (/[a-z]/.test(c) ? "l" : /[A-Z]/.test(c) ? "U" : null);
+  const firstLetter = chars.map(caseOf).find((c) => c !== null) ?? digitClass;
+  let out = "";
+  let current = firstLetter;
+  let length = 0;
+  for (const c of chars) {
+    const k = caseOf(c) ?? current;
+    if (k !== current) {
+      out += `${current}${length}`;
+      current = k;
+      length = 0;
+    }
+    length += 1;
+  }
+  return out + `${current}${length}`;
+}
+
+export function maskIdShape(id: string): string {
+  let out = "";
+  let segment = "";
+  let unknown = 0;
+  const digitClass = /[A-Z]/.test(id) && !/[a-z]/.test(id) ? "U" : "l";
+  const flushSegment = () => {
+    if (segment) out += segmentShape(segment, digitClass);
+    segment = "";
+  };
+  const flushUnknown = () => {
+    if (unknown) out += `?${unknown}`;
+    unknown = 0;
+  };
+  for (const c of id) {
+    if (/^[A-Za-z0-9]$/.test(c)) {
+      flushUnknown();
+      segment += c;
+    } else if (c.length === 1 && SHAPE_PUNCT.includes(c)) {
+      flushUnknown();
+      flushSegment();
+      out += c;
+    } else {
+      flushSegment();
+      unknown += 1;
+    }
+  }
+  flushSegment();
+  flushUnknown();
+  const points = Array.from(out);
+  return points.length > MAX_SHAPE_LENGTH ? `${points.slice(0, MAX_SHAPE_LENGTH).join("")}…` : out;
+}
+
+function rrules(event: GoogleEventLike): string[] {
+  return (Array.isArray(event.recurrence) ? event.recurrence : []).filter((r) => typeof r === "string" && /^RRULE:/i.test(r));
+}
+
 // invalidIds: planned (copied) events whose id GOOGLE_EVENT_ID_PATTERN rejects; skipped events never count.
-export type CopyPlan = { copy: GoogleEventLike[]; skipped: number; counts: CopyCounts; byMonth: Record<string, number>; invalidIds: number };
+export type CopyPlan = {
+  copy: GoogleEventLike[];
+  skipped: number;
+  counts: CopyCounts;
+  byMonth: Record<string, number>;
+  invalidIds: number;
+  diagnostics: PlanDiagnostics;
+};
 
 export function planCopy(source: GoogleEventLike[]): CopyPlan {
   const copy: GoogleEventLike[] = [];
@@ -126,20 +225,68 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
   const seen = new Set<string>();
   let skipped = 0;
   let invalidIds = 0;
+  const reasons: IdReasons = { uppercase: 0, hyphen: 0, underscore: 0, tooShort: 0, tooLong: 0, otherChars: 0 };
+  const shapeCounts = new Map<string, number>();
+  const byKind = { app: 0, legacy: 0, recurringMasters: 0 };
+  const recurring: PlanDiagnostics["recurring"] = {
+    masters: 0,
+    exceptionInstances: 0,
+    mastersPlanned: 0,
+    infiniteMasters: 0,
+    byFreq: { DAILY: 0, WEEKLY: 0, MONTHLY: 0, YEARLY: 0, other: 0 },
+    exceptionsCancelled: 0,
+  };
+  const skippedReasons = { cancelled: 0, recurringException: 0, notReadable: 0 };
   for (const event of source) {
+    const isMaster = !!event && Array.isArray(event.recurrence) && event.recurrence.length > 0;
+    if (isMaster) {
+      recurring.masters += 1;
+      const rules = rrules(event);
+      const freq = /(?:^|[;:])FREQ=([A-Za-z]+)/i.exec(rules[0] ?? "")?.[1]?.toUpperCase();
+      const key = freq === "DAILY" || freq === "WEEKLY" || freq === "MONTHLY" || freq === "YEARLY" ? freq : "other";
+      recurring.byFreq[key] += 1;
+      if (rules.length > 0 && rules.every((r) => !/(?:^|[;:])(UNTIL|COUNT)=/i.test(r))) recurring.infiniteMasters += 1;
+    }
+    if (event?.recurringEventId) {
+      recurring.exceptionInstances += 1;
+      if (event.status === "cancelled") recurring.exceptionsCancelled += 1;
+    }
     const kind = classifyEvent(event);
     if (!kind || seen.has(event.id as string)) {
       skipped += 1;
+      if (event?.status === "cancelled") skippedReasons.cancelled += 1;
+      else if (event?.recurringEventId) skippedReasons.recurringException += 1;
+      else skippedReasons.notReadable += 1;
       continue;
     }
-    seen.add(event.id as string);
-    if (!GOOGLE_EVENT_ID_PATTERN.test(event.id as string)) invalidIds += 1;
+    const id = event.id as string;
+    seen.add(id);
+    if (isMaster) recurring.mastersPlanned += 1;
+    if (!GOOGLE_EVENT_ID_PATTERN.test(id)) {
+      invalidIds += 1;
+      if (/[A-Z]/.test(id)) reasons.uppercase += 1;
+      if (id.includes("-")) reasons.hyphen += 1;
+      if (id.includes("_")) reasons.underscore += 1;
+      if (id.length < 5) reasons.tooShort += 1;
+      if (id.length > 1024) reasons.tooLong += 1;
+      if (/[^a-v0-9A-Z_-]/.test(id)) reasons.otherChars += 1;
+      const shape = maskIdShape(id);
+      shapeCounts.set(shape, (shapeCounts.get(shape) ?? 0) + 1);
+      if (kind === "legacy") byKind.legacy += 1;
+      else byKind.app += 1;
+      if (isMaster) byKind.recurringMasters += 1;
+    }
     copy.push(copyBody(event));
     counts[kind] += 1;
     const month = calendarEventDate(event).slice(0, 7) || "unknown";
     byMonth[month] = (byMonth[month] ?? 0) + 1;
   }
-  return { copy, skipped, counts, byMonth, invalidIds };
+  const shapes = [...shapeCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .slice(0, MAX_SHAPES)
+    .map(([shape, count]) => ({ shape, count }));
+  const shapesOmitted = invalidIds - shapes.reduce((n, x) => n + x.count, 0);
+  return { copy, skipped, counts, byMonth, invalidIds, diagnostics: { invalidIds: { reasons, shapes, shapesOmitted, byKind }, recurring, skippedReasons } };
 }
 
 // The two refusals a switch decides BEFORE taking the lock (and preview shows):

@@ -405,6 +405,23 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       targetConflicts: 0,
       invalidIds: 0,
       recurring: 0,
+      diagnostics: {
+        invalidIds: {
+          reasons: { uppercase: 0, hyphen: 0, underscore: 0, tooShort: 0, tooLong: 0, otherChars: 0 },
+          shapes: [],
+          shapesOmitted: 0,
+          byKind: { app: 0, legacy: 0, recurringMasters: 0 },
+        },
+        recurring: {
+          masters: 0,
+          exceptionInstances: 0,
+          mastersPlanned: 0,
+          infiniteMasters: 0,
+          byFreq: { DAILY: 0, WEEKLY: 0, MONTHLY: 0, YEARLY: 0, other: 0 },
+          exceptionsCancelled: 0,
+        },
+        skippedReasons: { cancelled: 0, recurringException: 0, notReadable: 1 },
+      },
     });
     for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
   });
@@ -767,4 +784,17 @@ test("production verifyGoogleAccount fails closed unless the ID token says email
   for (const claims of [{}, { email_verified: false }, { email_verified: "true" }, { email_verified: 1 }]) {
     await assert.rejects(api.verifyGoogleAccount({ refreshToken: NEW_TOKEN, calendarId: "c" }, io(idToken(claims))), JSON.stringify(claims));
   }
+});
+
+test("preview diagnostics describe invalid ids and recurring events without leaking ids or text", async () => {
+  const bad = { ...EV.extra, id: "Bad-Id_ZZ9", summary: "SYNTH-LEAK-SUMMARY", recurrence: ["RRULE:FREQ=WEEKLY"] };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), bad] } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.invalidIds, 1);
+  assert.equal(r.json.recurring, 1);
+  assert.deepEqual(r.json.diagnostics.invalidIds.shapes, [{ shape: "U1l2-U1l1_U3", count: 1 }]);
+  assert.equal(r.json.diagnostics.invalidIds.reasons.uppercase, 1);
+  assert.equal(r.json.diagnostics.recurring.infiniteMasters, 1);
+  for (const leak of ["Bad-Id_ZZ9", "SYNTH-LEAK-SUMMARY"]) assert.ok(!r.text.includes(leak), leak);
 });
