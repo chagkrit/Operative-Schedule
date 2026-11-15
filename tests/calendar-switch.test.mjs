@@ -2320,3 +2320,184 @@ test("google client: a failed insert carries Google's error reason only when it 
   reason = "not a word SYNTH";
   await assert.rejects(() => client.upsertEvent({ id: "abc0001" }), (err) => err.status === 400 && err.reason === undefined);
 });
+
+// ==== rate limits (production: 403 rateLimitExceeded during the copy) ====
+const rateLimited = (reason = "rateLimitExceeded") => Response.json({ error: { code: 403, message: "SYNTH-GOOGLE-TEXT", errors: [{ domain: "usageLimits", reason, message: "SYNTH-GOOGLE-TEXT" }] } }, { status: 403 });
+function clockClient(handler, extra = {}) {
+  const clock = { t: 0, waits: [] };
+  const { seen, fetchFn } = fakeGoogle(handler);
+  const client = sw.createGoogleCalendarClient({ calendarId: "c", refreshToken: "r" }, {
+    fetch: fetchFn, clientId: "cid", clientSecret: "cs", now: () => clock.t, sleep: async (ms) => { clock.waits.push(ms); clock.t += ms; }, random: () => 0, ...extra,
+  });
+  return { clock, seen, client };
+}
+
+test("client: 403 rateLimitExceeded is retried with backoff and then succeeds; onRetry reports a rate limit", async () => {
+  let posts = 0;
+  const { clock, client } = clockClient((url, init) => (init.method === "POST" ? (++posts < 3 ? rateLimited() : Response.json({ id: "x" })) : new Response("{}", { status: 500 })));
+  const kinds = [];
+  assert.equal(await client.upsertEvent({ id: "abc0001" }, { onRetry: (k) => kinds.push(k) }), "created");
+  assert.deepEqual(clock.waits, [1000, 2000]);
+  assert.deepEqual(kinds, ["rateLimit", "rateLimit"]);
+  // userRateLimitExceeded and 429 are rate limits too; 500/503 are retried as server errors
+  for (const first of [() => rateLimited("userRateLimitExceeded"), () => new Response("{}", { status: 429 }), () => new Response("{}", { status: 503 })]) {
+    let n = 0;
+    const c2 = clockClient((url, init) => (init.method === "POST" ? (++n === 1 ? first() : Response.json({ id: "x" })) : new Response("{}", { status: 500 })));
+    const k2 = [];
+    assert.equal(await c2.client.upsertEvent({ id: "abc0001" }, { onRetry: (k) => k2.push(k) }), "created");
+    assert.equal(k2.length, 1);
+  }
+});
+
+test("client: Retry-After (seconds) is honoured; jitter is added to the exponential steps", async () => {
+  let n = 0;
+  const { clock, client } = clockClient((url, init) => (init.method === "POST" ? (++n === 1 ? new Response("{}", { status: 429, headers: { "retry-after": "3" } }) : Response.json({ id: "x" })) : new Response("{}", { status: 500 })));
+  await client.upsertEvent({ id: "abc0001" });
+  assert.deepEqual(clock.waits, [3000]);
+  let m = 0;
+  const j = clockClient((url, init) => (init.method === "POST" ? (++m === 1 ? rateLimited() : Response.json({ id: "x" })) : new Response("{}", { status: 500 })), { random: () => 0.5 });
+  await j.client.upsertEvent({ id: "abc0001" });
+  assert.ok(j.clock.waits[0] > 1000 && j.clock.waits[0] <= 1500, String(j.clock.waits[0]));
+});
+
+test("client: a persistent rate limit gives up within the per-write 30 s (max 5 tries) with status 403 + reason", async () => {
+  let posts = 0;
+  const { clock, client } = clockClient((url, init) => { if (init.method === "POST") posts += 1; return rateLimited(); });
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }), (err) => err.status === 403 && err.reason === "rateLimitExceeded" && !err.message.includes("SYNTH"));
+  assert.ok(posts <= 5, `${posts} tries`);
+  assert.ok(clock.t <= sw.UPSERT_TIME_BUDGET_MS, `${clock.t} ms`);
+});
+
+test("client: a wait that would cross the caller's deadline stops as deadlineExceeded (the engine's resumable budget stop)", async () => {
+  const { client } = clockClient(() => rateLimited());
+  await assert.rejects(() => client.upsertEvent({ id: "abc0001" }, { deadline: 1500 }), (err) => err.deadlineExceeded === true);
+  await assert.rejects(() => client.deleteInstance("ab0001aa_20261210", { deadline: 500 }), (err) => err.deadlineExceeded === true);
+});
+
+test("client: an insert retried after a lost first attempt that answers 409 goes to update (idempotent by id)", async () => {
+  let posts = 0;
+  const { seen, client } = clockClient((url, init) => {
+    if (init.method === "POST") return ++posts === 1 ? new Response("{}", { status: 503 }) : new Response("{}", { status: 409 });
+    if (init.method === "PUT") return Response.json({ id: "abc0001" });
+    return new Response("{}", { status: 500 });
+  });
+  assert.equal(await client.upsertEvent({ id: "abc0001" }), "updated");
+  assert.equal(seen.filter((s) => s.init.method === "PUT").length, 1);
+  // a retried DELETE that finds the occurrence already cancelled is satisfied
+  let d = 0;
+  const del = clockClient((url, init) => (init.method === "DELETE" ? (++d === 1 ? rateLimited() : new Response("{}", { status: 410 })) : new Response("{}", { status: 500 })));
+  assert.equal(await del.client.deleteInstance("ab0001aa_20261210"), "gone");
+});
+
+test("client: non-retryable answers (400, 403 forbidden) are not retried", async () => {
+  for (const answer of [() => Response.json({ error: { errors: [{ reason: "invalid" }] } }, { status: 400 }), () => rateLimited("forbidden")]) {
+    let posts = 0;
+    const { clock, client } = clockClient((url, init) => { if (init.method === "POST") posts += 1; return answer(); });
+    await assert.rejects(() => client.upsertEvent({ id: "abc0001" }));
+    assert.equal(posts, 1);
+    assert.deepEqual(clock.waits, []);
+  }
+});
+
+test("engine: every write gets the copy-budget deadline and an onRetry hook", async () => {
+  const h = harness({ sourceEvents: [...ALL(), ...REC()] });
+  const seen = [];
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e, opts) => { seen.push(opts); return realUpsert(e); };
+  const realPut = h.target.updateInstance;
+  h.target.updateInstance = async (id, body, opts) => { seen.push(opts); return realPut(id, body); };
+  const realDel = h.target.deleteInstance;
+  h.target.deleteInstance = async (id, opts) => { seen.push(opts); return realDel(id); };
+  assert.equal((await sw.runSwitch(h.deps)).ok, true);
+  assert.ok(seen.length >= 10);
+  for (const o of seen) {
+    assert.equal(o.deadline, 5_000_000 + sw.COPY_PHASE_BUDGET_MS);
+    assert.equal(typeof o.onRetry, "function");
+  }
+});
+
+test("engine: a rate limit that clears (retried inside the client) completes the press", async () => {
+  const h = harness({ sourceEvents: extras(12, "ra") });
+  const realUpsert = h.target.upsertEvent;
+  let n = 0;
+  h.target.upsertEvent = async (e, opts) => { if (++n <= 2) opts.onRetry("rateLimit"); return realUpsert(e); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.events.size, 12);
+});
+
+test("engine: rate limits lower the concurrency for the rest of the press (5 → 2 → 1)", async () => {
+  const h = harness({ sourceEvents: extras(30, "rb") });
+  let inFlight = 0;
+  const peaks = [];
+  let limits = 0;
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e, opts) => {
+    inFlight += 1;
+    peaks.push({ limits, inFlight });
+    if (peaks.length === 3 || peaks.length === 12) { opts.onRetry("rateLimit"); limits += 1; }
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    try { return await realUpsert(e); } finally { inFlight -= 1; }
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(h.target.events.size, 30);
+  // after the first limit the new starts run at most 2 at once, after the second only 1
+  const after1 = peaks.filter((p) => p.limits === 1).slice(5);
+  const after2 = peaks.filter((p) => p.limits === 2).slice(2);
+  assert.ok(after1.every((p) => p.inFlight <= 2), JSON.stringify(after1));
+  assert.ok(after2.length > 0 && after2.every((p) => p.inFlight <= 1), JSON.stringify(after2));
+});
+
+test("engine: writes are paced (>= 250 ms between write starts per worker)", async () => {
+  assert.equal(sw.WRITE_PACE_MS, 250);
+  const h = harness({ sourceEvents: extras(15, "rc") });
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, true);
+  const paces = h.sleeps.filter((s) => s.ms > 0 && s.ms <= sw.WRITE_PACE_MS);
+  assert.ok(paces.length >= 2, `${paces.length} pacing waits`);
+});
+
+test("engine: a persistent rate limit stops resumably with a diag (403 rateLimitExceeded, retry counts)", async () => {
+  const h = harness({ sourceEvents: extras(10, "rd") });
+  h.target.upsertEvent = async (e, opts) => {
+    opts.onRetry("rateLimit");
+    opts.onRetry("rateLimit");
+    throw Object.assign(new Error("calendar insert failed (HTTP 403)"), { name: "GoogleCalendarError", status: 403, reason: "rateLimitExceeded" });
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.match(r.error, /กดเปลี่ยนอีกครั้ง/);
+  assert.equal(r.diag.kind, "upsert");
+  assert.equal(r.diag.httpStatus, 403);
+  assert.equal(r.diag.reason, "rateLimitExceeded");
+  assert.ok(Number.isInteger(r.diag.retries) && r.diag.retries >= 2);
+  assert.ok(Number.isInteger(r.diag.rateLimitRetries) && r.diag.rateLimitRetries >= 2);
+  assert.equal(h.mem.st.data.lock, undefined);
+  assert.equal(h.mem.st.data.master.calendarId, MASTER.calendarId);
+});
+
+test("engine: a write stopped by the budget deadline is the existing resumable budget stop", async () => {
+  const h = harness({ sourceEvents: extras(10, "re") });
+  h.target.upsertEvent = async () => { throw Object.assign(new Error("calendar request passed the run deadline"), { name: "GoogleCalendarError", deadlineExceeded: true }); };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.error, sw.COPY_BUDGET_MESSAGE);
+  assert.equal(r.diag.kind, "budget");
+  assert.equal(h.mem.st.data.lock, undefined);
+});
+
+test("engine: a non-retryable 400 still stops at once (no new writes after the in-flight ones settle)", async () => {
+  const h = harness({ sourceEvents: extras(30, "rf") });
+  let calls = 0;
+  const realUpsert = h.target.upsertEvent;
+  h.target.upsertEvent = async (e) => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error("calendar insert failed (HTTP 400)"), { name: "GoogleCalendarError", status: 400, reason: "invalid" });
+    return realUpsert(e);
+  };
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.step, "copy");
+  assert.equal(r.diag.httpStatus, 400);
+  assert.ok(calls <= sw.COPY_CONCURRENCY, `${calls} writes started`);
+});

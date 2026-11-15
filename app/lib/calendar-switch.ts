@@ -41,6 +41,9 @@ export type GoogleEventLike = {
   [key: string]: unknown;
 };
 
+export type RetryKind = "rateLimit" | "server";
+export type WriteOptions = { deadline?: number; onRetry?: (kind: RetryKind) => void };
+
 export type CalendarClient = {
   // deadline: absolute ms (same clock as the run); the client stops paginating and times out pages there.
   // showDeleted: also list deleted entries (used only for the target's reads; never for the source).
@@ -48,7 +51,10 @@ export type CalendarClient = {
   // occurrences) over [timeMin, timeMax).
   // timeZone: render dateTimes in this zone (Google otherwise uses each calendar's own zone).
   listEvents(opts?: { deadline?: number; showDeleted?: boolean; expand?: ExpansionWindow; timeZone?: string }): Promise<GoogleEventLike[]>;
-  upsertEvent(event: GoogleEventLike): Promise<"created" | "updated">;
+  // opts.deadline: absolute ms the write must not wait past (the copy budget): a retry wait that would cross
+  // it throws an error with deadlineExceeded: true. opts.onRetry: called for every retry ("rateLimit" for
+  // 429 / 403 rateLimitExceeded / userRateLimitExceeded, "server" for 5xx or a network error).
+  upsertEvent(event: GoogleEventLike, opts?: WriteOptions): Promise<"created" | "updated">;
   // One occurrence of a recurring event already in this calendar, addressed by its instance id
   // (`<masterId>_<original start>`, confirmed against real Google). update = events.update (PUT) with the
   // FULL occurrence: Google documents PUT for editing an occurrence, and PATCH was observed to inherit the
@@ -56,8 +62,8 @@ export type CalendarClient = {
   // delete cancels it; "gone" = Google answered 404/410 (already cancelled, or no such occurrence).
   // DELETE on an occurrence is OBSERVED behaviour (not documented by Google); the final expanded gate in
   // runSwitch verifies what the app will really see.
-  updateInstance(instanceId: string, body: GoogleEventLike): Promise<void>;
-  deleteInstance(instanceId: string): Promise<"deleted" | "gone">;
+  updateInstance(instanceId: string, body: GoogleEventLike, opts?: WriteOptions): Promise<void>;
+  deleteInstance(instanceId: string, opts?: WriteOptions): Promise<"deleted" | "gone">;
   // The calendar's own time zone (events.list's top-level timeZone; calendars.get is not allowed with the
   // calendar.events scope), or null when Google does not send it.
   calendarTimeZone(opts?: { deadline?: number }): Promise<string | null>;
@@ -782,6 +788,8 @@ export const LOCK_RENEW_MS = 5 * 60_000;
 // already sent at the abort, which is also the window createBookingEvent's lookup GET relies on.
 export const SETTLE_MS = 45_000;
 export const COPY_CONCURRENCY = 5;
+// Minimum time between two write starts of one copy worker (steady pacing; Google rate-limits bursts).
+export const WRITE_PACE_MS = 250;
 // A settings put can be aborted (5 s) and still commit a moment later. After a storage error on a lock
 // or flip write the run waits this long before trusting a read-back of the file.
 export const SETTINGS_SETTLE_MS = 8_000;
@@ -843,6 +851,9 @@ export type CopyFailureDiag = {
   attempted: number;
   succeeded: number;
   failed: number;
+  // retries made inside the writes of this press (all, and those answering a rate limit)
+  retries: number;
+  rateLimitRetries: number;
   firstFailed?: { eventClass: "legacy" | "tagged" | "recurring master" | "exception"; idShape: string };
 };
 const SAFE_WORD = /^[a-zA-Z]{1,40}$/;
@@ -1055,17 +1066,46 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   // still writing during the next step, read or verify.
   // Diagnostics of this press (counts; the first write that failed, described safely).
   const counts = { attempted: 0, succeeded: 0, failed: 0 };
+  const retryCounts = { retries: 0, rateLimitRetries: 0 };
+  // Concurrency for the rest of this press: Google's rate limits lower it (5 → 2 → 1), never back up.
+  let concurrencyLimit = COPY_CONCURRENCY;
+  // Every write carries the copy-budget deadline (a retry wait past it is the resumable budget stop) and
+  // reports its retries.
+  const writeOptions: WriteOptions = {
+    deadline: runStart + budget,
+    onRetry: (kind) => {
+      retryCounts.retries += 1;
+      if (kind === "rateLimit") {
+        retryCounts.rateLimitRetries += 1;
+        concurrencyLimit = concurrencyLimit > 2 ? 2 : 1;
+      }
+    },
+  };
   let firstFailed: { kind: "upsert" | "exception"; err: unknown; item: NonNullable<CopyFailureDiag["firstFailed"]> } | null = null;
   async function runPool<T>(items: T[], write: (item: T) => Promise<void>, describe: (item: T) => { kind: "upsert" | "exception"; item: NonNullable<CopyFailureDiag["firstFailed"]> }) {
     let next = 0;
     let failure: unknown = null;
-    const worker = async () => {
+    // Worker `index` runs only while index < concurrencyLimit; each worker leaves WRITE_PACE_MS between its
+    // own write starts, so a press makes steady progress instead of bursting.
+    const worker = async (index: number) => {
+      let lastStart = -Infinity;
       while (failure === null && next < items.length) {
+        if (index >= concurrencyLimit) return;
         if (overBudget()) {
           if (failure === null) failure = budgetError();
           return;
         }
+        const pace = lastStart + WRITE_PACE_MS - deps.now();
+        if (pace > 0) {
+          await sleep(pace);
+          if (failure !== null || index >= concurrencyLimit || next >= items.length) return;
+          if (overBudget()) {
+            if (failure === null) failure = budgetError();
+            return;
+          }
+        }
         const item = items[next++];
+        lastStart = deps.now();
         try {
           await maybeRenew();
           if (failure !== null) return;
@@ -1078,13 +1118,18 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
           await write(item);
           counts.succeeded += 1;
         } catch (err) {
+          // A retry wait that would cross the copy budget: the existing resumable budget stop.
+          if ((err as { deadlineExceeded?: unknown } | null)?.deadlineExceeded === true) {
+            if (failure === null) failure = budgetError();
+            continue;
+          }
           counts.failed += 1;
           if (!firstFailed) firstFailed = { ...describe(item), err };
           if (failure === null) failure = err;
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, items.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(concurrencyLimit, items.length) }, (_, index) => worker(index)));
     if (failure !== null) throw failure;
   }
 
@@ -1092,7 +1137,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     return runPool(
       events,
       async (event) => {
-        const result = await deps.target.upsertEvent(event);
+        const result = await deps.target.upsertEvent(event, writeOptions);
         if (result === "updated") tally.updated += 1;
         else tally.created += 1;
       },
@@ -1114,10 +1159,10 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     return runPool(items, async (item) => {
       try {
         if (item.kind === "cancel") {
-          await deps.target.deleteInstance(item.id);
+          await deps.target.deleteInstance(item.id, writeOptions);
           sentCancels.add(item.id);
         } else {
-          await deps.target.updateInstance(item.id, item.body ?? {});
+          await deps.target.updateInstance(item.id, item.body ?? {}, writeOptions);
         }
       } catch (err) {
         if ((err as { instanceMissing?: unknown } | null)?.instanceMissing === true) {
@@ -1335,7 +1380,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
       const kind: CopyFailureDiag["kind"] =
         stepErr.userMessage === COPY_BUDGET_MESSAGE ? "budget" : stepErr.step === "lock" ? "lock" : stepErr.step === "read" ? "read" : failedWrite?.kind ?? "upsert";
       const source = kind === "upsert" || kind === "exception" ? failedWrite?.err ?? cause : cause;
-      out.diag = { kind, ...errorFacts(source), ...counts };
+      out.diag = { kind, ...errorFacts(source), ...counts, ...retryCounts };
       if (failedWrite && (kind === "upsert" || kind === "exception")) out.diag.firstFailed = failedWrite.item;
     }
     return out;
@@ -1351,11 +1396,18 @@ export type GoogleClientIO = {
   maxPages?: number;
   now?: () => number;
   maxAttempts?: number;
+  // jitter source (tests pass a constant)
+  random?: () => number;
 };
 
 const API = "https://www.googleapis.com/calendar/v3";
 const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
-const MAX_ATTEMPTS = 4;
+// Google answers quota bursts with 403 and one of these reasons (or 429): retried like 429.
+const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded"]);
+const MAX_ATTEMPTS = 5;
+// Backoff: 1 s, 2 s, 4 s, 8 s, 16 s (+ up to 500 ms jitter), or Retry-After when Google sends it.
+export const RETRY_BASE_MS = 1_000;
+const RETRY_JITTER_MS = 500;
 const REQUEST_TIMEOUT_MS = 15_000;
 // Total time one upsert (insert + update fallback) or one list page may spend across attempts and backoff,
 // so one slow event cannot eat the switch's copy budget.
@@ -1397,6 +1449,7 @@ export function createGoogleCalendarClient(
   const maxPages = io.maxPages ?? MAX_LIST_PAGES;
   const now = io.now ?? Date.now;
   const maxAttempts = io.maxAttempts ?? MAX_ATTEMPTS;
+  const random = io.random ?? Math.random;
   const base = `${API}/calendars/${encodeURIComponent(t.calendarId)}/events`;
   let access: { token: string; expiresAt: number } | null = null;
 
@@ -1428,7 +1481,28 @@ export function createGoogleCalendarClient(
   // One Calendar request with bounded retries on 429/5xx/network errors, inside a time budget that starts
   // at `startedAt` (shared by an upsert's insert and update). Returns the response (ok or a non-retryable
   // status) for the caller to interpret.
-  async function request(url: string, init: RequestInit, startedAt: number, deadline?: number): Promise<Response> {
+  // Is this answer a rate limit (429, or 403 with a rate-limit reason)? Reads a clone of the body.
+  async function rateLimitAnswer(response: Response): Promise<boolean> {
+    if (response.status === 429) return true;
+    if (response.status !== 403) return false;
+    const payload = (await response.clone().json().catch(() => null)) as { error?: { errors?: { reason?: unknown }[] } } | null;
+    const reason = payload?.error?.errors?.[0]?.reason;
+    return typeof reason === "string" && RATE_LIMIT_REASONS.has(reason);
+  }
+  function retryAfterMs(response: Response | null): number | null {
+    const value = response?.headers.get("retry-after");
+    if (!value) return null;
+    if (/^\d{1,5}$/.test(value.trim())) return Number(value.trim()) * 1000;
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+  }
+
+  // Retries 429 / 403 rate limits / 5xx / network errors with backoff, inside the per-request budget that
+  // starts at `startedAt` (UPSERT_TIME_BUDGET_MS) and before `deadline`. A wait that would cross `deadline`
+  // throws deadlineExceeded (the caller's resumable budget stop); one that would cross the per-request
+  // budget returns the last answer for the caller to report. A retried insert is still idempotent: the
+  // event id is explicit, so a first attempt that landed answers 409 and the caller updates instead.
+  async function request(url: string, init: RequestInit, startedAt: number, deadline?: number, onRetry?: (kind: RetryKind) => void): Promise<Response> {
     for (let attempt = 1; ; attempt += 1) {
       const untilDeadline = deadline === undefined ? Infinity : deadline - now();
       if (untilDeadline <= 0) throw new GoogleCalendarError("calendar request passed the run deadline", undefined, true);
@@ -1449,13 +1523,17 @@ export function createGoogleCalendarClient(
         if (err instanceof GoogleCalendarError) throw err;
         if (attempt >= maxAttempts) throw new GoogleCalendarError("calendar request failed");
       }
-      if (response && !RETRY_STATUSES.has(response.status)) return response;
-      const wait = 500 * 2 ** (attempt - 1);
-      const outOfTime = now() - startedAt + wait >= UPSERT_TIME_BUDGET_MS || (deadline !== undefined && now() + wait >= deadline);
-      if (attempt >= maxAttempts || outOfTime) {
+      const limited = response ? await rateLimitAnswer(response) : false;
+      if (response && !limited && !RETRY_STATUSES.has(response.status)) return response;
+      const wait = retryAfterMs(response) ?? RETRY_BASE_MS * 2 ** (attempt - 1) + Math.floor(random() * RETRY_JITTER_MS);
+      if (attempt >= maxAttempts || now() - startedAt + wait >= UPSERT_TIME_BUDGET_MS) {
         if (response) return response;
         throw new GoogleCalendarError("calendar request failed");
       }
+      if (deadline !== undefined && now() + wait >= deadline) {
+        throw new GoogleCalendarError("calendar request passed the run deadline", undefined, true);
+      }
+      onRetry?.(limited ? "rateLimit" : "server");
       await sleep(wait);
     }
   }
@@ -1490,14 +1568,14 @@ export function createGoogleCalendarClient(
       }
     },
 
-    async upsertEvent(event) {
+    async upsertEvent(event, opts) {
       if (typeof event.id !== "string" || !event.id) throw new GoogleCalendarError("event has no id");
       const body = JSON.stringify(event);
       const startedAt = now();
-      const inserted = await request(`${base}?sendUpdates=none`, { method: "POST", body }, startedAt);
+      const inserted = await request(`${base}?sendUpdates=none`, { method: "POST", body }, startedAt, opts?.deadline, opts?.onRetry);
       if (inserted.ok) return "created";
       if (inserted.status !== 409) throw await withGoogleReason(new GoogleCalendarError("calendar insert failed", inserted.status), inserted);
-      const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body }, startedAt);
+      const updated = await request(`${base}/${encodeURIComponent(event.id)}?sendUpdates=none`, { method: "PUT", body }, startedAt, opts?.deadline, opts?.onRetry);
       if (updated.ok) return "updated";
       throw await withGoogleReason(new GoogleCalendarError("calendar update failed", updated.status), updated);
     },
@@ -1513,8 +1591,8 @@ export function createGoogleCalendarClient(
 
     // events.update (PUT) on the occurrence's instance id with the full occurrence makes it a modified
     // exception of its recurring event (documented by Google; nothing is inherited from the master).
-    async updateInstance(instanceId, body) {
-      const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "PUT", body: JSON.stringify(body) }, now());
+    async updateInstance(instanceId, body, opts) {
+      const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "PUT", body: JSON.stringify(body) }, now(), opts?.deadline, opts?.onRetry);
       if (response.ok) return;
       if (response.status === 404 || response.status === 410) throw new GoogleCalendarError("calendar instance not found", response.status, false, true);
       throw await withGoogleReason(new GoogleCalendarError("calendar instance update failed", response.status), response);
@@ -1522,8 +1600,8 @@ export function createGoogleCalendarClient(
 
     // events.delete on the occurrence's instance id cancels it (observed: 204, then 410 on a repeat; 404 for
     // an occurrence the rule does not have). Not documented by Google: the final expanded gate verifies.
-    async deleteInstance(instanceId) {
-      const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "DELETE" }, now());
+    async deleteInstance(instanceId, opts) {
+      const response = await request(`${base}/${encodeURIComponent(instanceId)}?sendUpdates=none`, { method: "DELETE" }, now(), opts?.deadline, opts?.onRetry);
       if (response.ok) return "deleted";
       if (response.status === 404 || response.status === 410) return "gone";
       throw await withGoogleReason(new GoogleCalendarError("calendar instance delete failed", response.status), response);

@@ -65,6 +65,8 @@ export function formatCopyDiag(raw: unknown): string | undefined {
   if (typeof d.reason === "string" && WORD.test(d.reason)) parts.push(d.reason);
   const [attempted, succeeded, failed] = [count(d.attempted), count(d.succeeded), count(d.failed)];
   if (attempted !== null && succeeded !== null && failed !== null) parts.push(`ลอง ${attempted} สำเร็จ ${succeeded} ล้มเหลว ${failed}`);
+  const [retries, rateLimitRetries] = [count(d.retries), count(d.rateLimitRetries)];
+  if (retries !== null && retries > 0) parts.push(`ลองซ้ำ ${retries}${rateLimitRetries !== null ? ` (rate limit ${rateLimitRetries})` : ""}`);
   const first = typeof d.firstFailed === "object" && d.firstFailed !== null ? (d.firstFailed as Record<string, unknown>) : null;
   if (first && typeof first.eventClass === "string" && DIAG_CLASSES.includes(first.eventClass) && typeof first.idShape === "string" && SHAPE.test(first.idShape)) {
     parts.push(`รายการแรกที่ล้มเหลว: ${first.eventClass} ${first.idShape}`);
