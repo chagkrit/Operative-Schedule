@@ -129,7 +129,32 @@ export function decideAfterSwitch(outcome: SwitchOutcome, fresh: CalendarStatus 
   return { notice: { type: "error", text, hint: candidateUnchanged ? hint : undefined }, keepPreview: candidateUnchanged };
 }
 
-// The switch button is usable only with a candidate, a preview of it, and no lock.
+// Why the previewed switch must not run (the server refuses the same cases before taking the lock), or null.
+// - targetConflicts: the target holds app events the current master no longer has (cancelled or deleted since
+//   they were copied there, typically the OLD master on a switch back); switching would bring them back.
+// - invalidIds: source events Google will not accept with the same id.
+export function switchBlockReason(preview: unknown): string | null {
+  if (typeof preview !== "object" || preview === null) return null;
+  const p = preview as { tokenOnly?: unknown; targetConflicts?: unknown; invalidIds?: unknown };
+  if (p.tokenOnly === true) return null;
+  const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  const reasons: string[] = [];
+  const conflicts = count(p.targetConflicts);
+  if (conflicts) {
+    reasons.push(
+      `ห้ามสลับไปปฏิทินนี้: ปฏิทินปลายทางมี ${conflicts} รายการของแอปที่ปฏิทินหลักปัจจุบันไม่มีแล้ว (ถูกยกเลิกหรือลบไปหลังจากเคยคัดลอกไว้) ถ้าสลับไป รายการเหล่านั้นจะกลับมาในแอป วิธีที่ปลอดภัย: สร้างปฏิทินใหม่ที่ว่าง แล้วเชื่อมต่อและสลับไปปฏิทินนั้นแทน`,
+    );
+  }
+  const ids = count(p.invalidIds);
+  if (ids) {
+    reasons.push(
+      `สลับไม่ได้: ปฏิทินหลักปัจจุบันมี ${ids} รายการที่รหัส event ไม่อยู่ในรูปแบบที่ Google ยอมให้คัดลอกด้วยรหัสเดิม (มักเป็นรายการที่นำเข้าจากโปรแกรมอื่น) ต้องแก้รายการเหล่านั้นก่อน`,
+    );
+  }
+  return reasons.length ? reasons.join(" ") : null;
+}
+
+// The switch button is usable only with a candidate, a preview of it that shows no blocker, and no lock.
 export function canSwitchNow(status: CalendarStatus | null, preview: unknown): boolean {
-  return !!status?.candidate && !!preview && !status.locked;
+  return !!status?.candidate && !!preview && !status.locked && switchBlockReason(preview) === null;
 }

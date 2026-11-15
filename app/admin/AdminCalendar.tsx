@@ -12,6 +12,7 @@ import {
   readApiResponse,
   decideAfterSwitch,
   canSwitchNow,
+  switchBlockReason,
 } from "./calendar-ui";
 
 type Notice = { type: "success" | "error"; text: string; hint?: string } | null;
@@ -23,6 +24,10 @@ type Preview = {
   byMonth: Record<string, number>;
   targetEventCount: number;
   targetHasEvents: boolean;
+  // app events in the target that the current master no longer has (switching would resurrect them)
+  targetConflicts: number;
+  // source events whose ids Google will not accept with the same id
+  invalidIds: number;
 };
 type Dialog = { kind: "switch" | "clearLock"; fresh: boolean } | null;
 
@@ -39,7 +44,9 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0
 
 function toPreview(body: Record<string, unknown> | null): Preview | null {
   if (!body) return null;
-  if (body.tokenOnly === true) return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false };
+  if (body.tokenOnly === true) {
+    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0 };
+  }
   if (typeof body.counts !== "object" || body.counts === null) return null;
   return {
     tokenOnly: false,
@@ -49,6 +56,8 @@ function toPreview(body: Record<string, unknown> | null): Preview | null {
     byMonth: typeof body.byMonth === "object" && body.byMonth ? (body.byMonth as Record<string, number>) : {},
     targetEventCount: num(body.targetEventCount),
     targetHasEvents: body.targetHasEvents === true,
+    targetConflicts: num(body.targetConflicts),
+    invalidIds: num(body.invalidIds),
   };
 }
 
@@ -174,7 +183,8 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
     // The answer may be missing (network, timeout, 502 page) or partial: the status is always re-read from the server.
     const fresh = await reloadStatus();
     const decision = decideAfterSwitch(outcome, fresh, former);
-    if (!decision.keepPreview) setPreview(null);
+    // A preflight refusal means the preview no longer matches the calendars: press preview again.
+    if (!decision.keepPreview || result.body?.step === "preflight") setPreview(null);
     setNotice(decision.notice);
   }
 
@@ -194,6 +204,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
 
   const copying = busy === "switch";
   const canSwitch = canSwitchNow(status, preview);
+  const blockReason = switchBlockReason(preview);
   const months = preview ? Object.entries(preview.byMonth).sort(([a], [b]) => a.localeCompare(b)) : [];
 
   return (
@@ -272,6 +283,8 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                   ))}
                   <tr><th scope="row">ข้ามไป</th><td>{preview.skipped}</td></tr>
                   <tr><th scope="row">รายการซ้ำ (recurring)</th><td>{preview.recurring}</td></tr>
+                  <tr><th scope="row">รายการในปฏิทินปลายทางที่ปฏิทินหลักไม่มีแล้ว</th><td>{preview.targetConflicts}</td></tr>
+                  <tr><th scope="row">รหัส event ที่คัดลอกไม่ได้</th><td>{preview.invalidIds}</td></tr>
                 </tbody>
               </table>
               {months.length > 0 && (
@@ -280,6 +293,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
               {preview.targetHasEvents && (
                 <p className="admin-calendar-warning">ปฏิทินปลายทางไม่ว่าง: มี {preview.targetEventCount} รายการอยู่แล้ว ตรวจให้แน่ใจว่าเป็นปฏิทินที่ถูกต้อง</p>
               )}
+              {blockReason && <p className="admin-calendar-warning" role="alert">{blockReason}</p>}
             </>
           )}
         </div>

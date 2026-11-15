@@ -356,9 +356,11 @@ test("calendar target is resolved per request: after allowlist+viewer checks, be
   // only GET may use the cached settings read; writes always read fresh
   assert.match(auth, /allowCached: method\.toUpperCase\(\) === "GET"/);
   const fetchFn = block(calendar, "async function googleFetch(");
-  assert.ok(fetchFn.indexOf("authorizedAccessToken(") < fetchFn.indexOf("await fetch("));
-  assert.match(fetchFn, /MASTER_PLACEHOLDER/);
-  assert.match(fetchFn, /encodeURIComponent\(calendarId\)/);
+  // the request is sent (sendWithDeadline) only after the target was resolved; @master substitution is the
+  // pure resolveCalendarPath (calendar-target.ts, tested there)
+  assert.ok(fetchFn.indexOf("authorizedAccessToken(") !== -1);
+  assert.ok(fetchFn.indexOf("authorizedAccessToken(") < fetchFn.indexOf("sendWithDeadline(fetch,"));
+  assert.match(fetchFn, /resolveCalendarPath\(path, calendarId\)/);
   // caches are keyed by a hash of the refresh token, never the token itself
   assert.match(calendar, /createHash\("sha256"\)/);
   assert.doesNotMatch(calendar, /cachedServerToken\b|inflightServerToken\b/);

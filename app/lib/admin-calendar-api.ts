@@ -6,10 +6,12 @@
 //   POST { action: "connect", email, calendarId, refreshToken } → status  (stores a sealed candidate)
 //   POST { action: "preview" }   → counts / skipped / byMonth / target info (never event content), or
 //                                  { tokenOnly: true } when the candidate is the master's own calendar
-//   POST { action: "switch" }    → copy + verify + flip (calendar-switch.ts), or a token-only refresh
+//   POST { action: "switch" }    → preflight (no lock: refuses target conflicts / invalid ids) then
+//                                  copy + verify + flip (calendar-switch.ts), or a token-only refresh
 //   POST { action: "clearLock" } → status  (clears a switch lock; a lock-only file is deleted, never {})
 //   errors → { error: Thai }  400 bad body / token rejected · 401 not signed in · 403 not admin ·
-//                             409 refused / concurrent edit · 415 POST without JSON · 500 storage ·
+//                             409 refused / concurrent edit / preflight refusal ({ error, step: "preflight" }) ·
+//                             415 POST without JSON · 500 storage ·
 //                             502 switch/preview Google step failed ({ error, step }) ·
 //                             503 CALENDAR_SETTINGS_KEY not configured
 //
@@ -34,13 +36,19 @@ import {
 } from "./calendar-settings";
 import type { CalendarSettingsStore } from "./calendar-settings-store";
 import {
+  COPY_PHASE_BUDGET_MS,
   countRecurring,
+  INVALID_EVENT_IDS_MESSAGE,
   isSameCalendar,
   planCopy,
+  PREFLIGHT_TARGET_FAILED_MESSAGE,
   sameCalendarId,
   sameCalendarTarget,
   SWITCH_OUTCOME_UNKNOWN_MESSAGE,
+  SWITCH_STEP_MESSAGES,
   runSwitch,
+  switchPreflight,
+  TARGET_CONFLICTS_MESSAGE,
   withRefreshedMasterToken,
   type CalendarClient,
 } from "./calendar-switch";
@@ -230,8 +238,9 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
   const target = deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target });
   let plan: ReturnType<typeof planCopy>;
   let recurring: number;
+  let sourceEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
   try {
-    const sourceEvents = await source.listEvents();
+    sourceEvents = await source.listEvents();
     plan = planCopy(sourceEvents);
     recurring = countRecurring(sourceEvents);
   } catch (err) {
@@ -246,8 +255,8 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
     return { status: 502, body: { error: PREVIEW_TARGET_FAILED_MESSAGE } };
   }
   // Counts and month keys only: events carry patient identifiers and never leave the server.
-  const planIds = new Set(plan.copy.map((e) => e.id));
-  const targetConflicts = planCopy(targetEvents).copy.filter((e) => !planIds.has(e.id)).length;
+  // Same rule as the switch's preflight (switchPreflight), so preview and switch cannot drift.
+  const { targetConflicts, invalidIds } = switchPreflight(sourceEvents, targetEvents);
   return {
     status: 200,
     body: {
@@ -258,6 +267,7 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
       targetEventCount: targetEvents.length,
       targetHasEvents: targetEvents.length > 0,
       targetConflicts,
+      invalidIds,
       recurring,
     },
   };
@@ -293,16 +303,45 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
 
   const grants = openGrants(ctx, deps.env);
   if (!grants.ok) return grants.result;
+  // The same two clients serve the preflight and the run (each caches its own access token).
+  const source = deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source });
+  const target = deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target });
+
+  // Preflight, WITHOUT a lock: refusals that can be decided up front must never freeze writes. Bounded by
+  // the copy budget; the run's budget and hard deadline count from the same start (route maxDuration).
+  const runStart = deps.now();
+  const preflightDeadline = runStart + COPY_PHASE_BUDGET_MS;
+  const refuse = (status: number, error: string, step: "preflight" | "read" = "preflight"): ActionResult =>
+    ({ status, body: { error, step, switched: false } });
+  let sourceEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
+  try {
+    sourceEvents = await source.listEvents({ deadline: preflightDeadline });
+  } catch (err) {
+    console.error("[admin-calendar] switch preflight source read failed:", err instanceof Error ? err.name : typeof err);
+    return refuse(502, SWITCH_STEP_MESSAGES.read, "read");
+  }
+  let targetEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
+  try {
+    targetEvents = await target.listEvents({ deadline: preflightDeadline });
+  } catch (err) {
+    console.error("[admin-calendar] switch preflight target read failed:", err instanceof Error ? err.name : typeof err);
+    return refuse(502, PREFLIGHT_TARGET_FAILED_MESSAGE);
+  }
+  const blockers = switchPreflight(sourceEvents, targetEvents);
+  if (blockers.targetConflicts > 0) return refuse(409, TARGET_CONFLICTS_MESSAGE);
+  if (blockers.invalidIds > 0) return refuse(409, INVALID_EVENT_IDS_MESSAGE);
+
   const result = await runSwitch({
     settings: deps.settings,
-    source: deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source }),
-    target: deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target }),
+    source,
+    target,
     by: actor,
     now: deps.now,
     candidate: ctx.candidate,
     master: ctx.settings.master,
     envMaster: envMasterSealed(),
     sleep: deps.sleep,
+    runStart,
   });
   if (!result.ok) {
     // Report what the file really holds: never "not switched" when the master is already the candidate.
@@ -318,7 +357,7 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
     if (after === null && result.step === "flip") {
       return { status: 500, body: { error: SWITCH_OUTCOME_UNKNOWN_MESSAGE, step: result.step } };
     }
-    const status = result.step === "lock" ? 409 : result.step === "flip" ? 500 : 502;
+    const status = result.step === "lock" || result.step === "preflight" ? 409 : result.step === "flip" ? 500 : 502;
     return { status, body: { error: result.error, step: result.step, switched: false } };
   }
   let status: CalendarStatus | undefined;
@@ -398,7 +437,8 @@ function idTokenEmail(idToken: unknown): string {
     email?: unknown;
     email_verified?: unknown;
   };
-  if (typeof payload.email !== "string" || payload.email_verified === false) throw new Error("no verified email");
+  // Fail closed: only an explicit boolean true counts as verified.
+  if (typeof payload.email !== "string" || payload.email_verified !== true) throw new Error("no verified email");
   return normalizeEmail(payload.email);
 }
 

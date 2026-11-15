@@ -654,18 +654,28 @@ test("the second source read waits until lock.since + SETTLE_MS (45 s)", async (
   assert.ok(h.sleeps.some((s) => s.ms > 0 && s.ms <= sw.SETTLE_MS));
 });
 
-test("Calendar writes in the app are abandoned within a deadline shorter than SETTLE_MS; reads unchanged", async () => {
+test("Calendar writes in the app are sent within a deadline (from the lock check) shorter than SETTLE_MS; reads unchanged", async () => {
   const { readFile } = await import("node:fs/promises");
   const { CALENDAR_WRITE_DEADLINE_MS } = await import("../app/lib/calendar-target.ts");
   assert.ok(CALENDAR_WRITE_DEADLINE_MS <= 30_000);
   assert.ok(CALENDAR_WRITE_DEADLINE_MS + 10_000 <= sw.SETTLE_MS);
+  // the settings read of a write is bounded, so "send-by" fixed before it still leaves the margin
+  const { BLOB_TIMEOUT_MS } = await import("../app/lib/calendar-settings-store.ts");
+  assert.ok(BLOB_TIMEOUT_MS <= 5_000);
   const src = await readFile(new URL("../app/lib/calendar.ts", import.meta.url), "utf8");
-  const start = src.indexOf("async function googleFetch(");
-  const fn = src.slice(start, src.indexOf("\n}\n", start));
-  // the deadline starts before the lock check and covers the fetch; GET gets no signal
-  assert.ok(fn.indexOf("AbortSignal.timeout(CALENDAR_WRITE_DEADLINE_MS)") !== -1);
-  assert.ok(fn.indexOf("AbortSignal.timeout(CALENDAR_WRITE_DEADLINE_MS)") < fn.indexOf("authorizedAccessToken("));
-  assert.match(fn, /=== "GET" \? undefined/);
+  const block = (head) => {
+    const start = src.indexOf(head);
+    return src.slice(start, src.indexOf("\n}\n", start));
+  };
+  // The send-by instant of a write is fixed right BEFORE its lock-check read (so the switch's settle wait
+  // still outlasts any write that passed the check); GET gets none.
+  const auth = block("async function authorizedAccessToken(");
+  assert.match(auth, /sendBy = method\.toUpperCase\(\) === "GET" \? undefined : Date\.now\(\) \+ CALENDAR_WRITE_DEADLINE_MS/);
+  assert.ok(auth.indexOf("sendBy =") !== -1 && auth.indexOf("sendBy =") < auth.indexOf("resolveCalendarTarget("));
+  // The abort covers sending only: armed after auth/settings/token work, cleared when headers arrive.
+  const fn = block("async function googleFetch(");
+  assert.ok(fn.indexOf("authorizedAccessToken(") < fn.indexOf("sendWithDeadline("));
+  assert.doesNotMatch(fn, /AbortSignal\.timeout\(CALENDAR_WRITE_DEADLINE_MS\)/);
 });
 
 test("copy runs at most 5 upserts at once and verify starts only after all of them finished", async () => {
@@ -1020,4 +1030,63 @@ test("google client: pagination stops at the deadline; each page's timeout never
   } finally {
     AbortSignal.timeout = realTimeout;
   }
+});
+
+// ---- final fix wave: event ids, preflight blockers, switch-back after a delete ----------------
+test("planCopy counts planned events whose id Google's insert-with-id rejects (invalidIds); skipped events never count", () => {
+  const ok = (id) => ({ id, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day" } } });
+  const plan = sw.planCopy([
+    ok("ab01cd23"), // valid base32hex
+    ok("Ab01cd23"), // uppercase
+    ok("ab01-cd23"), // hyphen (CalDAV/Outlook style)
+    ok("ab01"), // too short
+    ok("wxyz0001"), // letters past v
+    { ...ok("ab01cd23_20261207"), recurringEventId: "ab01cd23" }, // skipped exception instance: not counted
+    PERSONAL, // skipped: not counted
+  ]);
+  assert.equal(plan.invalidIds, 4);
+  assert.equal(sw.planCopy([ok("ab01cd23"), ok("0123456789abcdefghijklmnopqrstuv")]).invalidIds, 0);
+  assert.equal(sw.GOOGLE_EVENT_ID_PATTERN.source, "^[a-v0-9]{5,1024}$");
+});
+
+test("switchPreflight reports target app events missing from the source and invalid source ids (shared by preview and switch)", () => {
+  const ev = (id) => ({ id, start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } });
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("ev3aaaaa")], [ev("ev1aaaaa"), ev("ev2aaaaa"), PERSONAL]), { targetConflicts: 1, invalidIds: 0 });
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa"), ev("EV-bad")], []), { targetConflicts: 0, invalidIds: 1 });
+  assert.deepEqual(sw.switchPreflight([ev("ev1aaaaa")], [PERSONAL]), { targetConflicts: 0, invalidIds: 0 });
+});
+
+test("switch back into the OLD calendar after a delete on the new master: refused with the specific message, master unchanged, lock released (engine second line)", async () => {
+  // Reproduces the final-review probe with valid ids. B = current master, A = old master (previousMaster),
+  // A2 = A reconnected with a fresh token as the candidate. ev2 was deleted on B after the first switch.
+  const ev = (id) => ({ id, summary: "x", start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } });
+  const B = t("B");
+  const A = t("A");
+  const A2 = t("A2");
+  const h = harness({ settings: { master: B, previousMaster: A, candidate: A2 }, sourceEvents: [ev("ev1aaaaa"), ev("ev3aaaaa")], targetEvents: [ev("ev1aaaaa"), ev("ev2aaaaa")] });
+  h.deps.candidate = A2;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, sw.TARGET_CONFLICTS_MESSAGE);
+  assert.equal(h.target.upserts.length, 0);
+  assert.deepEqual(h.mem.st.data, { master: B, previousMaster: A, candidate: A2 });
+});
+
+test("runStart: a budget already spent before the run (preflight) refuses BEFORE the lock (step preflight, nothing written)", async () => {
+  const h = harness();
+  h.deps.runStart = h.clock.t - sw.COPY_PHASE_BUDGET_MS - 1;
+  const r = await sw.runSwitch(h.deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.step, "preflight");
+  assert.equal(h.mem.st.writes.length, 0);
+  assert.equal(h.source.listCalls + h.target.listCalls, 0);
+  // a runStart inside the budget behaves as before
+  const h2 = harness();
+  h2.deps.runStart = h2.clock.t - 1_000;
+  assert.equal((await sw.runSwitch(h2.deps)).ok, true);
+});
+
+test("LOCK_HOLD_AFTER_FLIP_MS outlasts the GET settings cache TTL (coupled constants)", async () => {
+  const { SETTINGS_CACHE_TTL_MS } = await import("../app/lib/calendar-settings-store.ts");
+  assert.ok(sw.LOCK_HOLD_AFTER_FLIP_MS > SETTINGS_CACHE_TTL_MS, `${sw.LOCK_HOLD_AFTER_FLIP_MS} > ${SETTINGS_CACHE_TTL_MS}`);
 });

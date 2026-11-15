@@ -73,3 +73,32 @@ test("settings without master behave as env (source env, env token) and still ho
   const c = await resolveCalendarTarget({ store: store({ lock: { since: NOW - LOCK_TTL_MS - 1, by: "a@example.com" } }), env: e, now: NOW });
   assert.equal(c.locked, false);
 });
+
+test("a settings master whose token unseals to an empty string is unreadable (503), never the per-device path", async () => {
+  const empty = { master: { email: "m@example.com", calendarId: "cal-m@example.com", sealedRefreshToken: sealToken("", KEY) } };
+  await assert.rejects(
+    resolveCalendarTarget({ store: store(empty), env: env({ GOOGLE_REFRESH_TOKEN: "rt-env", CALENDAR_SETTINGS_KEY: KEY }), now: NOW }),
+    (e) => e.status === 503 && e.message === "อ่านการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่",
+  );
+});
+
+test("resolveCalendarPath substitutes @master with the encoded id; queries and placeholder-free paths untouched", async () => {
+  const { resolveCalendarPath } = await import("../app/lib/calendar-target.ts");
+  assert.equal(resolveCalendarPath("/calendars/@master/events?q=a%40b&pageToken=x", "cal-m@example.com"), "/calendars/cal-m%40example.com/events?q=a%40b&pageToken=x");
+  assert.equal(resolveCalendarPath("/calendars/@master/events/ab01cd23", "a#b$c@group.calendar.google.com"), "/calendars/a%23b%24c%40group.calendar.google.com/events/ab01cd23");
+  // `$&`-style patterns in the id can never be interpreted as replacement patterns
+  assert.equal(resolveCalendarPath("/calendars/@master/events", "$&$1"), "/calendars/%24%26%241/events");
+  assert.equal(resolveCalendarPath("/users/me/calendarList", "cal-m@example.com"), "/users/me/calendarList");
+  // only the path segment is replaced (first occurrence), a literal "@master" in a query stays
+  assert.equal(resolveCalendarPath("/calendars/@master/events?q=@master", "c"), "/calendars/c/events?q=@master");
+});
+
+test("no settings file: the resolved Calendar URL is exactly the pre-phase-B form", async () => {
+  const { resolveCalendarPath } = await import("../app/lib/calendar-target.ts");
+  for (const e of [env({ GOOGLE_CALENDAR_ID: "cal-env@group.calendar.google.com", GOOGLE_REFRESH_TOKEN: "rt-env" }), env()]) {
+    const target = await resolveCalendarTarget({ store: store("missing"), env: e, now: NOW });
+    const oldId = e.GOOGLE_CALENDAR_ID || e.AUTHORIZED_EMAIL; // the old CALENDAR_ID constant
+    const path = `/calendars/@master/events?singleEvents=true&maxResults=2500`;
+    assert.equal(resolveCalendarPath(path, target.calendarId), `/calendars/${encodeURIComponent(oldId)}/events?singleEvents=true&maxResults=2500`);
+  }
+});

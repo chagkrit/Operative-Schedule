@@ -260,3 +260,26 @@ test("blob delete is conditional on the etag of the last read (never an uncondit
   assert.throws(() => blobDeleteOptions(null));
   assert.throws(() => blobDeleteOptions(""));
 });
+
+test("parseSettingsJson: a corrupt file throws a FIXED message that quotes no part of the file (sealed token safe)", () => {
+  const secret = "xv1.SEALED-SECRET-abc.def.ghi";
+  for (const text of [secret, `{"master": ${secret}}`, `{"master":{"sealedRefreshToken":"v1.SEALED-SECRET-abc"`]) {
+    let caught;
+    try {
+      parseSettingsJson(text);
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught, "must throw");
+    // V8's SyntaxError quotes up to ~10 characters of the input: no 5-character window of it may appear
+    for (const where of [String(caught.message), String(caught.stack ?? "")]) {
+      for (let i = 0; i + 5 <= text.length; i += 1) {
+        const window = text.slice(i, i + 5);
+        if (/^[\s{}":,]+$/.test(window)) continue;
+        assert.ok(!where.includes(window), `error quotes the file: ${JSON.stringify(window)}`);
+      }
+    }
+    assert.equal(caught.cause, undefined, "the SyntaxError (which quotes the file) is not attached");
+    assert.equal(caught.message, "calendar-settings.json is not valid JSON");
+  }
+});

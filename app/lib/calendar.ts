@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { AUTHORIZED_EMAIL } from "../../auth";
-import { CALENDAR_LOCKED_MESSAGE, CALENDAR_WRITE_DEADLINE_MS, MASTER_PLACEHOLDER, resolveCalendarTarget } from "./calendar-target";
+import { CALENDAR_LOCKED_MESSAGE, CALENDAR_WRITE_DEADLINE_MS, resolveCalendarPath, resolveCalendarTarget } from "./calendar-target";
 import { calendarSettingsStore } from "./calendar-settings-store";
 import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail, VIEWER_READ_ONLY_MESSAGE } from "./session";
 import { userStore } from "./user-store";
-import { isWriteDeadlineError, RECOVERY_LOOKUP_TIMEOUT_MS, resolveAbortedCreate, writeDeadlineError } from "./write-recovery";
+import { isWriteDeadlineError, RECOVERY_LOOKUP_TIMEOUT_MS, resolveAbortedCreate, sendWithDeadline } from "./write-recovery";
 import { canWrite } from "./users";
 import { addDays, daysBetween, orderedStaffMembers } from "./schedule";
 import { parseDurationMinutes } from "./minutes";
@@ -143,18 +143,28 @@ const cachedServerTokens = new Map<string, { token: string; expiresAt: number }>
 const inflightServerTokens = new Map<string, Promise<string>>();
 const tokenCacheKey = (refreshToken: string) => createHash("sha256").update(refreshToken).digest("hex");
 
+// A hung token exchange must not hang every Calendar call behind the in-flight dedupe. A timeout or network
+// failure is reported as a failed exchange (the callers' fixed Thai 503/502), never a raw error.
+const TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
+
 async function requestAccessToken(refreshToken: string) {
-  const response = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: process.env.AUTH_GOOGLE_ID || "",
-      client_secret: process.env.AUTH_GOOGLE_SECRET || "",
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: process.env.AUTH_GOOGLE_ID || "",
+        client_secret: process.env.AUTH_GOOGLE_SECRET || "",
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, payload: {} as GoogleTokenResponse };
+  }
   const payload = (await response.json().catch(() => ({}))) as GoogleTokenResponse;
   return { ok: response.ok && Boolean(payload.access_token), payload };
 }
@@ -186,7 +196,8 @@ async function serverAccessToken(refreshToken: string) {
   return inflight;
 }
 
-type AuthorizedCalendarAccess = { accessToken: string; calendarId: string };
+// sendBy (writes only): the instant by which the request must have its response headers.
+type AuthorizedCalendarAccess = { accessToken: string; calendarId: string; sendBy: number | undefined };
 
 // The single chokepoint for every Calendar API call: verified session + allowlist (cached ≤30 s,
 // so a removed/deactivated user loses API access within ~30 s). A deny only rejects this request.
@@ -201,6 +212,10 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
   if (!canWrite(access.role) && method.toUpperCase() !== "GET") {
     throw withStatus(VIEWER_READ_ONLY_MESSAGE, 403);
   }
+  // A write must be sent within CALENDAR_WRITE_DEADLINE_MS of the moment just before its lock-check read,
+  // so a master switch's settle wait (SETTLE_MS) outlasts any write that passed the check just before the
+  // lock was set. Fixed here (not when the abort timer is armed) so slow settings/token work cannot stretch it.
+  const sendBy = method.toUpperCase() === "GET" ? undefined : Date.now() + CALENDAR_WRITE_DEADLINE_MS;
   // Which calendar + grant: the settings file when present, else the environment exactly as before.
   const target = await resolveCalendarTarget({
     store: calendarSettingsStore,
@@ -222,12 +237,12 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
     if (!process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
       throw withStatus("ระบบยังตั้งค่า Google OAuth ไม่ครบ ผู้ดูแลระบบต้องตรวจสอบ", 503);
     }
-    return { accessToken: await serverAccessToken(target.refreshToken), calendarId };
+    return { accessToken: await serverAccessToken(target.refreshToken), calendarId, sendBy };
   }
 
   // Fallback while GOOGLE_REFRESH_TOKEN is not configured: per-device token from the session cookie.
   if (token.accessToken && Number(token.expiresAt || 0) * 1000 > Date.now() + 30_000) {
-    return { accessToken: String(token.accessToken), calendarId };
+    return { accessToken: String(token.accessToken), calendarId, sendBy };
   }
   if (!token.refreshToken || !process.env.AUTH_GOOGLE_ID || !process.env.AUTH_GOOGLE_SECRET) {
     throw withStatus("สิทธิ์ Google Calendar หมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่", 401);
@@ -241,34 +256,27 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
       payload.error === "invalid_grant" ? 401 : 502,
     );
   }
-  return { accessToken: payload.access_token, calendarId };
+  return { accessToken: payload.access_token, calendarId, sendBy };
 }
 
 async function googleFetch(request: Request, path: string, init?: RequestInit) {
-  // A write is aborted CALENDAR_WRITE_DEADLINE_MS after the deadline starts (before the lock check), so a
-  // master switch's settle wait (SETTLE_MS) outlasts any write that passed the check just before the lock
-  // was set. Aborting a request Google already received does NOT stop Google from committing it: callers
-  // that create with a client-chosen id must look the id up after a deadline error (createBookingEvent).
+  // A write must have its response headers by `sendBy` (fixed just before its lock-check read, see
+  // authorizedAccessToken) or it is aborted with a flagged deadline error. The abort covers sending only:
+  // it is armed after the auth/settings/token work and cleared when headers arrive, so callers' body reads
+  // are never aborted. Aborting a request Google already received does NOT stop Google from committing it:
+  // callers that create with a client-chosen id look the id up after a deadline error (createBookingEvent).
   // Reads keep their old behavior (no deadline).
-  const deadline = (init?.method ?? "GET").toUpperCase() === "GET" ? undefined : AbortSignal.timeout(CALENDAR_WRITE_DEADLINE_MS);
-  const { accessToken, calendarId } = await authorizedAccessToken(request, init?.method ?? "GET");
-  const resolvedPath = path.replace(`/calendars/${MASTER_PLACEHOLDER}/`, `/calendars/${encodeURIComponent(calendarId)}/`);
-  let response: Response;
-  try {
-    response = await fetch(`https://www.googleapis.com/calendar/v3${resolvedPath}`, {
-      ...init,
-      ...(deadline ? { signal: deadline } : {}),
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...init?.headers,
-      },
-      cache: "no-store",
-    });
-  } catch (error) {
-    if (deadline?.aborted) throw writeDeadlineError();
-    throw error;
-  }
+  const { accessToken, calendarId, sendBy } = await authorizedAccessToken(request, init?.method ?? "GET");
+  const resolvedPath = resolveCalendarPath(path, calendarId);
+  const response = await sendWithDeadline(fetch, `https://www.googleapis.com/calendar/v3${resolvedPath}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...init?.headers,
+    },
+    cache: "no-store",
+  }, sendBy);
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
     const error = new Error(payload?.error?.message || "เชื่อมต่อ Google Calendar ไม่สำเร็จ");

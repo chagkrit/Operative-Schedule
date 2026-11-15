@@ -35,9 +35,15 @@ function parseTarget(v: unknown, label: string): CalendarTarget {
   return { email: t.email, calendarId: t.calendarId, sealedRefreshToken: t.sealedRefreshToken };
 }
 
-// A corrupt or wrong-shape file throws; it never counts as missing.
+// A corrupt or wrong-shape file throws; it never counts as missing. A JSON SyntaxError quotes part of the
+// file (which holds sealed tokens), so it is replaced by a fixed message and never attached as a cause.
 export function parseSettingsJson(text: string): CalendarSettings {
-  const data: unknown = JSON.parse(text);
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new UserStoreError("calendar-settings.json is not valid JSON");
+  }
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new UserStoreError("calendar-settings.json is not an object");
   }

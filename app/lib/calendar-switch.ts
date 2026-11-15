@@ -112,7 +112,12 @@ export function countRecurring(events: GoogleEventLike[]): number {
 
 const emptyCounts = (): CopyCounts => ({ booking: 0, extra_day: 0, schedule_closure: 0, staff_unavailable: 0, legacy: 0 });
 
-export type CopyPlan = { copy: GoogleEventLike[]; skipped: number; counts: CopyCounts; byMonth: Record<string, number> };
+// Google's insert-with-id accepts only base32hex ids. Events created elsewhere (CalDAV, Outlook, ICS
+// import) may carry other ids; those cannot be copied with the same id, so a switch refuses up front.
+export const GOOGLE_EVENT_ID_PATTERN = /^[a-v0-9]{5,1024}$/;
+
+// invalidIds: planned (copied) events whose id GOOGLE_EVENT_ID_PATTERN rejects; skipped events never count.
+export type CopyPlan = { copy: GoogleEventLike[]; skipped: number; counts: CopyCounts; byMonth: Record<string, number>; invalidIds: number };
 
 export function planCopy(source: GoogleEventLike[]): CopyPlan {
   const copy: GoogleEventLike[] = [];
@@ -120,6 +125,7 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
   const byMonth: Record<string, number> = {};
   const seen = new Set<string>();
   let skipped = 0;
+  let invalidIds = 0;
   for (const event of source) {
     const kind = classifyEvent(event);
     if (!kind || seen.has(event.id as string)) {
@@ -127,12 +133,25 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
       continue;
     }
     seen.add(event.id as string);
+    if (!GOOGLE_EVENT_ID_PATTERN.test(event.id as string)) invalidIds += 1;
     copy.push(copyBody(event));
     counts[kind] += 1;
     const month = calendarEventDate(event).slice(0, 7) || "unknown";
     byMonth[month] = (byMonth[month] ?? 0) + 1;
   }
-  return { copy, skipped, counts, byMonth };
+  return { copy, skipped, counts, byMonth, invalidIds };
+}
+
+// The two refusals a switch decides BEFORE taking the lock (and preview shows):
+// - targetConflicts: app events in the target that the source no longer has. The app hard-deletes events
+//   (cancellations, closures, extra days, leave), so an old master that was populated before still holds
+//   them; switching back would resurrect them, so only a calendar without such events can be the target.
+// - invalidIds: source events Google will not accept with the same id.
+export function switchPreflight(sourceEvents: GoogleEventLike[], targetEvents: GoogleEventLike[]): { targetConflicts: number; invalidIds: number } {
+  const plan = planCopy(sourceEvents);
+  const planIds = new Set(plan.copy.map((e) => e.id as string));
+  const targetConflicts = planCopy(targetEvents).copy.filter((e) => !planIds.has(e.id as string)).length;
+  return { targetConflicts, invalidIds: plan.invalidIds };
 }
 
 // ---- token-only refresh ------------------------------------------------------------
@@ -171,17 +190,28 @@ export function withRefreshedMasterToken(settings: CalendarSettings, envMaster?:
 }
 
 // ---- runSwitch ------------------------------------------------------------------------
-export type SwitchStep = "lock" | "read" | "copy" | "verify" | "flip";
+// "preflight" = refused before any lock was taken (nothing written).
+export type SwitchStep = "preflight" | "lock" | "read" | "copy" | "verify" | "flip";
 
 // Each message is used only when the stated outcome is confirmed (a failure before the flip, or a flip
 // whose read-back shows the master unchanged).
 export const SWITCH_STEP_MESSAGES: Record<SwitchStep, string> = {
+  preflight: "ตรวจปฏิทินก่อนสลับไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน กรุณาลองใหม่",
   lock: "เริ่มการเปลี่ยนปฏิทินไม่สำเร็จ (ล็อกการแก้ไขไม่ได้) ยังไม่ได้เปลี่ยนปฏิทิน",
   read: "อ่านข้อมูลจากปฏิทินหลักปัจจุบันไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน",
   copy: "คัดลอกข้อมูลไปปฏิทินใหม่ไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน กดเปลี่ยนอีกครั้งเพื่อคัดลอกต่อได้",
   verify: "ตรวจข้อมูลในปฏิทินใหม่แล้วไม่ตรงกับปฏิทินหลัก ยังไม่ได้เปลี่ยนปฏิทิน",
   flip: "บันทึกการเปลี่ยนปฏิทินหลักไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน",
 };
+// Preflight refusals (decided before the lock; also the engine's second line for target conflicts).
+export const TARGET_CONFLICTS_MESSAGE =
+  "ปฏิทินปลายทางมีรายการของแอปที่ปฏิทินหลักปัจจุบันไม่มีแล้ว (ถูกยกเลิกหรือลบไปหลังเคยคัดลอก) ถ้าสลับไป รายการเหล่านั้นจะกลับมาในแอป จึงยังไม่ได้เปลี่ยนปฏิทิน วิธีที่ปลอดภัยคือสร้างปฏิทินใหม่ที่ว่าง แล้วเชื่อมต่อและสลับไปปฏิทินนั้นแทน";
+export const INVALID_EVENT_IDS_MESSAGE =
+  "ปฏิทินหลักปัจจุบันมีรายการที่รหัส event ไม่อยู่ในรูปแบบที่ Google ยอมให้คัดลอกด้วยรหัสเดิม (มักเป็นรายการที่นำเข้าจากโปรแกรมอื่น) จึงยังไม่ได้เปลี่ยนปฏิทิน ต้องแก้รายการเหล่านั้นก่อนสลับ";
+export const PREFLIGHT_TARGET_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินใหม่ไม่สำเร็จ ยังไม่ได้เปลี่ยนปฏิทิน กรุณาลองใหม่";
+// The preflight (before the lock) already used the whole copy budget of this request.
+export const PREFLIGHT_SLOW_MESSAGE = "ตรวจปฏิทินก่อนสลับใช้เวลานานเกินไป ยังไม่ได้เปลี่ยนปฏิทิน กรุณาลองใหม่";
+
 // The flip write failed and its outcome could not be read back.
 export const SWITCH_OUTCOME_UNKNOWN_MESSAGE = "ไม่ทราบผลการเปลี่ยนปฏิทินหลัก กรุณาเปิดหน้าสถานะเพื่อตรวจก่อนทำรายการต่อ";
 
@@ -221,6 +251,9 @@ export type SwitchDeps = {
   // Sealed env master; passed only when the file has no master, so it becomes previousMaster.
   envMaster?: CalendarTarget;
   sleep?: (ms: number) => Promise<void>;
+  // When the request started (the handler's preflight runs before runSwitch): the copy budget and the hard
+  // deadline count from here, so preflight + run stay inside the route's maxDuration. Default: now().
+  runStart?: number;
   // Tests only; production uses COPY_PHASE_BUDGET_MS.
   copyBudgetMs?: number;
   hardDeadlineMs?: number;
@@ -316,7 +349,7 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
   const mine = new Set<number>();
   let lockSince: number | null = null;
   let lockTakenAt = 0;
-  const runStart = deps.now();
+  const runStart = deps.runStart ?? deps.now();
   const budget = deps.copyBudgetMs ?? COPY_PHASE_BUDGET_MS;
   const overBudget = () => deps.now() - runStart > budget;
   const budgetError = () => new StepError("copy", new Error("copy budget exceeded"), false, COPY_BUDGET_MESSAGE);
@@ -473,6 +506,9 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
 
   const flippedTo = (s: CalendarSettings | "missing") => s !== "missing" && sameTarget(s.master, deps.candidate);
 
+  // A preflight that already used the copy budget: refuse before taking the lock (nothing written).
+  if (overBudget()) return { ok: false, step: "preflight", error: PREFLIGHT_SLOW_MESSAGE };
+
   try {
     // 1. lock (atomic check + set; a lock held by anyone else is left untouched)
     await stepRun("lock", async () => {
@@ -495,10 +531,13 @@ export async function runSwitch(deps: SwitchDeps): Promise<SwitchResult> {
     // 2. read the source and plan
     const plan1 = planCopy(await listBounded("read", deps.source));
 
-    // 3. refuse a target that already holds app events not in the source (they would show up in the app)
+    // 3. refuse a target that already holds app events not in the source (they would show up in the app).
+    //    The handler refuses this BEFORE the lock (switchPreflight); this is the second line of defense.
     const before = await listBounded("verify", deps.target);
     const planIds1 = new Set(plan1.copy.map((e) => e.id as string));
-    if (planCopy(before).copy.some((e) => !planIds1.has(e.id as string))) throw new StepError("verify");
+    if (planCopy(before).copy.some((e) => !planIds1.has(e.id as string))) {
+      throw new StepError("verify", undefined, false, TARGET_CONFLICTS_MESSAGE);
+    }
 
     // 4. copy (same ids; insert or update; 5 at a time). Events the target already holds exactly as in
     //    the source (a re-run after a partial copy) are not sent again.

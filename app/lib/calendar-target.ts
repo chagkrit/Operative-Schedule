@@ -8,9 +8,17 @@ import { openToken } from "./token-seal";
 export const MASTER_PLACEHOLDER = "@master";
 export const CALENDAR_LOCKED_MESSAGE = "ระบบกำลังเปลี่ยนปฏิทิน กรุณาลองใหม่ในอีกสักครู่";
 export const CALENDAR_SETTINGS_UNREADABLE_MESSAGE = "อ่านการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่";
-// Every Calendar write (non-GET) is sent within this many ms of its lock check or abandoned unsent
-// (googleFetch in calendar.ts). Must stay well below SETTLE_MS in calendar-switch.ts (45 s).
+// Every Calendar write (non-GET) must get its response headers within this many ms of the moment just
+// before its lock-check settings read, else it is aborted (googleFetch + sendWithDeadline). The abort
+// timer is armed only around sending (after auth/settings/token work) and cleared when headers arrive,
+// so a response body is never aborted. Must stay well below SETTLE_MS in calendar-switch.ts (45 s).
 export const CALENDAR_WRITE_DEADLINE_MS = 30_000;
+
+// The Calendar API path with the master placeholder replaced by the URL-encoded calendar id (first
+// occurrence, path segment only). A replacer function, so no `$` pattern in an id is ever interpreted.
+export function resolveCalendarPath(path: string, calendarId: string): string {
+  return path.replace(`/calendars/${MASTER_PLACEHOLDER}/`, () => `/calendars/${encodeURIComponent(calendarId)}/`);
+}
 
 export type ResolvedCalendarTarget = {
   source: "settings" | "env";
@@ -54,6 +62,8 @@ export async function resolveCalendarTarget(opts: CalendarTargetOptions): Promis
   } catch {
     throw unreadable();
   }
+  // An empty grant would fall through to the per-device path against the settings calendar: fail closed.
+  if (!refreshToken) throw unreadable();
   return {
     source: "settings",
     calendarId: settings.master.calendarId,

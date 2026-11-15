@@ -31,3 +31,31 @@ export async function resolveAbortedCreate(original: unknown, lookup: () => Prom
   if (!event) throw Object.assign(new Error(POSSIBLY_SAVED_MESSAGE), { status: 504 });
   if (event.status === "cancelled") throw original;
 }
+
+// Sends one Calendar request. With `sendBy` (writes), the request must get its response HEADERS by that
+// instant, else it is aborted and a flagged write-deadline error is thrown (an instant already past sends
+// nothing). The abort timer is armed right before sending and cleared as soon as headers arrive, so reading
+// the response body is never aborted (Google has already committed the write by then). Without `sendBy`
+// (reads), init and its own signal pass through untouched.
+export async function sendWithDeadline(
+  doFetch: typeof fetch,
+  url: string,
+  init: RequestInit,
+  sendBy: number | undefined,
+  now: () => number = Date.now,
+): Promise<Response> {
+  if (sendBy === undefined) return doFetch(url, init);
+  const remaining = sendBy - now();
+  if (remaining <= 0) throw writeDeadlineError();
+  const controller = new AbortController();
+  const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+  const timer = setTimeout(() => controller.abort(), remaining);
+  try {
+    return await doFetch(url, { ...init, signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw writeDeadlineError();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}

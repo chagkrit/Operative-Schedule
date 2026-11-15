@@ -358,7 +358,7 @@ test("handler source: admin check precedes any settings or Google access", async
 // ---- preview / switch / clearLock -------------------------------------------------
 const EV = {
   booking: { id: "bk0001aa", summary: "SYNTH-SUMMARY booking", start: { dateTime: "2026-12-01T08:00:00+07:00" }, end: { dateTime: "2026-12-01T09:00:00+07:00" }, extendedProperties: { private: { or_queue: "booking", queue_type: "OR17", hn: "SYNTH-HN-9" } } },
-  extra: { id: "ex0001aa", start: { date: "2027-01-04" }, end: { date: "2027-01-05" }, extendedProperties: { private: { or_queue: "extra_day" } } },
+  extra: { id: "ea0001aa", start: { date: "2027-01-04" }, end: { date: "2027-01-05" }, extendedProperties: { private: { or_queue: "extra_day" } } },
   personal: { id: "pe0001aa", summary: "Lunch", start: { date: "2026-12-03" }, end: { date: "2026-12-04" } },
 };
 const CAND = () => target("new@gmail.com", "cal-new@group.calendar.google.com", NEW_TOKEN);
@@ -403,6 +403,7 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       targetEventCount: 1,
       targetHasEvents: true,
       targetConflicts: 0,
+      invalidIds: 0,
       recurring: 0,
     });
     for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
@@ -447,7 +448,7 @@ test("switch copies, flips the master, keeps previousMaster, and returns the new
     for (const leak of [NEW_TOKEN, MASTER_TOKEN, "v1.", "SYNTH-HN-9"]) assert.ok(!r.text.includes(leak), leak);
   });
   assert.ok(!out.includes(NEW_TOKEN) && !out.includes(MASTER_TOKEN));
-  assert.deepEqual([...h.google.cals.get("cal-new@group.calendar.google.com").keys()].sort(), ["bk0001aa", "ex0001aa"]);
+  assert.deepEqual([...h.google.cals.get("cal-new@group.calendar.google.com").keys()].sort(), ["bk0001aa", "ea0001aa"]);
   assert.equal(openToken(h.state.data.master.sealedRefreshToken, KEY), NEW_TOKEN);
   assert.equal(openToken(h.state.data.previousMaster.sealedRefreshToken, KEY), MASTER_TOKEN);
   assert.equal(h.state.data.lock, undefined);
@@ -640,4 +641,127 @@ test("GET exposes lockedSince (a number) only while the lock is active, never fo
   const expired = await call(harness({ settings: { ...SETTINGS(), lock: { since: 1_000_000 - 21 * 60_000, by: ADMIN } } }), "GET", { as: ADMIN });
   assert.equal(expired.json.locked, false);
   assert.ok(!("lockedSince" in expired.json));
+});
+
+// ---- final fix wave: preflight before the lock (rollback rule), event ids, email_verified -------------
+const sw = await import("../app/lib/calendar-switch.ts");
+const { resolveCalendarTarget } = await import("../app/lib/calendar-target.ts");
+const evX = (id) => ({ id, summary: "x", start: { date: "2026-12-07" }, end: { date: "2026-12-08" }, extendedProperties: { private: { or_queue: "extra_day", note: "" } } });
+// counts upserts per calendar id on top of the in-memory calendars
+function countUpserts(h) {
+  const upserts = {};
+  const lists = [];
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    const up = c.upsertEvent;
+    const list = c.listEvents;
+    c.upsertEvent = async (e) => { upserts[t.calendarId] = (upserts[t.calendarId] ?? 0) + 1; return up(e); };
+    c.listEvents = async (opts) => { lists.push({ calendarId: t.calendarId, deadline: opts?.deadline }); return list(opts); };
+    return c;
+  };
+  return { upserts, lists };
+}
+
+test("switch back into the OLD populated calendar after a delete on the new master is refused BEFORE the lock; a NEW EMPTY calendar works", async () => {
+  // After the first switch: B is the master, A the previous master. ev2 was cancelled (hard-deleted) on B,
+  // ev3 created on B. The owner reconnects A (fresh token) and tries to switch back.
+  const B = target("b@gmail.com", "cal-b", "SYNTH-B-REFRESH-TOKEN-dddd");
+  const A = target("hnbcmu@gmail.com", "cal-a", MASTER_TOKEN);
+  const A2 = target("hnbcmu@gmail.com", "cal-a", "SYNTH-A-FRESH-TOKEN-eeee");
+  const h = harness({
+    settings: { master: B, previousMaster: A, candidate: A2 },
+    calendars: { "cal-b": [evX("ev1aaaaa"), evX("ev3aaaaa")], "cal-a": [evX("ev1aaaaa"), evX("ev2aaaaa")] },
+    verify: () => ({ email: "c@gmail.com" }),
+  });
+  const seen = countUpserts(h);
+  const before = structuredClone(h.state.data);
+
+  const preview = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.json.targetConflicts, 1);
+  assert.equal(preview.json.invalidIds, 0);
+
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409, r.text);
+  assert.equal(r.json.step, "preflight");
+  assert.equal(r.json.switched, false);
+  assert.equal(r.json.error, sw.TARGET_CONFLICTS_MESSAGE);
+  // no lock was ever taken, nothing written, the old calendar untouched
+  assert.equal(h.state.writes, 0);
+  assert.deepEqual(h.state.data, before);
+  assert.equal(seen.upserts["cal-a"] ?? 0, 0);
+  assert.deepEqual([...h.google.cals.get("cal-a").keys()].sort(), ["ev1aaaaa", "ev2aaaaa"]);
+  // writes stay unfrozen: the app's resolver sees no lock and the current master
+  const resolved = await resolveCalendarTarget({ store: h.store, env: { AUTHORIZED_EMAIL: "hnbcmu@gmail.com", CALENDAR_SETTINGS_KEY: KEY }, now: 1_000_000 });
+  assert.equal(resolved.locked, false);
+  assert.equal(resolved.calendarId, "cal-b");
+
+  // The safe rollback: connect a NEW, EMPTY calendar and switch into it.
+  const c = await call(h, "POST", { as: ADMIN, body: { action: "connect", email: "c@gmail.com", calendarId: "cal-c", refreshToken: "SYNTH-C-REFRESH-TOKEN-ffff" } });
+  assert.equal(c.status, 200, c.text);
+  const ok = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal(h.state.data.master.calendarId, "cal-c");
+  assert.equal(h.state.data.previousMaster.calendarId, "cal-b");
+  assert.equal(h.state.data.lock, undefined);
+  assert.deepEqual([...h.google.cals.get("cal-c").keys()].sort(), ["ev1aaaaa", "ev3aaaaa"]);
+});
+
+test("source events whose ids Google's insert-with-id rejects: preview counts them, switch refuses BEFORE the lock", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), evX("Outlook-Imported-1"), evX("ab-cd-ef")] } });
+  const seen = countUpserts(h);
+  const p = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(p.status, 200);
+  assert.equal(p.json.invalidIds, 2);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409, r.text);
+  assert.equal(r.json.step, "preflight");
+  assert.equal(r.json.error, sw.INVALID_EVENT_IDS_MESSAGE);
+  assert.equal(h.state.writes, 0);
+  assert.equal(h.state.data.lock, undefined);
+  assert.equal(Object.keys(seen.upserts).length, 0);
+});
+
+test("preflight: a failed target read is a fixed 502 (step preflight) with no lock and no write; source read failure keeps step read", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId !== "hnbcmu@gmail.com") c.listEvents = async () => { throw new Error(`SYNTH google ${NEW_TOKEN}`); };
+    return c;
+  };
+  const out = await spyConsole(async () => {
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+    assert.equal(r.status, 502);
+    assert.equal(r.json.step, "preflight");
+    assert.equal(r.json.error, sw.PREFLIGHT_TARGET_FAILED_MESSAGE);
+    assert.ok(!r.text.includes(NEW_TOKEN));
+  });
+  assert.ok(!out.includes(NEW_TOKEN));
+  assert.equal(h.state.writes, 0);
+  assert.equal(h.state.data.lock, undefined);
+});
+
+test("preflight lists are bounded (copy budget) and reuse the run's two clients; the run's budget counts from the request start", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const seen = countUpserts(h);
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(h.google.made.length, 2, "one source and one target client for preflight + run");
+  // first two lists = preflight (source, target) with the copy-budget deadline; then the run's hard deadline
+  assert.deepEqual(seen.lists.slice(0, 2).map((l) => l.calendarId), ["hnbcmu@gmail.com", "cal-new@group.calendar.google.com"]);
+  for (const l of seen.lists.slice(0, 2)) assert.equal(l.deadline, 1_000_000 + sw.COPY_PHASE_BUDGET_MS);
+  for (const l of seen.lists.slice(2)) assert.equal(l.deadline, 1_000_000 + sw.RUN_HARD_DEADLINE_MS);
+});
+
+test("production verifyGoogleAccount fails closed unless the ID token says email_verified === true", async () => {
+  const idToken = (claims) => `h.${Buffer.from(JSON.stringify({ email: "New@Gmail.com", ...claims })).toString("base64url")}.s`;
+  const fetchWith = (token) => async (url) =>
+    String(url).includes("oauth2") ? Response.json({ access_token: "SYNTH-ACCESS", id_token: token }) : Response.json({ items: [] });
+  const io = (token) => ({ fetch: fetchWith(token), clientId: "cid", clientSecret: "s" });
+  assert.deepEqual(await api.verifyGoogleAccount({ refreshToken: NEW_TOKEN, calendarId: "c" }, io(idToken({ email_verified: true }))), { email: "new@gmail.com" });
+  for (const claims of [{}, { email_verified: false }, { email_verified: "true" }, { email_verified: 1 }]) {
+    await assert.rejects(api.verifyGoogleAccount({ refreshToken: NEW_TOKEN, calendarId: "c" }, io(idToken(claims))), JSON.stringify(claims));
+  }
 });
