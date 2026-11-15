@@ -163,6 +163,7 @@ export function canSwitchNow(status: CalendarStatus | null, preview: unknown): b
 export type DiagnosticsView = {
   reasons: Record<"uppercase" | "hyphen" | "underscore" | "tooShort" | "tooLong" | "otherChars", number>;
   shapes: { shape: string; count: number }[];
+  shapesOmitted: number;
   byKind: Record<"app" | "legacy" | "recurringMasters", number>;
   recurring: {
     masters: number;
@@ -192,10 +193,11 @@ export function parseDiagnostics(raw: unknown): DiagnosticsView | null {
     .map((s) => obj(s))
     .filter((s) => typeof s.shape === "string")
     .slice(0, 5)
-    .map((s) => ({ shape: s.shape as string, count: n(s.count) }));
+    .map((s) => ({ shape: Array.from(s.shape as string).slice(0, 49).join(""), count: n(s.count) }));
   return {
     reasons: pick(ids.reasons, ["uppercase", "hyphen", "underscore", "tooShort", "tooLong", "otherChars"] as const),
     shapes,
+    shapesOmitted: n(ids.shapesOmitted),
     byKind: pick(ids.byKind, ["app", "legacy", "recurringMasters"] as const),
     recurring: {
       masters: n(rec.masters),

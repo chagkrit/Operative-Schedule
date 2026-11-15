@@ -266,6 +266,11 @@ test("parseDiagnostics tolerates missing or malformed diagnostics and clamps to 
     recurring: { masters: 3, byFreq: { WEEKLY: 2 } },
     skippedReasons: { cancelled: 4 },
   });
+  assert.equal(d.shapesOmitted, 0);
+  const capped = ui.parseDiagnostics({ invalidIds: { shapes: [{ shape: "x".repeat(200), count: 1 }, { shape: "\u{1F600}".repeat(60), count: 1 }], shapesOmitted: 3 } });
+  assert.equal(Array.from(capped.shapes[0].shape).length, 49);
+  assert.equal(Array.from(capped.shapes[1].shape).length, 49);
+  assert.equal(capped.shapesOmitted, 3);
   assert.equal(d.reasons.uppercase, 2);
   assert.equal(d.reasons.hyphen, 0);
   assert.equal(d.reasons.tooShort, 0);

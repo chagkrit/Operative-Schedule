@@ -122,6 +122,8 @@ export type PlanDiagnostics = {
   invalidIds: {
     reasons: IdReasons;
     shapes: { shape: string; count: number }[];
+    // invalid ids not covered by the listed shapes (invalidIds - sum of listed counts)
+    shapesOmitted: number;
     byKind: { app: number; legacy: number; recurringMasters: number };
   };
   recurring: {
@@ -138,10 +140,66 @@ export type PlanDiagnostics = {
 const MAX_SHAPES = 5;
 const MAX_SHAPE_LENGTH = 48;
 
-// digit -> 9, lowercase -> a, uppercase -> A, anything else kept; long shapes truncated.
+// Run-length shape of an id; the output is ASCII only and never carries a character of the id itself.
+// Rules, applied per code point (an emoji is ONE code point):
+// - A-Z, a-z, 0-9 form "alphanumeric segments" between separators. Inside a segment, a run of lowercase
+//   letters is `l<n>` and a run of uppercase letters is `U<n>`; a digit joins the run before it, a case
+//   change starts a new run, and leading digits join the first letter run after them. A segment of only
+//   digits is `l<n>`.
+// - ASCII punctuation in the allowlist - _ . : @ / + = is kept as is (it separates segments).
+// - Every other code point (non-ASCII letters, emoji, whitespace, control characters, other punctuation)
+//   becomes `?`, and a run of them is `?<n>`.
+// - Truncation happens AFTER masking, by code points, so a surrogate pair is never split.
+const SHAPE_PUNCT = "-_.:@/+=";
+
+function segmentShape(segment: string): string {
+  const chars = Array.from(segment);
+  const caseOf = (c: string): "l" | "U" | null => (/[a-z]/.test(c) ? "l" : /[A-Z]/.test(c) ? "U" : null);
+  const firstLetter = chars.map(caseOf).find((c) => c !== null) ?? "l";
+  let out = "";
+  let current = firstLetter;
+  let length = 0;
+  for (const c of chars) {
+    const k = caseOf(c) ?? current;
+    if (k !== current) {
+      out += `${current}${length}`;
+      current = k;
+      length = 0;
+    }
+    length += 1;
+  }
+  return out + `${current}${length}`;
+}
+
 export function maskIdShape(id: string): string {
-  const masked = id.replace(/[0-9]/g, "9").replace(/[a-z]/g, "a").replace(/[A-Z]/g, "A");
-  return masked.length > MAX_SHAPE_LENGTH ? `${masked.slice(0, MAX_SHAPE_LENGTH)}…` : masked;
+  let out = "";
+  let segment = "";
+  let unknown = 0;
+  const flushSegment = () => {
+    if (segment) out += segmentShape(segment);
+    segment = "";
+  };
+  const flushUnknown = () => {
+    if (unknown) out += `?${unknown}`;
+    unknown = 0;
+  };
+  for (const c of id) {
+    if (/^[A-Za-z0-9]$/.test(c)) {
+      flushUnknown();
+      segment += c;
+    } else if (c.length === 1 && SHAPE_PUNCT.includes(c)) {
+      flushUnknown();
+      flushSegment();
+      out += c;
+    } else {
+      flushSegment();
+      unknown += 1;
+    }
+  }
+  flushSegment();
+  flushUnknown();
+  const points = Array.from(out);
+  return points.length > MAX_SHAPE_LENGTH ? `${points.slice(0, MAX_SHAPE_LENGTH).join("")}…` : out;
 }
 
 function rrules(event: GoogleEventLike): string[] {
@@ -225,7 +283,8 @@ export function planCopy(source: GoogleEventLike[]): CopyPlan {
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
     .slice(0, MAX_SHAPES)
     .map(([shape, count]) => ({ shape, count }));
-  return { copy, skipped, counts, byMonth, invalidIds, diagnostics: { invalidIds: { reasons, shapes, byKind }, recurring, skippedReasons } };
+  const shapesOmitted = invalidIds - shapes.reduce((n, x) => n + x.count, 0);
+  return { copy, skipped, counts, byMonth, invalidIds, diagnostics: { invalidIds: { reasons, shapes, shapesOmitted, byKind }, recurring, skippedReasons } };
 }
 
 // The two refusals a switch decides BEFORE taking the lock (and preview shows):

@@ -1118,22 +1118,51 @@ test("diagnostics: each invalid-id reason is counted; one id can count in severa
   assert.deepEqual(plan.diagnostics.invalidIds.reasons, { uppercase: 2, hyphen: 2, underscore: 2, tooShort: 1, tooLong: 1, otherChars: 2 });
 });
 
-test("diagnostics: shapes are masked, truncated at 48 chars, capped at 5 and ordered by count", () => {
+test("diagnostics: shapes are run-length masked, capped at 5, ordered by count then alphabet, with shapesOmitted", () => {
+  assert.equal(sw.maskIdShape("AB12cd-9"), "U4l2-l1"); // digits join the run before them; all-digit segment = l
+  assert.equal(sw.maskIdShape("abc_20240105T010000Z"), "l3_U16"); // leading digits join the first letter run after them
+  assert.equal(sw.maskIdShape("123abc"), "l6");
+  assert.equal(sw.maskIdShape("Zz-aaaa"), "U1l1-l4");
+  assert.equal(sw.maskIdShape("a b\tc"), "l1?1l1?1l1");
   const events = [
-    dEvent("AB12cd-9"), dEvent("XY99zz-1"), // same shape AAaaaa-9? (AB12cd-9 -> AA99aa-9)
-    dEvent("Qq_1234567"),
-    dEvent("Zz-aaaa"), dEvent("Zz-bbbb"), dEvent("Zz-cccc"),
-    dEvent("T-1"), dEvent("U_1_2"), dEvent("V.w.x"), dEvent("K-9-9-9"),
-    dEvent("A".repeat(60)),
+    dEvent("Zz-aaaa"), dEvent("Zz-bbbb"), dEvent("Zz-cccc"), // one shape x3
+    dEvent("T-1"), dEvent("T-2"), // U1-l1 x2
+    dEvent("U_1_2"), dEvent("V.w.x"), dEvent("K-9-9-9"), dEvent("Q-Q-Q-Q-Q"), dEvent("m-m-m-m-m-m"),
   ];
-  const { shapes } = sw.planCopy(events).diagnostics.invalidIds;
-  assert.ok(shapes.length <= 5);
-  assert.deepEqual(shapes[0], { shape: "Aa-aaaa", count: 3 });
-  assert.equal(sw.maskIdShape("AB12cd-9"), "AA99aa-9");
-  assert.equal(sw.maskIdShape("a_Z-0"), "a_A-9");
-  const trunc = sw.maskIdShape("A".repeat(60));
-  assert.equal(trunc, `${"A".repeat(48)}…`);
-  for (const s of shapes) assert.ok(s.shape.length <= 49);
+  const plan = sw.planCopy(events);
+  const { shapes, shapesOmitted } = plan.diagnostics.invalidIds;
+  assert.equal(shapes.length, 5);
+  assert.deepEqual(shapes[0], { shape: "U1l1-l4", count: 3 });
+  assert.deepEqual(shapes[1], { shape: "U1-l1", count: 2 });
+  assert.equal(plan.invalidIds, 10);
+  assert.equal(shapesOmitted, plan.invalidIds - shapes.reduce((n, x) => n + x.count, 0));
+  assert.equal(shapesOmitted, 2);
+  for (const x of shapes) assert.ok(Array.from(x.shape).length <= 49);
+});
+
+test("diagnostics: 17 uppercase UUIDs collapse into one shape", () => {
+  const ids = Array.from({ length: 17 }, (_, i) => `${(0xabcdef01 + i).toString(16).toUpperCase()}-1A2B-3C4D-5E6F-${(0x123456789abc + i).toString(16).toUpperCase()}`);
+  const plan = sw.planCopy(ids.map((id) => dEvent(id)));
+  assert.equal(plan.invalidIds, 17);
+  assert.deepEqual(plan.diagnostics.invalidIds.shapes, [{ shape: "U8-U4-U4-U4-U12", count: 17 }]);
+  assert.equal(plan.diagnostics.invalidIds.shapesOmitted, 0);
+  assert.equal(sw.maskIdShape("abcdef01-1a2b-3c4d-5e6f-123456789abc"), "l8-l4-l4-l4-l12");
+});
+
+test("diagnostics: non-ASCII, emoji and whitespace in ids never reach the output; truncation keeps valid strings", () => {
+  const pieces = ["สมชาย1234567", "Café9", "ＡＢＣ１２３", "ok\u{1F600}id", "a b\tc\nd", "x".repeat(10) + "-" + "\u{1F600}-".repeat(30), "-\u{1F600}".repeat(24) + "\u{1F600}"];
+  const plan = sw.planCopy(pieces.map((id) => dEvent(id)));
+  const text = JSON.stringify(plan.diagnostics);
+  for (const bad of ["สมชาย", "é", "Ａ", "１", "\u{1F600}", " ", "\\t", "\\n", "Caf"]) assert.ok(!text.includes(bad), JSON.stringify(bad));
+  for (const { shape } of plan.diagnostics.invalidIds.shapes) {
+    assert.ok(Array.from(shape).length <= 49);
+    assert.ok(/^[A-Za-z0-9?\-_.:@/+=…]*$/.test(shape), shape);
+    assert.equal(shape, shape.toWellFormed());
+  }
+  assert.equal(sw.maskIdShape("สมชาย1234567"), "?5l7");
+  assert.equal(sw.maskIdShape("ok\u{1F600}id"), "l2?1l2");
+  const long = sw.maskIdShape("-\u{1F600}".repeat(40));
+  assert.equal(long, `${"-?1".repeat(16)}…`);
 });
 
 test("diagnostics: invalid ids by kind (app tagged, legacy, recurring masters)", () => {

@@ -409,6 +409,7 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
         invalidIds: {
           reasons: { uppercase: 0, hyphen: 0, underscore: 0, tooShort: 0, tooLong: 0, otherChars: 0 },
           shapes: [],
+          shapesOmitted: 0,
           byKind: { app: 0, legacy: 0, recurringMasters: 0 },
         },
         recurring: {
@@ -792,7 +793,7 @@ test("preview diagnostics describe invalid ids and recurring events without leak
   assert.equal(r.status, 200);
   assert.equal(r.json.invalidIds, 1);
   assert.equal(r.json.recurring, 1);
-  assert.deepEqual(r.json.diagnostics.invalidIds.shapes, [{ shape: "Aaa-Aa_AA9", count: 1 }]);
+  assert.deepEqual(r.json.diagnostics.invalidIds.shapes, [{ shape: "U1l2-U1l1_U3", count: 1 }]);
   assert.equal(r.json.diagnostics.invalidIds.reasons.uppercase, 1);
   assert.equal(r.json.diagnostics.recurring.infiniteMasters, 1);
   for (const leak of ["Bad-Id_ZZ9", "SYNTH-LEAK-SUMMARY"]) assert.ok(!r.text.includes(leak), leak);

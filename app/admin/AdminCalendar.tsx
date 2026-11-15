@@ -312,7 +312,10 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                     <li>เป็นรายการของแอป: {preview.diagnostics.byKind.app} · รายการเดิม: {preview.diagnostics.byKind.legacy} · รายการซ้ำต้นแบบ: {preview.diagnostics.byKind.recurringMasters}</li>
                   </ul>
                   {preview.diagnostics.shapes.length > 0 && (
-                    <p className="admin-calendar-diagnostics-shapes">รูปแบบรหัส (ปิดบังตัวอักษร): {preview.diagnostics.shapes.map((x) => `${x.shape} (${x.count})`).join(" · ")}</p>
+                    <p className="admin-calendar-diagnostics-shapes">
+                      รูปแบบรหัส (ย่อเป็นความยาวของแต่ละช่วง: l = ตัวพิมพ์เล็ก/เลข, U = ตัวพิมพ์ใหญ่/เลข, ? = อักขระอื่น): {preview.diagnostics.shapes.map((x) => `${x.shape} (${x.count})`).join(" · ")}
+                      {preview.diagnostics.shapesOmitted > 0 ? ` · ไม่อยู่ในรายการ ${preview.diagnostics.shapesOmitted} รหัส` : ""}
+                    </p>
                   )}
                   <p className="admin-calendar-diagnostics-title">รายการซ้ำ (recurring)</p>
                   <ul>
