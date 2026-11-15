@@ -4,6 +4,7 @@
 // Never logs; error messages never contain a token or the key.
 import { isLockActive, type CalendarSettings } from "./calendar-settings";
 import { openToken } from "./token-seal";
+import { normalizeEmail } from "./users";
 
 export const MASTER_PLACEHOLDER = "@master";
 export const CALENDAR_LOCKED_MESSAGE = "ระบบกำลังเปลี่ยนปฏิทิน กรุณาลองใหม่ในอีกสักครู่";
@@ -34,6 +35,19 @@ export type CalendarTargetOptions = {
   // GET reads may use the store's short success-only cache; writes always read fresh.
   allowCached?: boolean;
 };
+
+// The Google account of the calendar the app uses now (shown in the header): the settings master's email,
+// else the env account. Email only; null when the settings cannot be read (the caller falls back).
+export async function calendarOwnerEmail(opts: Pick<CalendarTargetOptions, "store" | "env">): Promise<string | null> {
+  let settings: CalendarSettings | "missing";
+  try {
+    settings = await opts.store.read({ allowCached: true });
+  } catch {
+    return null;
+  }
+  if (settings !== "missing" && settings.master) return settings.master.email;
+  return normalizeEmail(opts.env.AUTHORIZED_EMAIL);
+}
 
 function unreadable() {
   return Object.assign(new Error(CALENDAR_SETTINGS_UNREADABLE_MESSAGE), { status: 503 });

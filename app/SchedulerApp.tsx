@@ -17,6 +17,7 @@ import UserGuide from "./UserGuide";
 import { resolveTab, tabHref, type TabId } from "./lib/nav";
 import { VIEWER_BANNER_TEXT, VIEWER_READ_ONLY_MESSAGE } from "./lib/users";
 import { REFRESH_INTERVAL_MS, freshnessLabel, shouldRefreshQuietly } from "./lib/refresh";
+import { calendarPillLabel } from "./lib/calendar-label";
 import { useUnseenMoves } from "./useUnseenMoves";
 
 type Day = {
@@ -87,6 +88,8 @@ type ScheduleResponse = {
   importedCount: number;
   calendarConnected: boolean;
   calendarName: string;
+  // the main calendar's Google account (after a master switch it differs from authorizedEmail)
+  calendarOwnerEmail?: string;
   error?: string;
 };
 
@@ -1693,7 +1696,7 @@ export default function SchedulerApp({ authorizedEmail, isAdmin, canWrite }: { a
         <div ref={menuRef} id="topbar-menu" className="topbar-actions" data-open={menuOpen}>
           <div className={`calendar-pill ${data?.calendarConnected ? "connected" : "disconnected"}`} title={calendarError || undefined}>
             <StatusDot synced={Boolean(data?.calendarConnected)} />
-            <span>{data?.calendarConnected ? `Calendar พร้อม · ${authorizedEmail}` : calendarError ? "Calendar ยังไม่เชื่อม" : "กำลังเชื่อม Google Calendar"}</span>
+            <span>{calendarPillLabel(data, calendarError, authorizedEmail)}</span>
           </div>
           <button className="sync-button" type="button" onClick={() => { setMenuOpen(false); void syncCalendar(); }} aria-busy={syncing} disabled={syncing || loading}>{syncing ? "กำลัง Sync…" : "↻ Sync ทันที"}</button>
           <button className="guide-button" type="button" onClick={() => { selectTab("guide"); if (window.matchMedia("(min-width: 1001px)").matches) document.getElementById("screen-guide")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>คู่มือ</button>

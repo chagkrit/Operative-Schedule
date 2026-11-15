@@ -102,3 +102,17 @@ test("no settings file: the resolved Calendar URL is exactly the pre-phase-B for
     assert.equal(resolveCalendarPath(path, target.calendarId), `/calendars/${encodeURIComponent(oldId)}/events?singleEvents=true&maxResults=2500`);
   }
 });
+
+// ---- the main calendar's account email (header chip) ----
+const { calendarOwnerEmail } = await import("../app/lib/calendar-target.ts");
+
+test("calendarOwnerEmail: the settings master's email; env AUTHORIZED_EMAIL without a master; null when unreadable; GET cache allowed", async () => {
+  const seen = [];
+  const s = (value) => ({ read: async (o) => { seen.push(o?.allowCached); return value; } });
+  assert.equal(await calendarOwnerEmail({ store: s(settings()), env: env() }), "m@example.com");
+  assert.equal(await calendarOwnerEmail({ store: s("missing"), env: env({ AUTHORIZED_EMAIL: "Owner@Example.com" }) }), "owner@example.com");
+  assert.equal(await calendarOwnerEmail({ store: s({ candidate: settings().master }), env: env() }), "owner@example.com", "a candidate alone is not the master");
+  assert.ok(seen.every((x) => x === true));
+  const bad = { read: async () => { throw new Error("blob down"); } };
+  assert.equal(await calendarOwnerEmail({ store: bad, env: env() }), null);
+});
