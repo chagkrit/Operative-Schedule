@@ -168,9 +168,12 @@ export type DiagnosticsView = {
     mastersPlanned: number;
     infiniteMasters: number;
     exceptionsCancelled: number;
+    rruleExtras: number;
     byFreq: Record<"DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" | "other", number>;
   };
   skippedReasons: Record<"cancelled" | "recurringException" | "notReadable", number>;
+  uncoveredOccurrences: number;
+  orphanedExceptions: number;
 };
 
 const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -202,8 +205,11 @@ export function parseDiagnostics(raw: unknown): DiagnosticsView | null {
       mastersPlanned: n(rec.mastersPlanned),
       infiniteMasters: n(rec.infiniteMasters),
       exceptionsCancelled: n(rec.exceptionsCancelled),
+      rruleExtras: n(rec.rruleExtras),
       byFreq: pick(rec.byFreq, ["DAILY", "WEEKLY", "MONTHLY", "YEARLY", "other"] as const),
     },
     skippedReasons: pick(d.skippedReasons, ["cancelled", "recurringException", "notReadable"] as const),
+    uncoveredOccurrences: n(d.uncoveredOccurrences),
+    orphanedExceptions: n(d.orphanedExceptions),
   };
 }

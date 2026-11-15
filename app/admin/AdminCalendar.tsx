@@ -32,6 +32,8 @@ type Preview = {
   invalidIds: number;
   // occurrences of copied recurring events that the switch will move (modify) or cancel
   exceptions: { modify: number; cancel: number };
+  // occurrences the app shows that the copy plan does not cover (must be 0; the server refuses otherwise)
+  uncoveredOccurrences: number;
   // fixed Thai refusal from the server's plan, or null
   planBlocked: string | null;
   // read-only breakdown for the developer; null when the server sent none
@@ -62,7 +64,7 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0
 function toPreview(body: Record<string, unknown> | null): Preview | null {
   if (!body) return null;
   if (body.tokenOnly === true) {
-    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0, exceptions: { modify: 0, cancel: 0 }, planBlocked: null, diagnostics: null };
+    return { tokenOnly: true, counts: {}, skipped: 0, recurring: 0, byMonth: {}, targetEventCount: 0, targetHasEvents: false, targetConflicts: 0, invalidIds: 0, exceptions: { modify: 0, cancel: 0 }, uncoveredOccurrences: 0, planBlocked: null, diagnostics: null };
   }
   if (typeof body.counts !== "object" || body.counts === null) return null;
   return {
@@ -79,6 +81,7 @@ function toPreview(body: Record<string, unknown> | null): Preview | null {
       modify: num((body.exceptions as { modify?: unknown } | null | undefined)?.modify),
       cancel: num((body.exceptions as { cancel?: unknown } | null | undefined)?.cancel),
     },
+    uncoveredOccurrences: num(body.uncoveredOccurrences),
     planBlocked: typeof body.planBlocked === "string" && body.planBlocked ? body.planBlocked : null,
     diagnostics: parseDiagnostics(body.diagnostics),
   };
@@ -312,6 +315,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                     <th scope="row">รายการยกเว้นของรายการซ้ำที่จะคัดลอก</th>
                     <td>ย้าย/แก้ไข {preview.exceptions.modify} · ยกเลิก {preview.exceptions.cancel}</td>
                   </tr>
+                  <tr><th scope="row">รายการที่แอปแสดงแต่ไม่อยู่ในแผนคัดลอก (ต้องเป็น 0)</th><td>{preview.uncoveredOccurrences}</td></tr>
                 </tbody>
               </table>
               {preview.diagnostics && (
@@ -334,6 +338,7 @@ export default function AdminCalendar({ initial }: { initial: CalendarStatus | n
                   <ul>
                     <li>ต้นแบบ: {preview.diagnostics.recurring.masters} (อยู่ในแผนคัดลอก {preview.diagnostics.recurring.mastersPlanned}) · ไม่มีวันสิ้นสุด: {preview.diagnostics.recurring.infiniteMasters}</li>
                     <li>รายการยกเว้น: {preview.diagnostics.recurring.exceptionInstances} (ยกเลิกแล้ว {preview.diagnostics.recurring.exceptionsCancelled})</li>
+                    <li>รายการต้นแบบที่มีวันยกเว้น/วันเพิ่ม (EXDATE/RDATE/EXRULE): {preview.diagnostics.recurring.rruleExtras} · รายการยกเว้นที่ไม่ตรงกับวันใดของรายการซ้ำ (ไม่คัดลอก ไม่บล็อก): {preview.diagnostics.orphanedExceptions}</li>
                     <li>ความถี่: รายวัน {preview.diagnostics.recurring.byFreq.DAILY} · รายสัปดาห์ {preview.diagnostics.recurring.byFreq.WEEKLY} · รายเดือน {preview.diagnostics.recurring.byFreq.MONTHLY} · รายปี {preview.diagnostics.recurring.byFreq.YEARLY} · อื่น ๆ {preview.diagnostics.recurring.byFreq.other}</li>
                   </ul>
                   <p className="admin-calendar-diagnostics-title">สาเหตุที่ข้าม ({preview.skipped})</p>

@@ -400,6 +400,22 @@ test("AdminCalendar shows targetConflicts, remapped ids (non-blocking), exceptio
   assert.match(COMPONENT, /preview\.exceptions\.modify/);
   assert.match(COMPONENT, /preview\.exceptions\.cancel/);
   assert.match(COMPONENT, /รายการยกเว้นของรายการซ้ำที่จะคัดลอก/);
+  // fix round 1: readable occurrences the plan does not cover (must be 0; the server refuses otherwise)
+  assert.match(COMPONENT, /uncoveredOccurrences: num\(body\.uncoveredOccurrences\)/);
+  assert.match(COMPONENT, /รายการที่แอปแสดงแต่ไม่อยู่ในแผนคัดลอก/);
+  assert.match(COMPONENT, /preview\.diagnostics\.orphanedExceptions/);
+  assert.match(COMPONENT, /preview\.diagnostics\.recurring\.rruleExtras/);
+});
+
+test("parseDiagnostics carries uncoveredOccurrences, orphanedExceptions and rruleExtras (0 when missing)", () => {
+  const d = ui.parseDiagnostics({ uncoveredOccurrences: 2, orphanedExceptions: 3, recurring: { rruleExtras: 4 } });
+  assert.equal(d.uncoveredOccurrences, 2);
+  assert.equal(d.orphanedExceptions, 3);
+  assert.equal(d.recurring.rruleExtras, 4);
+  const e = ui.parseDiagnostics({ recurring: {} });
+  assert.equal(e.uncoveredOccurrences, 0);
+  assert.equal(e.orphanedExceptions, 0);
+  assert.equal(e.recurring.rruleExtras, 0);
 });
 
 test("AdminCalendar renders diagnostics in a closed <details> via parseDiagnostics, with tokens only", () => {
