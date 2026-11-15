@@ -34,9 +34,12 @@ import {
 } from "./calendar-settings";
 import type { CalendarSettingsStore } from "./calendar-settings-store";
 import {
+  countRecurring,
   isSameCalendar,
   planCopy,
   sameCalendarId,
+  sameCalendarTarget,
+  SWITCH_OUTCOME_UNKNOWN_MESSAGE,
   runSwitch,
   withRefreshedMasterToken,
   type CalendarClient,
@@ -89,6 +92,7 @@ export const NO_SOURCE_TOKEN_MESSAGE = "ไม่มี GOOGLE_REFRESH_TOKEN ข
 export const TOKEN_OPEN_FAILED_MESSAGE = "เปิดอ่าน token ที่บันทึกไว้ไม่สำเร็จ กรุณาตรวจ CALENDAR_SETTINGS_KEY หรือเชื่อมต่อใหม่";
 export const PREVIEW_SOURCE_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินหลักปัจจุบันไม่สำเร็จ";
 export const PREVIEW_TARGET_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินใหม่ไม่สำเร็จ";
+export const SWITCHED_WITH_ERROR_MESSAGE = "เปลี่ยนปฏิทินหลักเป็นปฏิทินใหม่แล้ว แต่ระบบรายงานข้อผิดพลาดระหว่างทาง กรุณาตรวจหน้าสถานะ";
 export const SAME_CALENDAR_OTHER_ACCOUNT_MESSAGE = "ปฏิทินใหม่คือปฏิทินหลักเดิม (เชื่อมผ่านคนละบัญชี) จึงเปลี่ยนแบบคัดลอกไม่ได้";
 
 function storageFailure(err: unknown, fallback: string) {
@@ -222,8 +226,11 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
   const source = deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source });
   const target = deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target });
   let plan: ReturnType<typeof planCopy>;
+  let recurring: number;
   try {
-    plan = planCopy(await source.listEvents());
+    const sourceEvents = await source.listEvents();
+    plan = planCopy(sourceEvents);
+    recurring = countRecurring(sourceEvents);
   } catch (err) {
     console.error("[admin-calendar] preview source read failed:", err instanceof Error ? err.name : typeof err);
     return { status: 502, body: { error: PREVIEW_SOURCE_FAILED_MESSAGE } };
@@ -248,6 +255,7 @@ async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps):
       targetEventCount: targetEvents.length,
       targetHasEvents: targetEvents.length > 0,
       targetConflicts,
+      recurring,
     },
   };
 }
@@ -294,8 +302,21 @@ async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarD
     sleep: deps.sleep,
   });
   if (!result.ok) {
+    // Report what the file really holds: never "not switched" when the master is already the candidate.
+    let after: CalendarSettings | "missing" | null = null;
+    try {
+      after = await deps.settings.read();
+    } catch {
+      after = null;
+    }
+    if (after && after !== "missing" && sameCalendarTarget(after.master, ctx.candidate)) {
+      return { status: 500, body: { error: SWITCHED_WITH_ERROR_MESSAGE, step: result.step, switched: true, status: buildStatus(after, deps) } };
+    }
+    if (after === null && result.step === "flip") {
+      return { status: 500, body: { error: SWITCH_OUTCOME_UNKNOWN_MESSAGE, step: result.step } };
+    }
     const status = result.step === "lock" ? 409 : result.step === "flip" ? 500 : 502;
-    return { status, body: { error: result.error, step: result.step } };
+    return { status, body: { error: result.error, step: result.step, switched: false } };
   }
   let status: CalendarStatus | undefined;
   try {

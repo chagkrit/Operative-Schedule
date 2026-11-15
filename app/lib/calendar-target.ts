@@ -8,6 +8,9 @@ import { openToken } from "./token-seal";
 export const MASTER_PLACEHOLDER = "@master";
 export const CALENDAR_LOCKED_MESSAGE = "ระบบกำลังเปลี่ยนปฏิทิน กรุณาลองใหม่ในอีกสักครู่";
 export const CALENDAR_SETTINGS_UNREADABLE_MESSAGE = "อ่านการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่";
+// Every Calendar write (non-GET) is sent within this many ms of its lock check or abandoned unsent
+// (googleFetch in calendar.ts). Must stay well below SETTLE_MS in calendar-switch.ts (45 s).
+export const CALENDAR_WRITE_DEADLINE_MS = 30_000;
 
 export type ResolvedCalendarTarget = {
   source: "settings" | "env";

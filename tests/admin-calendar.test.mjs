@@ -401,6 +401,7 @@ test("preview returns counts, skipped, byMonth and target info only (no event co
       targetEventCount: 1,
       targetHasEvents: true,
       targetConflicts: 0,
+      recurring: 0,
     });
     for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
   });
@@ -586,4 +587,46 @@ test("candidate = the master's own calendar: \"primary\" alias is token-only; sa
   }
   assert.equal(h3.google.made.length, 0);
   assert.equal(h3.state.writes, 0);
+});
+
+test("preview reports how many source events are recurring (masters or exception instances)", async () => {
+  const recurringMaster = { ...EV.extra, id: "rm0001aa", recurrence: ["RRULE:FREQ=WEEKLY;COUNT=3"] };
+  const exception = { id: "rm0001aa_20270111", status: "cancelled", recurringEventId: "rm0001aa" };
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": [...SRC(), recurringMaster, exception] } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.recurring, 2);
+});
+
+test("switch whose flip landed but was reported as failed never says 'not switched'", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const inner = h.deps.settings;
+  let failNextRead = false;
+  h.deps.settings = {
+    async read(opts) {
+      if (failNextRead) { failNextRead = false; throw new Error("SYNTH read failed"); }
+      return inner.read(opts);
+    },
+    async mutate(fn) {
+      const next = await inner.mutate(fn);
+      if (next !== "missing" && next.master?.calendarId === "cal-new@group.calendar.google.com" && next.lock) {
+        failNextRead = true; // the runSwitch read-back fails too: outcome unknown inside runSwitch
+        throw new Error("SYNTH ambiguous timeout after landing");
+      }
+      return next;
+    },
+  };
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.notEqual(r.status, 200);
+  assert.equal(r.json.switched, true);
+  assert.equal(r.json.error, api.SWITCHED_WITH_ERROR_MESSAGE);
+  assert.ok(!r.text.includes("ยังไม่ได้เปลี่ยนปฏิทิน"));
+  assert.equal(h.state.data.master.calendarId, "cal-new@group.calendar.google.com");
+  assert.equal(h.state.data.lock, undefined);
+  assert.ok(!r.text.includes(NEW_TOKEN) && !r.text.includes(MASTER_TOKEN));
+});
+
+test("admin calendar route sets maxDuration = 300", async () => {
+  const src = await readFile(new URL("../app/api/admin/calendar/route.ts", import.meta.url), "utf8");
+  assert.match(src, /export const maxDuration = 300;/);
 });

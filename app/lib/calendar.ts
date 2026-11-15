@@ -1,13 +1,20 @@
 import { createHash } from "node:crypto";
 import { AUTHORIZED_EMAIL } from "../../auth";
-import { CALENDAR_LOCKED_MESSAGE, MASTER_PLACEHOLDER, resolveCalendarTarget } from "./calendar-target";
+import { CALENDAR_LOCKED_MESSAGE, CALENDAR_WRITE_DEADLINE_MS, MASTER_PLACEHOLDER, resolveCalendarTarget } from "./calendar-target";
 import { calendarSettingsStore } from "./calendar-settings-store";
 import { requestToken, SIGN_IN_REQUIRED_MESSAGE, tokenEmail, VIEWER_READ_ONLY_MESSAGE } from "./session";
 import { userStore } from "./user-store";
 import { canWrite } from "./users";
 import { addDays, daysBetween, orderedStaffMembers } from "./schedule";
 import { parseDurationMinutes } from "./minutes";
-import { calendarEventDate, calendarTimestampDate, parseLegacyCalendarEvent, type LegacyCalendarEvent } from "./legacy-calendar";
+import {
+  calendarEventDate,
+  calendarTimestampDate,
+  eventCreated,
+  eventUpdated,
+  parseLegacyCalendarEvent,
+  type LegacyCalendarEvent,
+} from "./legacy-calendar";
 
 export type QueueType = "OR17" | "EXTRA";
 
@@ -237,17 +244,28 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
 }
 
 async function googleFetch(request: Request, path: string, init?: RequestInit) {
+  // A write is sent within CALENDAR_WRITE_DEADLINE_MS of its lock check or abandoned unsent: the deadline
+  // starts before the check, so a master switch's settle wait (SETTLE_MS) outlasts any write that passed
+  // the check just before the lock was set. Reads keep their old behavior (no deadline).
+  const deadline = (init?.method ?? "GET").toUpperCase() === "GET" ? undefined : AbortSignal.timeout(CALENDAR_WRITE_DEADLINE_MS);
   const { accessToken, calendarId } = await authorizedAccessToken(request, init?.method ?? "GET");
   const resolvedPath = path.replace(`/calendars/${MASTER_PLACEHOLDER}/`, `/calendars/${encodeURIComponent(calendarId)}/`);
-  const response = await fetch(`https://www.googleapis.com/calendar/v3${resolvedPath}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      ...(init?.body ? { "content-type": "application/json" } : {}),
-      ...init?.headers,
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`https://www.googleapis.com/calendar/v3${resolvedPath}`, {
+      ...init,
+      ...(deadline ? { signal: deadline } : {}),
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        ...(init?.body ? { "content-type": "application/json" } : {}),
+        ...init?.headers,
+      },
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (deadline?.aborted) throw withStatus("บันทึกไปยัง Google Calendar ใช้เวลานานเกินไป กรุณาตรวจสอบข้อมูลแล้วลองใหม่", 504);
+    throw error;
+  }
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
     const error = new Error(payload?.error?.message || "เชื่อมต่อ Google Calendar ไม่สำเร็จ");
@@ -318,7 +336,7 @@ function bookingFromEvent(event: GoogleEvent): CalendarBooking | null {
   return {
     id: event.id,
     scheduleDate: date,
-    queuedDate: data.queued_date || calendarTimestampDate(event.created) || date,
+    queuedDate: data.queued_date || calendarTimestampDate(eventCreated(event)) || date,
     queueType: data.queue_type as QueueType,
     slotNo: Number(data.slot_no || 0),
     diagnosis: data.diagnosis || "",
@@ -391,9 +409,9 @@ export async function listCalendarData(request: Request, from: string, to: strin
       name: data.name || event.summary?.replace(/^ปิดรับคิว\s*•\s*/, "") || "วันปิดรับคิว",
       note: data.note || "",
       createdBy: data.created_by || AUTHORIZED_EMAIL,
-      createdAt: data.created_at || event.created || event.updated || "",
+      createdAt: data.created_at || eventCreated(event) || eventUpdated(event) || "",
       updatedBy: data.updated_by || AUTHORIZED_EMAIL,
-      updatedAt: event.updated || data.created_at || "",
+      updatedAt: eventUpdated(event) || data.created_at || "",
     }];
   }).sort((a, b) => a.date.localeCompare(b.date));
   const staffUnavailability = unavailableEvents.flatMap((event): CalendarStaffUnavailability[] => {
@@ -408,9 +426,9 @@ export async function listCalendarData(request: Request, from: string, to: strin
       endDate: end ? addDays(end, -1) : startDate,
       note: data.note || "",
       createdBy: data.created_by || AUTHORIZED_EMAIL,
-      createdAt: data.created_at || event.created || event.updated || "",
+      createdAt: data.created_at || eventCreated(event) || eventUpdated(event) || "",
       updatedBy: data.updated_by || AUTHORIZED_EMAIL,
-      updatedAt: event.updated || data.created_at || "",
+      updatedAt: eventUpdated(event) || data.created_at || "",
     }];
   }).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.staff.localeCompare(b.staff));
   return { bookings, extras, closures, staffUnavailability };
@@ -713,6 +731,8 @@ export async function saveScheduleClosureEvent(
       created_by: closure.createdBy || closure.updatedBy,
       created_at: closure.createdAt || now,
       updated_by: closure.updatedBy,
+      // An edit after a master switch must show its own time, not the copied original.
+      orig_updated: "",
     } },
   };
   const body = JSON.stringify(closure.id ? fields : { id, ...fields });
@@ -815,6 +835,8 @@ export async function saveStaffUnavailabilityEvent(
       created_by: entry.createdBy || entry.updatedBy,
       created_at: entry.createdAt || now,
       updated_by: entry.updatedBy,
+      // An edit after a master switch must show its own time, not the copied original.
+      orig_updated: "",
     } },
   });
   if (entry.id) {

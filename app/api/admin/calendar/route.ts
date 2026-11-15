@@ -31,3 +31,5 @@ export async function POST(request: Request) {
 }
 
 export const dynamic = "force-dynamic";
+// The switch copies every event, waits SETTLE_MS (45 s) and holds the lock 35 s after the flip.
+export const maxDuration = 300;
