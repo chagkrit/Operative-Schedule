@@ -445,3 +445,9 @@ test("AdminCalendar renders the developer line of a notice", () => {
   assert.match(COMPONENT, /notice\?\.dev/);
   assert.match(COMPONENT, /admin-calendar-dev/);
 });
+
+test("the developer line shows retry counts when present (integers only)", () => {
+  const base = { kind: "upsert", errorClass: "GoogleCalendarError", httpStatus: 403, reason: "rateLimitExceeded", attempted: 20, succeeded: 18, failed: 2 };
+  assert.equal(ui.formatCopyDiag({ ...base, retries: 9, rateLimitRetries: 7 }), "สำหรับนักพัฒนา: upsert · GoogleCalendarError · HTTP 403 · rateLimitExceeded · ลอง 20 สำเร็จ 18 ล้มเหลว 2 · ลองซ้ำ 9 (rate limit 7)");
+  assert.ok(!ui.formatCopyDiag({ ...base, retries: "9x", rateLimitRetries: -1 }).includes("ลองซ้ำ"));
+});
