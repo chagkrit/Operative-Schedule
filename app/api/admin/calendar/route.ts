@@ -1,6 +1,7 @@
 // Admin-only master-calendar API. All rules, validation and status mapping live in
 // app/lib/admin-calendar-api.ts (tested with in-memory fakes); this file only binds the real deps.
 import { handleAdminCalendar, verifyGoogleAccount, type AdminCalendarDeps } from "../../../lib/admin-calendar-api";
+import { createGoogleCalendarClient } from "../../../lib/calendar-switch";
 import { AUTHORIZED_EMAIL } from "../../../../auth";
 import { calendarSettingsStore } from "../../../lib/calendar-settings-store";
 import { userStore } from "../../../lib/user-store";
@@ -13,9 +14,11 @@ function deps(): AdminCalendarDeps {
       AUTHORIZED_EMAIL,
       GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID,
       CALENDAR_SETTINGS_KEY: process.env.CALENDAR_SETTINGS_KEY,
+      GOOGLE_REFRESH_TOKEN: process.env.GOOGLE_REFRESH_TOKEN,
     },
     verifyAccount: (a) => verifyGoogleAccount(a),
     now: Date.now,
+    makeClient: (t) => createGoogleCalendarClient(t),
   };
 }
 

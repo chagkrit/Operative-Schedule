@@ -35,13 +35,41 @@ function memorySettings(initial) {
       state.writes += 1;
       state.data = structuredClone(s);
     },
+    async remove() {
+      state.removes = (state.removes ?? 0) + 1;
+      state.data = "missing";
+    },
   });
   return { state, store };
 }
 
-function harness({ settings, key = KEY, verify, env = {} } = {}) {
+// In-memory Google calendars keyed by calendar id (synthetic events only).
+function fakeCalendars(initial = {}) {
+  const cals = new Map(Object.entries(initial).map(([id, events]) => [id, new Map(events.map((e) => [e.id, structuredClone(e)]))]));
+  const made = [];
+  const makeClient = ({ calendarId, refreshToken }) => {
+    made.push({ calendarId, refreshToken });
+    if (!cals.has(calendarId)) cals.set(calendarId, new Map());
+    const events = cals.get(calendarId);
+    return {
+      async listEvents() {
+        return [...events.values()].map((e) => structuredClone(e));
+      },
+      async upsertEvent(e) {
+        const result = events.has(e.id) ? "updated" : "created";
+        events.set(e.id, structuredClone(e));
+        return result;
+      },
+    };
+  };
+  return { cals, made, makeClient };
+}
+
+function harness({ settings, key = KEY, verify, env = {}, calendars } = {}) {
   if (key === null) key = undefined; // pass null for "no key" (undefined would pick the default)
   const mem = memorySettings(settings);
+  const google = fakeCalendars(calendars);
+  const sleeps = [];
   const calls = [];
   const verifyAccount = async (a) => {
     calls.push({ ...a });
@@ -53,8 +81,10 @@ function harness({ settings, key = KEY, verify, env = {} } = {}) {
     env: { AUTHORIZED_EMAIL: "hnbcmu@gmail.com", CALENDAR_SETTINGS_KEY: key, ...env },
     verifyAccount,
     now: () => 1_000_000,
+    makeClient: google.makeClient,
+    sleep: async (ms) => { sleeps.push(ms); },
   };
-  return { ...mem, calls, deps };
+  return { ...mem, calls, deps, google, sleeps };
 }
 
 async function call(h, method, { as, body, raw, contentType = "application/json" } = {}) {
@@ -321,4 +351,211 @@ test("handler source: admin check precedes any settings or Google access", async
   }
   // Google is reachable only through the POST dispatcher, never directly from the handler.
   assert.ok(!fn.includes("verifyAccount"));
+});
+
+// ---- preview / switch / clearLock -------------------------------------------------
+const EV = {
+  booking: { id: "bk0001aa", summary: "SYNTH-SUMMARY booking", start: { dateTime: "2026-12-01T08:00:00+07:00" }, end: { dateTime: "2026-12-01T09:00:00+07:00" }, extendedProperties: { private: { or_queue: "booking", queue_type: "OR17", hn: "SYNTH-HN-9" } } },
+  extra: { id: "ex0001aa", start: { date: "2027-01-04" }, end: { date: "2027-01-05" }, extendedProperties: { private: { or_queue: "extra_day" } } },
+  personal: { id: "pe0001aa", summary: "Lunch", start: { date: "2026-12-03" }, end: { date: "2026-12-04" } },
+};
+const CAND = () => target("new@gmail.com", "cal-new@group.calendar.google.com", NEW_TOKEN);
+const SRC = () => [EV.booking, EV.extra, EV.personal];
+
+test("preview without a candidate is 409 with the exact Thai message and no Google client", async () => {
+  for (const settings of [undefined, SETTINGS()]) {
+    const h = harness({ settings });
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, "ยังไม่ได้เชื่อมต่อปฏิทินใหม่");
+    assert.equal(h.google.made.length, 0);
+  }
+});
+
+test("preview/switch/clearLock: 401/403 for non-admins with zero settings reads and zero Google clients", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND(), lock: { since: 1_000_000 - 1000, by: ADMIN } } });
+  for (const action of ["preview", "switch", "clearLock"]) {
+    for (const as of [undefined, "stranger@gmail.com"]) assert.equal((await call(h, "POST", { as, body: { action } })).status, 401);
+    for (const as of ["hnbcmu@gmail.com", "view@cmu.ac.th"]) assert.equal((await call(h, "POST", { as, body: { action } })).status, 403);
+    assert.equal((await call(h, "POST", { as: ADMIN, body: { action }, contentType: "text/plain" })).status, 415);
+  }
+  assert.equal(h.state.reads, 0);
+  assert.equal(h.state.writes, 0);
+  assert.equal(h.google.made.length, 0);
+  assert.ok(h.state.data.lock);
+});
+
+test("preview returns counts, skipped, byMonth and target info only (no event content, no token)", async () => {
+  const h = harness({
+    settings: { ...SETTINGS(), candidate: CAND() },
+    calendars: { "hnbcmu@gmail.com": SRC(), "cal-new@group.calendar.google.com": [EV.personal] },
+  });
+  const out = await spyConsole(async () => {
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, {
+      tokenOnly: false,
+      counts: { booking: 1, extra_day: 1, schedule_closure: 0, staff_unavailable: 0, legacy: 0 },
+      skipped: 1,
+      byMonth: { "2026-12": 1, "2027-01": 1 },
+      targetEventCount: 1,
+      targetHasEvents: true,
+      targetConflicts: 0,
+    });
+    for (const leak of ["SYNTH-SUMMARY", "SYNTH-HN-9", "Lunch", NEW_TOKEN, MASTER_TOKEN, "v1."]) assert.ok(!r.text.includes(leak), leak);
+  });
+  assert.ok(!out.includes(NEW_TOKEN) && !out.includes(MASTER_TOKEN));
+  // the master client got the master's token, the candidate client the candidate's
+  assert.deepEqual(h.google.made, [
+    { calendarId: "hnbcmu@gmail.com", refreshToken: MASTER_TOKEN },
+    { calendarId: "cal-new@group.calendar.google.com", refreshToken: NEW_TOKEN },
+  ]);
+  assert.equal(h.state.writes, 0);
+});
+
+test("preview in env mode uses GOOGLE_REFRESH_TOKEN for the source; without it preview and switch are refused", async () => {
+  const h = harness({ settings: { candidate: CAND() }, env: { GOOGLE_REFRESH_TOKEN: MASTER_TOKEN, GOOGLE_CALENDAR_ID: "env-cal" }, calendars: { "env-cal": SRC() } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(h.google.made[0], { calendarId: "env-cal", refreshToken: MASTER_TOKEN });
+  assert.equal(r.json.targetHasEvents, false);
+
+  const h2 = harness({ settings: { candidate: CAND() } });
+  for (const action of ["preview", "switch"]) {
+    const r2 = await call(h2, "POST", { as: ADMIN, body: { action } });
+    assert.equal(r2.status, 409);
+    assert.equal(r2.json.error, api.NO_SOURCE_TOKEN_MESSAGE);
+  }
+  assert.equal(h2.google.made.length, 0);
+  assert.equal(h2.state.writes, 0);
+});
+
+test("switch copies, flips the master, keeps previousMaster, and returns the new status (no token)", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const out = await spyConsole(async () => {
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.mode, "copy");
+    assert.equal(r.json.copied, 2);
+    assert.equal(r.json.skipped, 1);
+    assert.equal(r.json.lockCleared, true);
+    assert.deepEqual(r.json.status.master, { email: "new@gmail.com", calendarId: "cal-new@group.calendar.google.com", source: "settings" });
+    assert.equal(r.json.status.locked, false);
+    for (const leak of [NEW_TOKEN, MASTER_TOKEN, "v1.", "SYNTH-HN-9"]) assert.ok(!r.text.includes(leak), leak);
+  });
+  assert.ok(!out.includes(NEW_TOKEN) && !out.includes(MASTER_TOKEN));
+  assert.deepEqual([...h.google.cals.get("cal-new@group.calendar.google.com").keys()].sort(), ["bk0001aa", "ex0001aa"]);
+  assert.equal(openToken(h.state.data.master.sealedRefreshToken, KEY), NEW_TOKEN);
+  assert.equal(openToken(h.state.data.previousMaster.sealedRefreshToken, KEY), MASTER_TOKEN);
+  assert.equal(h.state.data.lock, undefined);
+  assert.equal(h.state.data.candidate, undefined);
+  assert.ok(h.sleeps.some((ms) => ms >= 35_000));
+});
+
+test("switch in env mode seeds previousMaster with the sealed env master", async () => {
+  const h = harness({ settings: { candidate: CAND() }, env: { GOOGLE_REFRESH_TOKEN: MASTER_TOKEN, GOOGLE_CALENDAR_ID: "env-cal" }, calendars: { "env-cal": SRC() } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(h.state.data.previousMaster.email, "hnbcmu@gmail.com");
+  assert.equal(h.state.data.previousMaster.calendarId, "env-cal");
+  assert.equal(openToken(h.state.data.previousMaster.sealedRefreshToken, KEY), MASTER_TOKEN);
+  assert.equal(h.state.data.master.calendarId, "cal-new@group.calendar.google.com");
+});
+
+test("switch to the same email + calendar is a token-only refresh: no Google client, no copy, previousMaster kept", async () => {
+  const older = target("old@gmail.com", "old-id", "SYNTH-OLD-TOKEN-cccc");
+  const renewed = target("HNBCMU@gmail.com", "hnbcmu@gmail.com", NEW_TOKEN);
+  const h = harness({ settings: { ...SETTINGS(), previousMaster: older, candidate: { ...renewed, email: "hnbcmu@gmail.com" } } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.mode, "token");
+  assert.equal(h.google.made.length, 0);
+  assert.equal(openToken(h.state.data.master.sealedRefreshToken, KEY), NEW_TOKEN);
+  assert.equal(h.state.data.master.calendarId, "hnbcmu@gmail.com");
+  assert.deepEqual(h.state.data.previousMaster, older);
+  assert.equal(h.state.data.candidate, undefined);
+  assert.equal(h.state.data.lock, undefined);
+  assert.ok(!r.text.includes(NEW_TOKEN));
+
+  // env mode (no GOOGLE_REFRESH_TOKEN needed): same account as the env master
+  const h2 = harness({ settings: { candidate: target("hnbcmu@gmail.com", "env-cal", NEW_TOKEN) }, env: { GOOGLE_CALENDAR_ID: "env-cal" } });
+  const r2 = await call(h2, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r2.status, 200, r2.text);
+  assert.equal(r2.json.mode, "token");
+  assert.equal(h2.google.made.length, 0);
+  assert.equal(openToken(h2.state.data.master.sealedRefreshToken, KEY), NEW_TOKEN);
+  assert.equal(h2.state.data.previousMaster, undefined);
+
+  // preview says token-only without touching Google
+  const h3 = harness({ settings: { ...SETTINGS(), candidate: { ...renewed, email: "hnbcmu@gmail.com" } } });
+  const r3 = await call(h3, "POST", { as: ADMIN, body: { action: "preview" } });
+  assert.deepEqual(r3.json, { tokenOnly: true });
+  assert.equal(h3.google.made.length, 0);
+});
+
+test("switch is refused while a lock is active, without a key, or without a candidate", async () => {
+  const locked = harness({ settings: { ...SETTINGS(), candidate: CAND(), lock: { since: 1_000_000 - 1000, by: ADMIN } } });
+  const r = await call(locked, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r.status, 409);
+  assert.equal(r.json.error, "ระบบกำลังเปลี่ยนปฏิทิน กรุณาลองใหม่ในอีกสักครู่");
+  assert.equal(locked.google.made.length, 0);
+
+  for (const key of [null, "bad-key"]) {
+    const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, key });
+    for (const action of ["switch", "preview"]) {
+      const r2 = await call(h, "POST", { as: ADMIN, body: { action } });
+      assert.equal(r2.status, 503);
+      assert.equal(r2.json.error, "ยังไม่ได้ตั้งค่า CALENDAR_SETTINGS_KEY");
+    }
+    assert.equal(h.google.made.length, 0);
+  }
+
+  const none = harness({ settings: SETTINGS() });
+  const r3 = await call(none, "POST", { as: ADMIN, body: { action: "switch" } });
+  assert.equal(r3.status, 409);
+  assert.equal(r3.json.error, "ยังไม่ได้เชื่อมต่อปฏิทินใหม่");
+});
+
+test("switch failure returns the step and its fixed Thai message; master unchanged and lock cleared", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND() }, calendars: { "hnbcmu@gmail.com": SRC() } });
+  const real = h.deps.makeClient;
+  h.deps.makeClient = (t) => {
+    const c = real(t);
+    if (t.calendarId === "hnbcmu@gmail.com") c.listEvents = async () => { throw new Error(`SYNTH google ${MASTER_TOKEN}`); };
+    return c;
+  };
+  const out = await spyConsole(async () => {
+    const r = await call(h, "POST", { as: ADMIN, body: { action: "switch" } });
+    assert.equal(r.status, 502);
+    assert.equal(r.json.step, "read");
+    assert.equal(typeof r.json.error, "string");
+    assert.ok(!r.text.includes(MASTER_TOKEN));
+  });
+  assert.ok(!out.includes(MASTER_TOKEN));
+  assert.equal(h.state.data.master.calendarId, "hnbcmu@gmail.com");
+  assert.equal(h.state.data.lock, undefined);
+  assert.ok(h.state.data.candidate);
+});
+
+test("clearLock clears an active lock; on a lock-only file it deletes the file instead of writing {}", async () => {
+  const h = harness({ settings: { ...SETTINGS(), candidate: CAND(), lock: { since: 1_000_000 - 1000, by: ADMIN } } });
+  const r = await call(h, "POST", { as: ADMIN, body: { action: "clearLock" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.locked, false);
+  assert.equal(h.state.data.lock, undefined);
+  assert.ok(h.state.data.master && h.state.data.candidate);
+  assert.equal(h.google.made.length, 0);
+
+  const h2 = harness({ settings: { lock: { since: 1_000_000 - 1000, by: ADMIN } } });
+  const r2 = await call(h2, "POST", { as: ADMIN, body: { action: "clearLock" } });
+  assert.equal(r2.status, 200);
+  assert.equal(h2.state.data, "missing");
+  assert.equal(h2.state.removes, 1);
+  assert.equal(r2.json.master.source, "env");
+
+  // no lock: nothing is written
+  const h3 = harness({ settings: SETTINGS() });
+  const r3 = await call(h3, "POST", { as: ADMIN, body: { action: "clearLock" } });
+  assert.equal(r3.status, 200);
+  assert.equal(h3.state.writes, 0);
 });

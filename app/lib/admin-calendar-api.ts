@@ -4,8 +4,13 @@
 //
 //   GET                                  → status  (emails, calendar ids, flags; never a token)
 //   POST { action: "connect", email, calendarId, refreshToken } → status  (stores a sealed candidate)
+//   POST { action: "preview" }   → counts / skipped / byMonth / target info (never event content), or
+//                                  { tokenOnly: true } when the candidate is the master's own calendar
+//   POST { action: "switch" }    → copy + verify + flip (calendar-switch.ts), or a token-only refresh
+//   POST { action: "clearLock" } → status  (clears a switch lock; a lock-only file is deleted, never {})
 //   errors → { error: Thai }  400 bad body / token rejected · 401 not signed in · 403 not admin ·
 //                             409 refused / concurrent edit · 415 POST without JSON · 500 storage ·
+//                             502 switch/preview Google step failed ({ error, step }) ·
 //                             503 CALENDAR_SETTINGS_KEY not configured
 //
 // Tokens: never logged, never returned, never in an error message (fixed Thai strings only; the
@@ -23,11 +28,19 @@ import {
   isLockActive,
   setCandidate,
   validateConnectInput,
+  withoutLock,
   type CalendarSettings,
   type CalendarTarget,
 } from "./calendar-settings";
 import type { CalendarSettingsStore } from "./calendar-settings-store";
-import { sealToken } from "./token-seal";
+import {
+  isSameCalendar,
+  planCopy,
+  runSwitch,
+  withRefreshedMasterToken,
+  type CalendarClient,
+} from "./calendar-switch";
+import { openToken, sealToken } from "./token-seal";
 import type { UserStore } from "./user-store";
 import { normalizeEmail } from "./users";
 
@@ -37,6 +50,8 @@ export type AdminCalendarEnv = {
   AUTHORIZED_EMAIL: string;
   GOOGLE_CALENDAR_ID?: string;
   CALENDAR_SETTINGS_KEY?: string;
+  // The env master's grant; read only by preview/switch while the file has no master.
+  GOOGLE_REFRESH_TOKEN?: string;
 };
 
 export type VerifyAccount = (a: { refreshToken: string; calendarId: string }) => Promise<{ email: string }>;
@@ -47,6 +62,9 @@ export type AdminCalendarDeps = {
   env: AdminCalendarEnv;
   verifyAccount: VerifyAccount;
   now: () => number;
+  // Builds a Calendar client for one calendar + refresh token (production: createGoogleCalendarClient).
+  makeClient: (t: { calendarId: string; refreshToken: string }) => CalendarClient;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type CalendarStatus = {
@@ -65,6 +83,11 @@ export const LOCKED_MESSAGE = "ระบบกำลังเปลี่ยน�
 export const LOAD_FAILED_MESSAGE = "อ่านการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่";
 export const SAVE_FAILED_MESSAGE = "บันทึกการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่";
 export const CONCURRENT_EDIT_MESSAGE = "มีการแก้ไขการตั้งค่าปฏิทินพร้อมกัน กรุณาลองใหม่";
+export const NO_CANDIDATE_MESSAGE = "ยังไม่ได้เชื่อมต่อปฏิทินใหม่";
+export const NO_SOURCE_TOKEN_MESSAGE = "ไม่มี GOOGLE_REFRESH_TOKEN ของปฏิทินหลักปัจจุบัน จึงคัดลอกข้อมูลไม่ได้";
+export const TOKEN_OPEN_FAILED_MESSAGE = "เปิดอ่าน token ที่บันทึกไว้ไม่สำเร็จ กรุณาตรวจ CALENDAR_SETTINGS_KEY หรือเชื่อมต่อใหม่";
+export const PREVIEW_SOURCE_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินหลักปัจจุบันไม่สำเร็จ";
+export const PREVIEW_TARGET_FAILED_MESSAGE = "อ่านข้อมูลจากปฏิทินใหม่ไม่สำเร็จ";
 
 function storageFailure(err: unknown, fallback: string) {
   return sharedStorageFailure("admin-calendar", err, CONCURRENT_EDIT_MESSAGE, fallback);
@@ -140,9 +163,176 @@ async function connect(body: Record<string, unknown>, deps: AdminCalendarDeps): 
 
 class RefusedError extends Error {}
 
-// Task 4 adds "preview", "switch" and "clearLock" here; an unknown action is a 400.
-const POST_ACTIONS: Record<string, (body: Record<string, unknown>, deps: AdminCalendarDeps) => Promise<ActionResult>> = {
+// ---- preview / switch / clearLock ---------------------------------------------------------
+type SwitchContext = {
+  key: string;
+  settings: CalendarSettings;
+  candidate: CalendarTarget;
+  // The calendar the app uses now: the settings master, else the env master (public fields only).
+  current: { email: string; calendarId: string };
+};
+
+// Shared refusals for preview and switch, in a fixed order: key, settings readable, candidate present.
+async function switchContext(deps: AdminCalendarDeps): Promise<{ ok: true; ctx: SwitchContext } | { ok: false; result: ActionResult }> {
+  const key = deps.env.CALENDAR_SETTINGS_KEY;
+  if (!keyUsable(key)) return { ok: false, result: { status: 503, body: { error: KEY_MISSING_MESSAGE } } };
+  let settings: CalendarSettings | "missing";
+  try {
+    settings = await deps.settings.read();
+  } catch (err) {
+    console.error("[admin-calendar] storage error:", err instanceof Error ? err.name : typeof err);
+    return { ok: false, result: { status: 500, body: { error: LOAD_FAILED_MESSAGE } } };
+  }
+  if (settings === "missing" || !settings.candidate) return { ok: false, result: { status: 409, body: { error: NO_CANDIDATE_MESSAGE } } };
+  const current = settings.master ? { email: settings.master.email, calendarId: settings.master.calendarId } : envMasterTarget(deps.env);
+  return { ok: true, ctx: { key, settings, candidate: settings.candidate, current } };
+}
+
+// Opens the source (current master) and target (candidate) grants. Tokens stay in this function's callers'
+// memory only; failures map to fixed Thai messages.
+function openGrants(ctx: SwitchContext, env: AdminCalendarEnv): { ok: true; source: string; target: string } | { ok: false; result: ActionResult } {
+  let source: string;
+  if (ctx.settings.master) {
+    try {
+      source = openToken(ctx.settings.master.sealedRefreshToken, ctx.key);
+    } catch {
+      return { ok: false, result: { status: 500, body: { error: TOKEN_OPEN_FAILED_MESSAGE } } };
+    }
+  } else {
+    if (!env.GOOGLE_REFRESH_TOKEN) return { ok: false, result: { status: 409, body: { error: NO_SOURCE_TOKEN_MESSAGE } } };
+    source = env.GOOGLE_REFRESH_TOKEN;
+  }
+  try {
+    return { ok: true, source, target: openToken(ctx.candidate.sealedRefreshToken, ctx.key) };
+  } catch {
+    return { ok: false, result: { status: 500, body: { error: TOKEN_OPEN_FAILED_MESSAGE } } };
+  }
+}
+
+async function preview(_body: Record<string, unknown>, deps: AdminCalendarDeps): Promise<ActionResult> {
+  const c = await switchContext(deps);
+  if (!c.ok) return c.result;
+  const { ctx } = c;
+  if (isSameCalendar(ctx.candidate, ctx.current)) return { status: 200, body: { tokenOnly: true } };
+  const grants = openGrants(ctx, deps.env);
+  if (!grants.ok) return grants.result;
+  const source = deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source });
+  const target = deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target });
+  let plan: ReturnType<typeof planCopy>;
+  try {
+    plan = planCopy(await source.listEvents());
+  } catch (err) {
+    console.error("[admin-calendar] preview source read failed:", err instanceof Error ? err.name : typeof err);
+    return { status: 502, body: { error: PREVIEW_SOURCE_FAILED_MESSAGE } };
+  }
+  let targetEvents: Awaited<ReturnType<CalendarClient["listEvents"]>>;
+  try {
+    targetEvents = await target.listEvents();
+  } catch (err) {
+    console.error("[admin-calendar] preview target read failed:", err instanceof Error ? err.name : typeof err);
+    return { status: 502, body: { error: PREVIEW_TARGET_FAILED_MESSAGE } };
+  }
+  // Counts and month keys only: events carry patient identifiers and never leave the server.
+  const planIds = new Set(plan.copy.map((e) => e.id));
+  const targetConflicts = planCopy(targetEvents).copy.filter((e) => !planIds.has(e.id)).length;
+  return {
+    status: 200,
+    body: {
+      tokenOnly: false,
+      counts: plan.counts,
+      skipped: plan.skipped,
+      byMonth: plan.byMonth,
+      targetEventCount: targetEvents.length,
+      targetHasEvents: targetEvents.length > 0,
+      targetConflicts,
+    },
+  };
+}
+
+async function switchMaster(_body: Record<string, unknown>, deps: AdminCalendarDeps, actor: string): Promise<ActionResult> {
+  const c = await switchContext(deps);
+  if (!c.ok) return c.result;
+  const { ctx } = c;
+  if (isLockActive(ctx.settings, deps.now())) return { status: 409, body: { error: LOCKED_MESSAGE } };
+
+  const envMasterSealed = (): CalendarTarget | undefined =>
+    !ctx.settings.master && deps.env.GOOGLE_REFRESH_TOKEN
+      ? { ...envMasterTarget(deps.env), sealedRefreshToken: sealToken(deps.env.GOOGLE_REFRESH_TOKEN, ctx.key) }
+      : undefined;
+
+  // Same account + calendar: renew the token only (no copy, no Google call).
+  if (isSameCalendar(ctx.candidate, ctx.current)) {
+    const expected = ctx.candidate;
+    const next = await deps.settings.mutate((fresh) => {
+      if (fresh === "missing" || !fresh.candidate || fresh.candidate.sealedRefreshToken !== expected.sealedRefreshToken) {
+        throw new RefusedError(CONCURRENT_EDIT_MESSAGE);
+      }
+      if (isLockActive(fresh, deps.now())) throw new RefusedError(LOCKED_MESSAGE);
+      if (fresh.master && !isSameCalendar(fresh.candidate, fresh.master)) throw new RefusedError(CONCURRENT_EDIT_MESSAGE);
+      // Env mode: previousMaster stays unset (it would point at the same calendar with the old token).
+      return withRefreshedMasterToken(fresh);
+    });
+    return { status: 200, body: { mode: "token", status: buildStatus(next, deps) } };
+  }
+
+  const grants = openGrants(ctx, deps.env);
+  if (!grants.ok) return grants.result;
+  const result = await runSwitch({
+    settings: deps.settings,
+    source: deps.makeClient({ calendarId: ctx.current.calendarId, refreshToken: grants.source }),
+    target: deps.makeClient({ calendarId: ctx.candidate.calendarId, refreshToken: grants.target }),
+    by: actor,
+    now: deps.now,
+    candidate: ctx.candidate,
+    master: ctx.settings.master,
+    envMaster: envMasterSealed(),
+    sleep: deps.sleep,
+  });
+  if (!result.ok) {
+    const status = result.step === "lock" ? 409 : result.step === "flip" ? 500 : 502;
+    return { status, body: { error: result.error, step: result.step } };
+  }
+  let status: CalendarStatus | undefined;
+  try {
+    status = buildStatus(await deps.settings.read(), deps);
+  } catch {
+    status = undefined; // the switch itself succeeded; the page can re-read the status
+  }
+  return {
+    status: 200,
+    body: {
+      mode: "copy",
+      copied: result.copied,
+      created: result.created,
+      updated: result.updated,
+      counts: result.counts,
+      skipped: result.skipped,
+      lockCleared: result.lockCleared,
+      status,
+    },
+  };
+}
+
+async function clearLock(_body: Record<string, unknown>, deps: AdminCalendarDeps): Promise<ActionResult> {
+  let current: CalendarSettings | "missing";
+  try {
+    current = await deps.settings.read();
+  } catch (err) {
+    console.error("[admin-calendar] storage error:", err instanceof Error ? err.name : typeof err);
+    return { status: 500, body: { error: LOAD_FAILED_MESSAGE } };
+  }
+  if (current === "missing" || !current.lock) return { status: 200, body: buildStatus(current, deps) };
+  // withoutLock turns a lock-only file into "missing", which the store deletes (never writes {}).
+  const next = await deps.settings.mutate((fresh) => (fresh !== "missing" && fresh.lock ? withoutLock(fresh) : fresh));
+  return { status: 200, body: buildStatus(next, deps) };
+}
+
+// An unknown action is a 400. `actor` is the signed-in admin (from requireAdmin).
+const POST_ACTIONS: Record<string, (body: Record<string, unknown>, deps: AdminCalendarDeps, actor: string) => Promise<ActionResult>> = {
   connect,
+  preview,
+  switch: switchMaster,
+  clearLock,
 };
 
 export async function handleAdminCalendar(request: Request, method: AdminCalendarMethod, deps: AdminCalendarDeps): Promise<Response> {
@@ -163,7 +353,7 @@ export async function handleAdminCalendar(request: Request, method: AdminCalenda
     return json({ error: BAD_REQUEST_MESSAGE }, 400);
   }
   try {
-    const result = await POST_ACTIONS[body.action](body, deps);
+    const result = await POST_ACTIONS[body.action](body, deps, gate.actor);
     return json(result.body, result.status);
   } catch (err) {
     if (err instanceof RefusedError) return json({ error: err.message }, 409);
