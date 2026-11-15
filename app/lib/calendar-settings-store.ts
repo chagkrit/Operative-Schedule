@@ -39,7 +39,8 @@ export function parseSettingsJson(text: string): CalendarSettings {
     throw new UserStoreError("calendar-settings.json is not an object");
   }
   const d = data as { master?: unknown; previousMaster?: unknown; candidate?: unknown; lock?: unknown };
-  const out: CalendarSettings = { master: parseTarget(d.master, "master") };
+  const out: CalendarSettings = {};
+  if (d.master !== undefined) out.master = parseTarget(d.master, "master");
   if (d.previousMaster !== undefined) out.previousMaster = parseTarget(d.previousMaster, "previousMaster");
   if (d.candidate !== undefined) out.candidate = parseTarget(d.candidate, "candidate");
   if (d.lock !== undefined) {
@@ -48,6 +49,10 @@ export function parseSettingsJson(text: string): CalendarSettings {
       throw new UserStoreError("calendar-settings.json lock is malformed");
     }
     out.lock = { since: l.since, by: l.by };
+  }
+  // An empty object is corrupt, not "env applies": fail closed rather than silently falling back.
+  if (!out.master && !out.previousMaster && !out.candidate && !out.lock) {
+    throw new UserStoreError("calendar-settings.json has no master, candidate or lock");
   }
   return out;
 }

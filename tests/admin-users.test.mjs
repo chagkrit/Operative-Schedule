@@ -296,9 +296,12 @@ test("route binds the shared store, every verb, and opts out of caching", async 
   }
   assert.match(route, /export const dynamic = "force-dynamic";/);
   const lib = await read("app/lib/admin-users-api.ts");
-  assert.match(lib, /await requestUserEmail\(request, store\)/);
+  // the admin gate and the no-store JSON helper are shared (app/lib/admin-http.ts) with the calendar API
+  assert.match(lib, /await requireAdmin\(request, store\)/);
   assert.match(lib, /store\.mutate\(/);
-  assert.match(lib, /"Cache-Control": "no-store"/);
+  const http = await read("app/lib/admin-http.ts");
+  assert.match(http, /await requestUserEmail\(request, users as UserStore\)/);
+  assert.match(http, /"Cache-Control": "no-store"/);
 });
 
 test("/admin page: signed-out → /signin, non-admin → /, list errors render a Thai panel", async () => {

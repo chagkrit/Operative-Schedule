@@ -62,3 +62,14 @@ test("allowCached is forwarded to the store only when the caller asks (GET)", as
   await resolveCalendarTarget({ store: s, env: env(), now: NOW });
   assert.deepEqual(seen, [true, false]);
 });
+
+test("settings without master behave as env (source env, env token) and still honor an active lock", async () => {
+  const e = env({ GOOGLE_CALENDAR_ID: "cal-env", GOOGLE_REFRESH_TOKEN: "rt-env" });
+  const cand = { email: "c@example.com", calendarId: "cal-c", sealedRefreshToken: sealToken("tok-c", KEY) };
+  const a = await resolveCalendarTarget({ store: store({ candidate: cand }), env: e, now: NOW });
+  assert.deepEqual(a, { source: "env", calendarId: "cal-env", refreshToken: "rt-env", locked: false });
+  const b = await resolveCalendarTarget({ store: store({ candidate: cand, lock: { since: NOW - 1000, by: "a@example.com" } }), env: e, now: NOW });
+  assert.deepEqual(b, { source: "env", calendarId: "cal-env", refreshToken: "rt-env", locked: true });
+  const c = await resolveCalendarTarget({ store: store({ lock: { since: NOW - LOCK_TTL_MS - 1, by: "a@example.com" } }), env: e, now: NOW });
+  assert.equal(c.locked, false);
+});

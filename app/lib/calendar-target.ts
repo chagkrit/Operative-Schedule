@@ -35,12 +35,14 @@ export async function resolveCalendarTarget(opts: CalendarTargetOptions): Promis
   } catch {
     throw unreadable(); // no fallback to env: a transient read error must not write to the wrong calendar
   }
-  if (settings === "missing") {
+  // No file, or a file with no master (only a candidate and/or lock): the environment applies.
+  // An active lock is still honored in the second case.
+  if (settings === "missing" || !settings.master) {
     return {
       source: "env",
       calendarId: opts.env.GOOGLE_CALENDAR_ID || opts.env.AUTHORIZED_EMAIL,
       refreshToken: opts.env.GOOGLE_REFRESH_TOKEN || null,
-      locked: false,
+      locked: settings !== "missing" && isLockActive(settings, opts.now),
     };
   }
   let refreshToken: string;

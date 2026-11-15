@@ -12,10 +12,9 @@ function deps(): AdminCalendarDeps {
     env: {
       AUTHORIZED_EMAIL,
       GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID,
-      GOOGLE_REFRESH_TOKEN: process.env.GOOGLE_REFRESH_TOKEN,
       CALENDAR_SETTINGS_KEY: process.env.CALENDAR_SETTINGS_KEY,
     },
-    verifyAccount: verifyGoogleAccount,
+    verifyAccount: (a) => verifyGoogleAccount(a),
     now: Date.now,
   };
 }

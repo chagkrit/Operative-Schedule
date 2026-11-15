@@ -174,22 +174,67 @@ test("connect happy path stores a sealed candidate that opens to the submitted t
   assert.ok(!out.includes(NEW_TOKEN) && !out.includes(MASTER_TOKEN));
 });
 
-test("connect replaces an earlier candidate; connect with no settings file seeds the master from env", async () => {
+test("connect replaces an earlier candidate; with no settings file it creates { candidate } only (no master seeded)", async () => {
   const h = harness({ settings: { ...SETTINGS(), candidate: target("x@y.com", "x", "SYNTH-OLD-CAND-dddd") } });
   assert.equal((await call(h, "POST", { as: ADMIN, body: CONNECT })).status, 200);
   assert.equal(h.state.data.candidate.email, "new@gmail.com");
 
-  const h2 = harness({ env: { GOOGLE_REFRESH_TOKEN: MASTER_TOKEN } });
+  const h2 = harness({ env: { GOOGLE_REFRESH_TOKEN: MASTER_TOKEN, GOOGLE_CALENDAR_ID: "env-cal" } });
   const r = await call(h2, "POST", { as: ADMIN, body: CONNECT });
   assert.equal(r.status, 200);
-  assert.equal(r.json.master.source, "settings");
-  assert.equal(h2.state.data.master.email, "hnbcmu@gmail.com");
-  assert.equal(openToken(h2.state.data.master.sealedRefreshToken, KEY), MASTER_TOKEN);
+  assert.deepEqual(r.json, {
+    master: { email: "hnbcmu@gmail.com", calendarId: "env-cal", source: "env" },
+    candidate: { email: "new@gmail.com", calendarId: "cal-new@group.calendar.google.com" },
+    locked: false,
+    keyConfigured: true,
+  });
+  assert.deepEqual(Object.keys(h2.state.data), ["candidate"]);
+  assert.equal(openToken(h2.state.data.candidate.sealedRefreshToken, KEY), NEW_TOKEN);
+  assert.ok(!r.text.includes(MASTER_TOKEN));
 
+  // works with no env refresh token at all
   const h3 = harness({});
-  const r3 = await call(h3, "POST", { as: ADMIN, body: CONNECT });
-  assert.equal(r3.status, 409);
-  assert.equal(h3.state.writes, 0);
+  assert.equal((await call(h3, "POST", { as: ADMIN, body: CONNECT })).status, 200);
+  assert.deepEqual(Object.keys(h3.state.data), ["candidate"]);
+});
+
+test("GET with a master-less settings file reports the env master plus the candidate", async () => {
+  const h = harness({ settings: { candidate: target("new@gmail.com", "cand-id", NEW_TOKEN), lock: { since: 1_000_000 - 1000, by: ADMIN } } });
+  const r = await call(h, "GET", { as: ADMIN });
+  assert.deepEqual(r.json, {
+    master: { email: "hnbcmu@gmail.com", calendarId: "hnbcmu@gmail.com", source: "env" },
+    candidate: { email: "new@gmail.com", calendarId: "cand-id" },
+    locked: true,
+    keyConfigured: true,
+  });
+  assert.ok(!r.text.includes(NEW_TOKEN));
+});
+
+test("production verifyGoogleAccount probes events.list (calendar.events scope), never a bare /calendars/{id}", async () => {
+  const idToken = `h.${Buffer.from(JSON.stringify({ email: "New@Gmail.com", email_verified: true })).toString("base64url")}.s`;
+  const seen = [];
+  const fakeFetch = async (url, init) => {
+    seen.push({ url: String(url), init });
+    if (String(url) === "https://oauth2.googleapis.com/token") {
+      return Response.json({ access_token: "SYNTH-ACCESS", id_token: idToken });
+    }
+    return Response.json({ items: [] });
+  };
+  const out = await api.verifyGoogleAccount(
+    { refreshToken: NEW_TOKEN, calendarId: "cal new@group.calendar.google.com" },
+    { fetch: fakeFetch, clientId: "cid", clientSecret: "csecret" },
+  );
+  assert.deepEqual(out, { email: "new@gmail.com" });
+  assert.equal(seen.length, 2);
+  const body = new URLSearchParams(String(seen[0].init.body));
+  assert.equal(body.get("grant_type"), "refresh_token");
+  assert.equal(body.get("refresh_token"), NEW_TOKEN);
+  assert.equal(seen[1].url, "https://www.googleapis.com/calendar/v3/calendars/cal%20new%40group.calendar.google.com/events?maxResults=1");
+  assert.equal(seen[1].init.headers.authorization, "Bearer SYNTH-ACCESS");
+  assert.ok(!seen.some((c) => /\/calendars\/[^/?]+$/.test(c.url)));
+  // a calendar the token cannot read fails closed
+  const denied = async (url) => (String(url).includes("oauth2") ? Response.json({ access_token: "a", id_token: idToken }) : new Response("{}", { status: 403 }));
+  await assert.rejects(api.verifyGoogleAccount({ refreshToken: NEW_TOKEN, calendarId: "c" }, { fetch: denied, clientId: "cid", clientSecret: "s" }));
 });
 
 test("connect is refused with 409 while a switch lock is active", async () => {
@@ -268,7 +313,7 @@ test("handler source: admin check precedes any settings or Google access", async
   const src = await readFile(new URL("../app/lib/admin-calendar-api.ts", import.meta.url), "utf8");
   const start = src.indexOf("export async function handleAdminCalendar");
   const fn = src.slice(start, src.indexOf("// ---- production", start));
-  const admin = fn.indexOf('role !== "admin"');
+  const admin = fn.indexOf("await requireAdmin(");
   assert.ok(admin !== -1);
   for (const work of ["deps.settings", "POST_ACTIONS[", "request.json("]) {
     const at = fn.indexOf(work);

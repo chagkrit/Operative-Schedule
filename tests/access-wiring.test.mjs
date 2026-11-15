@@ -295,9 +295,15 @@ test("admin calendar route is exempt because its handler is admin-gated before a
   assert.match(route, /handleAdminCalendar\(request, "POST"/);
   const lib = await read("app/lib/admin-calendar-api.ts");
   const fn = lib.slice(lib.indexOf("export async function handleAdminCalendar"), lib.indexOf("// ---- production"));
-  const admin = fn.indexOf('role !== "admin"');
+  const admin = fn.indexOf("await requireAdmin(");
   assert.ok(admin !== -1);
-  assert.ok(fn.indexOf("requestUserEmail(") < admin);
+  // the shared gate does sign-in (401) then the admin role check (403), before returning an actor
+  const http = await read("app/lib/admin-http.ts");
+  const gate = http.slice(http.indexOf("export async function requireAdmin("), http.indexOf("export function storageFailure"));
+  assert.ok(gate.indexOf("requestUserEmail(") < gate.indexOf('role !== "admin"'));
+  const users = await read("app/lib/admin-users-api.ts");
+  const usersFn = users.slice(users.indexOf("export async function handleAdminUsers"));
+  assert.ok(usersFn.indexOf("await requireAdmin(") !== -1 && usersFn.indexOf("await requireAdmin(") < usersFn.indexOf("store.list()"));
   for (const work of ["deps.settings", "POST_ACTIONS[", "request.json("]) assert.ok(fn.indexOf(work) > admin, `${work} before admin check`);
   assert.doesNotMatch(fn, /verifyAccount/);
 });

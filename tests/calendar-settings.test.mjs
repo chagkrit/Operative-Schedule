@@ -62,3 +62,17 @@ test("validateConnectInput", () => {
   bad({ email: "a@example.com", calendarId: "c", refreshToken: "t".repeat(2049) });
   bad({ email: 5, calendarId: "c", refreshToken: "t" });
 });
+
+test("setCandidate and withLock create a valid settings object from \"missing\" (no master)", () => {
+  assert.deepEqual(setCandidate("missing", t("b")), { candidate: t("b") });
+  assert.deepEqual(withLock("missing", "x", 5), { lock: { since: 5, by: "x" } });
+  assert.deepEqual(withoutLock({ lock: { since: 1, by: "x" }, candidate: t("b") }), { candidate: t("b") });
+});
+
+test("promoteCandidate without a master seeds previousMaster from envMaster", () => {
+  const r = promoteCandidate(withLock({ candidate: t("b") }, "x", 1), t("env"));
+  assert.deepEqual(r, { master: t("b"), previousMaster: t("env") });
+  assert.deepEqual(promoteCandidate({ candidate: t("b") }), { master: t("b") });
+  assert.deepEqual(promoteCandidate({ master: t("a"), candidate: t("b") }, t("env")).previousMaster, t("a"));
+  assert.throws(() => promoteCandidate({ lock: { since: 1, by: "x" } }, t("env")));
+});

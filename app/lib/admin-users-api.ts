@@ -12,8 +12,16 @@
 //
 // Mutation responses carry the list returned by `store.mutate` (fresh read → change → write),
 // never a separate list() that a stale cache could answer.
-import { BlobPreconditionFailedError } from "@vercel/blob";
-import { SIGN_IN_REQUIRED_MESSAGE, requestUserEmail } from "./session";
+import {
+  ADMIN_ONLY_MESSAGE,
+  BAD_REQUEST_MESSAGE,
+  JSON_REQUIRED_MESSAGE,
+  isJsonContentType,
+  isRecord,
+  jsonNoStore as json,
+  requireAdmin,
+  storageFailure as sharedStorageFailure,
+} from "./admin-http";
 import type { UserStore } from "./user-store";
 import {
   USER_ERRORS,
@@ -38,20 +46,15 @@ export type AdminAction =
 
 export type ParsedBody = { ok: true; action: AdminAction } | { ok: false; error: string };
 
-export const ADMIN_ONLY_MESSAGE = "เฉพาะผู้ดูแลระบบเท่านั้น";
+// Re-exported so existing importers keep working; the definitions live in admin-http.ts.
+export { ADMIN_ONLY_MESSAGE, BAD_REQUEST_MESSAGE, JSON_REQUIRED_MESSAGE, isJsonContentType };
 export const CONCURRENT_EDIT_MESSAGE = "มีการแก้ไขรายชื่อพร้อมกัน กรุณาลองใหม่";
-export const BAD_REQUEST_MESSAGE = "ข้อมูลที่ส่งมาไม่ถูกต้อง";
 export const NOTHING_TO_CHANGE_MESSAGE = "กรุณาระบุสิทธิ์หรือสถานะที่ต้องการเปลี่ยน";
 export const LOAD_FAILED_MESSAGE = "อ่านรายชื่อผู้ใช้ไม่สำเร็จ กรุณาลองใหม่";
 export const SAVE_FAILED_MESSAGE = "บันทึกรายชื่อผู้ใช้ไม่สำเร็จ กรุณาลองใหม่";
-export const JSON_REQUIRED_MESSAGE = "รูปแบบคำขอไม่ถูกต้อง ต้องส่งข้อมูลเป็น JSON";
 
 // Longer than any valid email (254), so a legacy malformed entry can still be removed.
 const MAX_TARGET_LENGTH = 320;
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 function isRole(v: unknown): v is Role {
   return v === "user" || v === "admin" || v === "viewer";
@@ -108,30 +111,14 @@ export function ruleErrorStatus(error: string): number {
   return 409;
 }
 
-// "application/json", any case, optionally with parameters such as "; charset=utf-8".
-export function isJsonContentType(value: string | null): boolean {
-  return (value ?? "").split(";")[0].trim().toLowerCase() === "application/json";
-}
-
-function json(body: unknown, status = 200) {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-
 function storageFailure(err: unknown, fallback: string) {
-  // Log the kind only: SDK messages can carry store paths/ids.
-  console.error("[admin-users] storage error:", err instanceof Error ? err.name : typeof err);
-  if (err instanceof BlobPreconditionFailedError) return json({ error: CONCURRENT_EDIT_MESSAGE }, 409);
-  return json({ error: fallback }, 500);
+  return sharedStorageFailure("admin-users", err, CONCURRENT_EDIT_MESSAGE, fallback);
 }
 
 export async function handleAdminUsers(request: Request, method: AdminUsersMethod, store: UserStore): Promise<Response> {
-  let actor: string;
-  try {
-    actor = await requestUserEmail(request, store);
-  } catch {
-    return json({ error: SIGN_IN_REQUIRED_MESSAGE }, 401);
-  }
-  if ((await store.getAccess(actor)).role !== "admin") return json({ error: ADMIN_ONLY_MESSAGE }, 403);
+  const gate = await requireAdmin(request, store);
+  if (!gate.ok) return gate.response;
+  const actor = gate.actor;
 
   if (method === "GET") {
     try {

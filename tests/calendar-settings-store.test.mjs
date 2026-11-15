@@ -71,6 +71,10 @@ test("mutate calls are serialized", async () => {
 
 test("parseSettingsJson validates shape", () => {
   assert.deepEqual(parseSettingsJson(JSON.stringify({ master: target("a") })), { master: target("a") });
+  // a file without master (candidate and/or lock only) is valid: the env master applies
+  assert.deepEqual(parseSettingsJson(JSON.stringify({ candidate: target("c") })), { candidate: target("c") });
+  assert.deepEqual(parseSettingsJson(JSON.stringify({ lock: { since: 1, by: "x" } })), { lock: { since: 1, by: "x" } });
+  assert.throws(() => parseSettingsJson(JSON.stringify({ candidate: { email: "a" } })));
   assert.throws(() => parseSettingsJson("[]"));
   assert.throws(() => parseSettingsJson("{}"));
   assert.throws(() => parseSettingsJson(JSON.stringify({ master: { email: "a" } })));

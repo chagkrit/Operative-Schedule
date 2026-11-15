@@ -10,8 +10,15 @@
 //
 // Tokens: never logged, never returned, never in an error message (fixed Thai strings only; the
 // underlying errors are swallowed). The admin check comes before ANY settings or Google access.
-import { BlobPreconditionFailedError } from "@vercel/blob";
-import { ADMIN_ONLY_MESSAGE, JSON_REQUIRED_MESSAGE, BAD_REQUEST_MESSAGE, isJsonContentType } from "./admin-users-api";
+import {
+  BAD_REQUEST_MESSAGE,
+  JSON_REQUIRED_MESSAGE,
+  isJsonContentType,
+  isRecord,
+  jsonNoStore as json,
+  requireAdmin,
+  storageFailure as sharedStorageFailure,
+} from "./admin-http";
 import {
   isLockActive,
   setCandidate,
@@ -20,7 +27,6 @@ import {
   type CalendarTarget,
 } from "./calendar-settings";
 import type { CalendarSettingsStore } from "./calendar-settings-store";
-import { SIGN_IN_REQUIRED_MESSAGE, requestUserEmail } from "./session";
 import { sealToken } from "./token-seal";
 import type { UserStore } from "./user-store";
 import { normalizeEmail } from "./users";
@@ -30,7 +36,6 @@ export type AdminCalendarMethod = "GET" | "POST";
 export type AdminCalendarEnv = {
   AUTHORIZED_EMAIL: string;
   GOOGLE_CALENDAR_ID?: string;
-  GOOGLE_REFRESH_TOKEN?: string;
   CALENDAR_SETTINGS_KEY?: string;
 };
 
@@ -57,24 +62,12 @@ export const EMAIL_MISMATCH_MESSAGE = "บัญชี Google ของ token �
 export const VERIFY_FAILED_MESSAGE = "ตรวจสอบ token และสิทธิ์เข้าถึงปฏิทินไม่สำเร็จ";
 export const CONNECT_INPUT_MESSAGE = "ข้อมูลไม่ถูกต้อง กรุณาตรวจอีเมล รหัสปฏิทิน และ refresh token";
 export const LOCKED_MESSAGE = "ระบบกำลังเปลี่ยนปฏิทิน กรุณาลองใหม่ในอีกสักครู่";
-export const NO_MASTER_MESSAGE = "ยังไม่มีการตั้งค่าปฏิทินหลักในระบบ จึงยังเชื่อมต่อปฏิทินใหม่ไม่ได้";
 export const LOAD_FAILED_MESSAGE = "อ่านการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่";
 export const SAVE_FAILED_MESSAGE = "บันทึกการตั้งค่าปฏิทินไม่สำเร็จ กรุณาลองใหม่";
 export const CONCURRENT_EDIT_MESSAGE = "มีการแก้ไขการตั้งค่าปฏิทินพร้อมกัน กรุณาลองใหม่";
 
-function json(body: unknown, status = 200) {
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-// Log the error kind only: SDK messages can carry store paths/ids, and Google errors can echo input.
 function storageFailure(err: unknown, fallback: string) {
-  console.error("[admin-calendar] storage error:", err instanceof Error ? err.name : typeof err);
-  if (err instanceof BlobPreconditionFailedError) return json({ error: CONCURRENT_EDIT_MESSAGE }, 409);
-  return json({ error: fallback }, 500);
+  return sharedStorageFailure("admin-calendar", err, CONCURRENT_EDIT_MESSAGE, fallback);
 }
 
 function keyUsable(key: string | undefined): key is string {
@@ -98,8 +91,9 @@ export function buildStatus(settings: CalendarSettings | "missing", deps: Pick<A
     return { master: { ...envMasterTarget(deps.env), source: "env" }, locked: false, keyConfigured };
   }
   const pub = (t: CalendarTarget) => ({ email: t.email, calendarId: t.calendarId });
+  // A file without a master means the env master still applies.
   const status: CalendarStatus = {
-    master: { ...pub(settings.master), source: "settings" },
+    master: settings.master ? { ...pub(settings.master), source: "settings" } : { ...envMasterTarget(deps.env), source: "env" },
     locked: isLockActive(settings, deps.now()),
     keyConfigured,
   };
@@ -126,7 +120,6 @@ async function connect(body: Record<string, unknown>, deps: AdminCalendarDeps): 
     return { status: 500, body: { error: LOAD_FAILED_MESSAGE } };
   }
   if (current !== "missing" && isLockActive(current, deps.now())) return { status: 409, body: { error: LOCKED_MESSAGE } };
-  if (current === "missing" && !deps.env.GOOGLE_REFRESH_TOKEN) return { status: 409, body: { error: NO_MASTER_MESSAGE } };
 
   let verified: { email: string };
   try {
@@ -140,13 +133,6 @@ async function connect(body: Record<string, unknown>, deps: AdminCalendarDeps): 
   const next = await deps.settings.mutate((fresh) => {
     // Re-checked on the fresh read: a lock taken since the first read still wins.
     if (fresh !== "missing" && isLockActive(fresh, deps.now())) throw new RefusedError(LOCKED_MESSAGE);
-    if (fresh === "missing") {
-      // First use: the env calendar becomes the stored master so the candidate has something to replace.
-      const envToken = deps.env.GOOGLE_REFRESH_TOKEN;
-      if (!envToken) throw new RefusedError(NO_MASTER_MESSAGE);
-      const master: CalendarTarget = { ...envMasterTarget(deps.env), sealedRefreshToken: sealToken(envToken, key) };
-      return setCandidate({ master }, candidate);
-    }
     return setCandidate(fresh, candidate);
   });
   return { status: 200, body: buildStatus(next, deps) };
@@ -160,13 +146,8 @@ const POST_ACTIONS: Record<string, (body: Record<string, unknown>, deps: AdminCa
 };
 
 export async function handleAdminCalendar(request: Request, method: AdminCalendarMethod, deps: AdminCalendarDeps): Promise<Response> {
-  let actor: string;
-  try {
-    actor = await requestUserEmail(request, deps.users as UserStore);
-  } catch {
-    return json({ error: SIGN_IN_REQUIRED_MESSAGE }, 401);
-  }
-  if ((await deps.users.getAccess(actor)).role !== "admin") return json({ error: ADMIN_ONLY_MESSAGE }, 403);
+  const gate = await requireAdmin(request, deps.users);
+  if (!gate.ok) return gate.response;
 
   if (method === "GET") {
     try {
@@ -203,11 +184,15 @@ function idTokenEmail(idToken: unknown): string {
 
 // Exchanges the refresh token at Google, reads the account email from the returned ID token, then
 // reads the calendar with the access token to prove access. Any failure throws a fixed message.
-export async function verifyGoogleAccount(a: { refreshToken: string; calendarId: string }): Promise<{ email: string }> {
-  const clientId = process.env.AUTH_GOOGLE_ID;
-  const clientSecret = process.env.AUTH_GOOGLE_SECRET;
+export async function verifyGoogleAccount(
+  a: { refreshToken: string; calendarId: string },
+  io: { fetch?: typeof fetch; clientId?: string; clientSecret?: string } = {},
+): Promise<{ email: string }> {
+  const doFetch = io.fetch ?? fetch;
+  const clientId = io.clientId ?? process.env.AUTH_GOOGLE_ID;
+  const clientSecret = io.clientSecret ?? process.env.AUTH_GOOGLE_SECRET;
   if (!clientId || !clientSecret) throw new Error("Google OAuth client is not configured");
-  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+  const tokenResponse = await doFetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -222,11 +207,16 @@ export async function verifyGoogleAccount(a: { refreshToken: string; calendarId:
   const tokens = (await tokenResponse.json().catch(() => null)) as { access_token?: unknown; id_token?: unknown } | null;
   if (!tokenResponse.ok || !tokens || typeof tokens.access_token !== "string") throw new Error("token exchange failed");
   const email = idTokenEmail(tokens.id_token);
-  const calendar = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(a.calendarId)}`, {
-    headers: { authorization: `Bearer ${tokens.access_token}` },
-    cache: "no-store",
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!calendar.ok) throw new Error("calendar not accessible");
+  // events.list, not calendars.get: the only Calendar scope the token script mints is calendar.events,
+  // which events.list accepts and calendars.get does not.
+  const probe = await doFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(a.calendarId)}/events?maxResults=1`,
+    {
+      headers: { authorization: `Bearer ${tokens.access_token}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+    },
+  );
+  if (!probe.ok) throw new Error("calendar not accessible");
   return { email };
 }
