@@ -156,3 +156,19 @@ test("GLOSSARY defines ปฏิทินหลัก as a definition only", asy
   }
   assert.ok(match[1].includes("วัน OR Extra"), "OR Extra days are among the stored items");
 });
+
+test("runbook + README (step 2): remapped ids are handled automatically (not a stop signal); recurring exceptions are copied", async () => {
+  const runbook = await read(RUNBOOK);
+  const readme = await read("README.md");
+  for (const text of [runbook, readme]) {
+    assert.ok(!text.includes("รหัส event ที่คัดลอกไม่ได้"), "old blocking label is gone");
+    assert.ok(!text.includes("การสลับจะยังถูกบล็อกจนกว่าผู้พัฒนาจะแก้ให้"), "old stop-and-contact guidance is gone");
+    assert.ok(text.includes("orig_id"), "remapped events keep the old id in orig_id");
+    assert.ok(text.includes("รายการยกเว้น"), "recurring exceptions are mentioned");
+  }
+  assert.ok(runbook.includes("รหัส event ที่ต้องออกรหัสใหม่ (ไม่บล็อก)"), "the new preview label");
+  assert.ok(runbook.includes("สัญญาณที่ห้ามสลับ"), "stop signals still listed");
+  // the stop signals are now conflicts + a plan refusal shown by the screen, not remapped ids
+  const signals = runbook.slice(runbook.indexOf("สัญญาณที่ห้ามสลับ"), runbook.indexOf("\n", runbook.indexOf("สัญญาณที่ห้ามสลับ")));
+  assert.ok(!signals.includes("ออกรหัสใหม่"), "remapped ids are not a stop signal");
+});
