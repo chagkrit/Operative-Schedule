@@ -333,6 +333,8 @@ test("calendar target is resolved per request: after allowlist+viewer checks, be
   // the lock only stops writes; GET reads keep working while locked
   assert.match(auth, /target\.locked && method\.toUpperCase\(\) !== "GET"/);
   assert.match(auth, /CALENDAR_LOCKED_MESSAGE, 503/);
+  // only GET may use the cached settings read; writes always read fresh
+  assert.match(auth, /allowCached: method\.toUpperCase\(\) === "GET"/);
   const fetchFn = block(calendar, "async function googleFetch(");
   assert.ok(fetchFn.indexOf("authorizedAccessToken(") < fetchFn.indexOf("await fetch("));
   assert.match(fetchFn, /MASTER_PLACEHOLDER/);

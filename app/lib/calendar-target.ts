@@ -17,9 +17,11 @@ export type ResolvedCalendarTarget = {
 };
 
 export type CalendarTargetOptions = {
-  store: { read(): Promise<CalendarSettings | "missing"> };
+  store: { read(opts?: { allowCached?: boolean }): Promise<CalendarSettings | "missing"> };
   env: { GOOGLE_CALENDAR_ID?: string; AUTHORIZED_EMAIL: string; GOOGLE_REFRESH_TOKEN?: string; CALENDAR_SETTINGS_KEY?: string };
   now: number;
+  // GET reads may use the store's short success-only cache; writes always read fresh.
+  allowCached?: boolean;
 };
 
 function unreadable() {
@@ -29,7 +31,7 @@ function unreadable() {
 export async function resolveCalendarTarget(opts: CalendarTargetOptions): Promise<ResolvedCalendarTarget> {
   let settings: CalendarSettings | "missing";
   try {
-    settings = await opts.store.read();
+    settings = await opts.store.read({ allowCached: opts.allowCached === true });
   } catch {
     throw unreadable(); // no fallback to env: a transient read error must not write to the wrong calendar
   }

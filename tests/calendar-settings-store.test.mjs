@@ -76,3 +76,85 @@ test("parseSettingsJson validates shape", () => {
   assert.throws(() => parseSettingsJson(JSON.stringify({ master: { email: "a" } })));
   assert.throws(() => parseSettingsJson("not json"));
 });
+
+// ---- 30 s success-only read cache (fake clock + counting storage) ----
+function counting(initial) {
+  const st = memoryStorage(initial);
+  const realRead = st.read;
+  st.reads = 0;
+  st.read = async () => { st.reads += 1; return realRead(); };
+  return st;
+}
+const clock = () => { const c = { t: 1_000_000, now: () => c.t }; return c; };
+
+test("two cached reads within the TTL hit storage once", async () => {
+  const st = counting({ master: target("a") }); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  await store.read({ allowCached: true }); c.t += 29_000;
+  assert.deepEqual(await store.read({ allowCached: true }), { master: target("a") });
+  assert.equal(st.reads, 1);
+});
+
+test("default read is always fresh", async () => {
+  const st = counting({ master: target("a") }); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  await store.read({ allowCached: true }); await store.read(); await store.read();
+  assert.equal(st.reads, 3);
+});
+
+test("after the TTL a throwing read rejects even though a value was cached", async () => {
+  const st = counting({ master: target("a") }); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  await store.read({ allowCached: true });
+  st.data = new Error("blob down"); c.t += 30_001;
+  await assert.rejects(() => store.read({ allowCached: true }), /blob down/);
+});
+
+test("errors are never cached: the next call retries storage", async () => {
+  const st = counting(new Error("boom")); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  await assert.rejects(() => store.read({ allowCached: true }), /boom/);
+  st.data = { master: target("a") };
+  assert.deepEqual(await store.read({ allowCached: true }), { master: target("a") });
+  assert.equal(st.reads, 2);
+});
+
+test('"missing" is cached for cached reads', async () => {
+  const st = counting("missing"); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  assert.equal(await store.read({ allowCached: true }), "missing");
+  assert.equal(await store.read({ allowCached: true }), "missing");
+  assert.equal(st.reads, 1);
+});
+
+test("a fresh read sees a lock written after the cache was filled and refreshes the cache", async () => {
+  const st = counting({ master: target("a") }); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  await store.read({ allowCached: true });
+  st.data = { master: target("a"), lock: { since: c.t, by: "x@example.com" } };
+  assert.equal((await store.read({ allowCached: true })).lock, undefined); // stale within TTL
+  assert.ok((await store.read()).lock); // fresh read sees it
+  assert.ok((await store.read({ allowCached: true })).lock); // and cache now holds it
+});
+
+test("mutate replaces the cache with the written value", async () => {
+  const st = counting({ master: target("a") }); const c = clock();
+  const store = createCalendarSettingsStore(st, c.now);
+  await store.read({ allowCached: true });
+  await store.mutate((s) => ({ ...s, candidate: target("b") }));
+  const before = st.reads;
+  assert.deepEqual((await store.read({ allowCached: true })).candidate, target("b"));
+  assert.equal(st.reads, before);
+});
+
+test("a slower earlier read cannot overwrite a newer cache", async () => {
+  let release; const gate = new Promise((r) => { release = r; });
+  const st = memoryStorage({ master: target("old") });
+  const realRead = st.read; let first = true;
+  st.read = async () => { const v = await realRead(); if (first) { first = false; await gate; } return v; };
+  const store = createCalendarSettingsStore(st, clock().now);
+  const slow = store.read({ allowCached: true });
+  await store.mutate(() => ({ master: target("new") }));
+  release(); await slow;
+  assert.equal((await store.read({ allowCached: true })).master.calendarId, "cal-new");
+});

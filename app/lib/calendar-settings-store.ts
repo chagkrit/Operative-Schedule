@@ -1,6 +1,7 @@
 // SERVER-ONLY: the master-calendar settings store (one private Blob JSON file). Holds sealed
-// refresh tokens; never log its contents. Reads are never cached (settings change rarely and a
-// stale master would write to the wrong calendar). Failure policy mirrors user-store.ts:
+// refresh tokens; never log its contents. Reads are fresh by default; callers doing GET reads may
+// opt into a 30 s success-only cache ({ allowCached: true }). Errors are never cached and writes always
+// read fresh, so a stale master can never receive a write. Failure policy mirrors user-store.ts:
 // "missing" only for a true 404; every other failure throws.
 import { BLOB_TIMEOUT_MS, blobJsonStorage, UserStoreError } from "./user-store";
 import type { CalendarSettings, CalendarTarget } from "./calendar-settings";
@@ -13,8 +14,10 @@ export type CalendarSettingsStorage = {
   write(settings: CalendarSettings): Promise<void>;
 };
 
+export const SETTINGS_CACHE_TTL_MS = 30_000;
+
 export type CalendarSettingsStore = {
-  read(): Promise<CalendarSettings | "missing">;
+  read(opts?: { allowCached?: boolean }): Promise<CalendarSettings | "missing">;
   mutate(fn: (s: CalendarSettings | "missing") => CalendarSettings): Promise<CalendarSettings>;
 };
 
@@ -53,16 +56,30 @@ export function createCalendarSettingsStore(
   storage: CalendarSettingsStorage,
   now: () => number = Date.now,
 ): CalendarSettingsStore {
-  void now; // reserved for API parity with createUserStore; no cache to age
   let queue: Promise<unknown> = Promise.resolve();
+  let cache: { value: CalendarSettings | "missing"; at: number } | null = null;
+  let generation = 0;
+  const setCache = (value: CalendarSettings | "missing") => {
+    cache = { value, at: now() };
+  };
   return {
-    read: () => storage.read(),
+    read(opts) {
+      if (opts?.allowCached && cache && now() - cache.at < SETTINGS_CACHE_TTL_MS) return Promise.resolve(cache.value);
+      const startedAt = generation;
+      // Only successes are cached; a rejection propagates and leaves the cache as it was.
+      return storage.read().then((value) => {
+        if (generation === startedAt) setCache(value);
+        return value;
+      });
+    },
     // Serialized per instance: fresh read -> fn -> etag-guarded write. A write failure
-    // (including a stale-etag precondition failure) propagates.
+    // (including a stale-etag precondition failure) propagates. The cache is replaced with what was written.
     mutate(fn) {
       const run = async (): Promise<CalendarSettings> => {
         const next = fn(await storage.read());
         await storage.write(next);
+        generation += 1;
+        setCache(next);
         return next;
       };
       const p = queue.then(run, run);

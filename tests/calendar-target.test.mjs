@@ -54,3 +54,11 @@ test("lock: active => locked true, expired => false", async () => {
   const expired = await resolveCalendarTarget({ store: store(settings({ lock: { since: NOW - LOCK_TTL_MS - 1, by: "a@example.com" } })), env: e, now: NOW });
   assert.equal(expired.locked, false);
 });
+
+test("allowCached is forwarded to the store only when the caller asks (GET)", async () => {
+  const seen = [];
+  const s = { read: async (o) => { seen.push(o?.allowCached); return "missing"; } };
+  await resolveCalendarTarget({ store: s, env: env(), now: NOW, allowCached: true });
+  await resolveCalendarTarget({ store: s, env: env(), now: NOW });
+  assert.deepEqual(seen, [true, false]);
+});

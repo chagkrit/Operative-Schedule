@@ -203,6 +203,7 @@ async function authorizedAccessToken(request: Request, method = "GET"): Promise<
       CALENDAR_SETTINGS_KEY: process.env.CALENDAR_SETTINGS_KEY,
     },
     now: Date.now(),
+    allowCached: method.toUpperCase() === "GET",
   });
   // While the Admin switches calendars, writes pause; reads keep working.
   if (target.locked && method.toUpperCase() !== "GET") {
